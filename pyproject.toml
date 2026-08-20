@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torchebsd"
+version = "0.1.0"
+description = "Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in PyTorch"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Carter Francis", email = "cartsfrancis@gmail.com" }]
+keywords = [
+    "EBSD",
+    "dynamical-diffraction",
+    "Bloch-wave",
+    "master-pattern",
+    "pytorch",
+    "kikuchipy",
+]
+dependencies = [
+    "numpy",
+    "torch>=2.4",
+    "orix",
+    "diffsims",
+    "h5py",
+    "anyplotlib",
+    "anywidget",
+]
+
+[project.optional-dependencies]
+# kikuchipy is only needed to load reference/validation master patterns.
+validate = ["kikuchipy"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "kikuchipy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests import after pytest.importorskip(...) on purpose
+"tests/**" = ["E402"]
+# auto-generated numeric table: long lines / formatting are fine
+"src/torchebsd/data/scattering_tables.py" = ["E501"]
+"scripts/**" = ["E402"]
+
+# --- uv ---------------------------------------------------------------------
+# torch is pulled from the CUDA 12.4 index so the Pascal (sm_61) dev GPU works.
+# `uv sync` then `uv run ...`.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }

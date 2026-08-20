@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# Editors
+.idea/
+.vscode/
+
+# Output artifacts
+*.h5
+!tests/data/*.h5
+*.html
