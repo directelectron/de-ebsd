@@ -66,6 +66,26 @@ def test_classification_structure(si_sf):
     assert refl.n_strong + refl.n_weak <= len(refl)
 
 
+def test_forbidden_reflections_are_never_beams(si_sf):
+    """Systematically absent (double-diffraction) reflections carry no structure
+    factor and must never be strong or weak beams.
+
+    Along the [001] zone axis several ``(200)``/``(420)``-type reflections sit
+    close to Bragg, so the degenerate self-difference term (``g - g = 0`` ->
+    ``U_0``) would otherwise promote them to strong beams. EMsoft excludes them;
+    including them corrupts the dynamical matrix (this was the Si master-pattern
+    correlation bug).
+    """
+    refl = classify_reflections(si_sf, np.array([0.0, 0.0, 1.0]), BetheParameters())
+    forbidden = refl.forbidden
+    assert forbidden.any(), "expected forbidden reflections among the [001] candidates"
+    assert np.all(refl.status[forbidden] == IGNORED)
+    # allowed beams are unaffected: the incident beam and near-Bragg allowed
+    # reflections are still strong
+    assert refl.status[0] == STRONG
+    assert refl.n_strong > 1
+
+
 def test_tighter_bethe_gives_fewer_strong(si_sf):
     k = np.array([0.3, 0.2, 1.0]) / np.linalg.norm([0.3, 0.2, 1.0])
     loose = classify_reflections(si_sf, k, BetheParameters(strong=8.0, weak=50.0))

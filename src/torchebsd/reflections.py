@@ -207,6 +207,16 @@ def partition_strong_weak(
     candidates h; thresholds ``bethe.strong`` and ``bethe.weak`` split the
     classes. The incident beam (first entry, g = 0) is always strong.
 
+    Systematically absent (double-diffraction) reflections carry no structure
+    factor (``|U_g| ~ 0``) and so cannot be Bloch beams: they are never strong
+    or weak. They stay in the candidate list only as difference partners for
+    genuine double-diffraction paths ``U_{g-h}`` of the *allowed* beams. Without
+    this exclusion the degenerate self difference ``g - g = 0`` (whose
+    coefficient ``U_0`` is the largest in the table) would drive ``m`` down to
+    ``|s_g|/(lambda |U_0|)`` and spuriously promote any near-Bragg forbidden
+    reflection to a strong beam -- adding beams EMsoft never includes and
+    corrupting the dynamical matrix.
+
     Parameters are the candidate subset (index 0 must be the g = 0 beam).
     """
     n = len(hkl)
@@ -227,4 +237,6 @@ def partition_strong_weak(
     status[1:][m[1:] <= bethe.strong] = STRONG
     between = (m[1:] > bethe.strong) & (m[1:] <= bethe.weak)
     status[1:][between] = WEAK
+    # forbidden reflections are difference partners only, never beams themselves
+    status[forbidden] = IGNORED
     return status
