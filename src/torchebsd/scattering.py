@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from torchebsd.data.element_properties import ATOMIC_WEIGHTS
 from torchebsd.data.scattering_tables import ELEMENT_SYMBOLS, WK_A, WK_B
 
 # Exact constants from the Fortran source (single-precision literals).
@@ -57,6 +58,11 @@ def atomic_number(element: str) -> int:
         return _ATOMIC_NUMBER[element]
     except KeyError:
         raise ValueError(f"Unknown element symbol {element!r}") from None
+
+
+def atomic_weight(element: str) -> float:
+    """Standard atomic weight (g/mol) for an element symbol (e.g. ``"Ni"``)."""
+    return ATOMIC_WEIGHTS[atomic_number(element) - 1]
 
 
 def _ei(x: np.ndarray) -> np.ndarray:

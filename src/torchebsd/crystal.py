@@ -20,6 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 from diffpy.structure.spacegroups import GetSpaceGroup
 
+from torchebsd.constants import C_AVOGADRO
+from torchebsd.scattering import atomic_number, atomic_weight
+
 __all__ = ["AtomSite", "Crystal"]
 
 
@@ -227,6 +230,39 @@ class Crystal:
     def multiplicities(self) -> tuple[int, ...]:
         """Number of equivalent atoms per asymmetric-unit site."""
         return tuple(len(p) for p in self._positions)
+
+    # ------------------------------------------------------------------ #
+    # composition (Monte Carlo material model)
+    # ------------------------------------------------------------------ #
+    @property
+    def _site_counts(self) -> np.ndarray:
+        """Occupancy-weighted atom count per site in the unit cell."""
+        return np.array(
+            [s.occupancy * m for s, m in zip(self.sites, self.multiplicities, strict=True)]
+        )
+
+    @property
+    def mean_atomic_number(self) -> float:
+        """Composition- (number-) averaged atomic number, sum(n_i Z_i) / sum(n_i)."""
+        counts = self._site_counts
+        z = np.array([atomic_number(s.element) for s in self.sites], dtype=np.float64)
+        return float((counts * z).sum() / counts.sum())
+
+    @property
+    def mean_atomic_weight(self) -> float:
+        """Composition- (number-) averaged atomic weight in g/mol."""
+        counts = self._site_counts
+        a = np.array([atomic_weight(s.element) for s in self.sites])
+        return float((counts * a).sum() / counts.sum())
+
+    @property
+    def density(self) -> float:
+        """Mass density in g/cm^3 from the unit-cell contents and volume."""
+        counts = self._site_counts
+        a = np.array([atomic_weight(s.element) for s in self.sites])
+        cell_mass_g = (counts * a).sum() / C_AVOGADRO
+        volume_cm3 = self.volume * 1e-21  # nm^3 -> cm^3
+        return float(cell_mass_g / volume_cm3)
 
     @property
     def centering(self) -> str:
