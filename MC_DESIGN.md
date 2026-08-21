@@ -156,8 +156,8 @@ constructor. Tests in `tests/test_montecarlo_sim.py`.
 
 | Sub | Work | Size |
 | --- | --- | --- |
-| M-MC.1 | `atomic_weight`, `Crystal.density`/`Z̄`/`Ā`, `J(Z)`, MC constants | S |
-| M-MC.2 | numpy single-trajectory reference + physics unit tests | M |
+| M-MC.1 | `atomic_weight`, `Crystal.density`/`Z̄`/`Ā`, `J(Z)`, MC constants | S — **done** |
+| M-MC.2 | numpy single-trajectory reference + physics unit tests | M — **done** |
 | M-MC.3 | vectorized torch batch MC (hard mode) → `DepthDistribution.from_simulation` | M–L |
 | M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity | M |
 | M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L |
@@ -193,3 +193,34 @@ on the same code path.
   differentiability decision.
 - Throughput for `1e7` electrons on the Pascal dev GPU (chunk + profile); soft
   mode holds `S_max` steps for *all* electrons, raising the floor cost.
+
+---
+
+## Appendix A. EMsoft bulk-MC model (pinned from `opencl/EMMC.cl`)
+
+Extracted verbatim from EMsoft's OpenCL kernel and ported in `montecarlo_sim.py`
+(M-MC.2). Energies in keV, `rho` g/cm^3, `A` g/mol, lengths nm; `Z` may be the
+composition mean. Per step, at current energy `E`:
+
+- screening: `alpha = 3.4e-3 * Z^(2/3) / E`
+- cross-section (× N_A): `sig_eNA = 5.21*602.2 * Z^2/E^2 * 4pi/(alpha(1+alpha)) * ((E+511)/(E+1024))^2`
+- mean free path: `mfp = A * 1e7 / (rho * sig_eNA)` nm
+- step (exponential): `step = -mfp * ln(u)`, `u ~ U(0,1]`
+- ionization potential: `J = (9.76 Z + 58.5 Z^-0.19) * 1e-3` keV
+- stopping power: `de_ds = -0.00785 * Z/(A E) * ln(1.166 E/J + 0.9911)`
+- energy update: `E += step * rho * de_ds`
+- polar angle: `cos(theta) = 1 - 2 alpha u / (1 + alpha - u)`, `u ~ U(0,1)`
+- azimuth: `psi = 2 pi u`
+- direction rotation: the EMsoft cosine formula, with a `|c_z| >= 0.99999`
+  pole branch
+- entry: `r0 = (0,0,0)`, `c0 = (cos(omega) sin(sig), sin(omega) sin(sig), cos(sig))`
+  for sample tilt `sig`
+- exit / backscatter when `z <= 0`; the depth measure is
+  `escape_depth = z / c_z` (its exact role in `accum_z` binning is finalized in
+  M-MC.3)
+
+Note the angular distribution is strongly forward-peaked (`alpha` ~ 1e-3), so
+large-angle events need `u` within ~1e-9 of 1 -- backscatter accumulates from
+many small deflections, not single large ones. There is **no** energy floor in
+the kernel; the `Emin` cutoff and `accum_z`/`accum_e` binning live host-side
+(`mod_MCOpenCL`), to be reproduced in M-MC.3.

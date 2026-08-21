@@ -10,7 +10,18 @@ import numpy as np
 import pytest
 
 from torchebsd import Crystal
-from torchebsd.montecarlo_sim import MaterialProperties, mean_ionization_potential_kev
+from torchebsd.constants import C_AVOGADRO
+from torchebsd.montecarlo_sim import (
+    MaterialProperties,
+    elastic_cross_section_na,
+    mean_free_path_nm,
+    mean_ionization_potential_kev,
+    rotate_direction,
+    sample_scattering_cos,
+    screening_parameter,
+    simulate_trajectory,
+    stopping_power,
+)
 from torchebsd.scattering import atomic_weight
 
 
@@ -80,3 +91,101 @@ def test_material_properties_compound_averaging():
     assert mp.mean_z == pytest.approx(32.0)  # (31 + 33) / 2, equal 4a/4c occupancy
     assert mp.mean_a == pytest.approx(0.5 * (69.723 + 74.922), abs=1e-2)
     assert mp.density == pytest.approx(5.32, abs=0.1)  # handbook GaAs 5.317 g/cm^3
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.2: single-scattering physics + reference trajectory
+# --------------------------------------------------------------------------- #
+def test_screening_parameter():
+    # alpha = 3.4e-3 Z^(2/3) / E
+    assert screening_parameter(28, 20.0) == pytest.approx(3.4e-3 * 28 ** (2 / 3) / 20.0)
+    # screening weakens (alpha down) as energy rises
+    assert screening_parameter(28, 30.0) < screening_parameter(28, 20.0)
+
+
+def test_mean_free_path(ni_crystal):
+    mp = MaterialProperties.from_crystal(ni_crystal)
+    mfp20 = mean_free_path_nm(mp.mean_z, 20.0, mp.density, mp.mean_a)
+    assert mfp20 == pytest.approx(5.17, abs=0.05)  # Ni, 20 keV, a few nm
+    # longer free path at higher energy
+    assert mean_free_path_nm(mp.mean_z, 30.0, mp.density, mp.mean_a) > mfp20
+
+
+def test_mean_free_path_cross_check(ni_crystal):
+    """MFP via A/(rho N_A sigma) equals 1/(n sigma) from the number density."""
+    mp = MaterialProperties.from_crystal(ni_crystal)
+    sigma_nm2 = elastic_cross_section_na(mp.mean_z, 20.0) / C_AVOGADRO * 1e14  # cm^2 -> nm^2
+    mfp_from_n = 1.0 / (mp.number_density * sigma_nm2)
+    assert mfp_from_n == pytest.approx(
+        mean_free_path_nm(mp.mean_z, 20.0, mp.density, mp.mean_a), rel=1e-9
+    )
+
+
+def test_stopping_power(ni_crystal):
+    mp = MaterialProperties.from_crystal(ni_crystal)
+    de_ds = stopping_power(mp.mean_z, 20.0, mp.mean_a, mp.mean_ionization_kev)
+    assert de_ds < 0.0  # energy decreases
+    assert de_ds == pytest.approx(-8.15e-4, abs=5e-6)
+    # energy lost over one mean free path is small (slow, continuous slowing down)
+    mfp = mean_free_path_nm(mp.mean_z, 20.0, mp.density, mp.mean_a)
+    loss = -de_ds * mp.density * mfp
+    assert 0.0 < loss < 0.1  # keV
+
+
+def test_sample_scattering_cos():
+    alpha = screening_parameter(28, 20.0)
+    assert sample_scattering_cos(alpha, 0.0) == pytest.approx(1.0)  # forward
+    assert sample_scattering_cos(alpha, 1.0 - 1e-12) == pytest.approx(-1.0, abs=1e-3)  # backscatter
+    u = np.linspace(0.0, 1.0 - 1e-9, 500)
+    cos = sample_scattering_cos(alpha, u)
+    assert np.all(cos <= 1.0 + 1e-12) and np.all(cos >= -1.0 - 1e-12)
+    assert np.all(np.diff(cos) < 0)  # monotonically decreasing in u
+
+
+def test_rotate_direction_preserves_norm_and_angle():
+    rng = np.random.default_rng(0)
+    for _ in range(100):
+        c = rng.standard_normal(3)
+        c /= np.linalg.norm(c)
+        cos_theta = float(rng.uniform(-1, 1))
+        psi = float(rng.uniform(0, 2 * np.pi))
+        c_new = rotate_direction(c, cos_theta, psi)
+        assert np.linalg.norm(c_new) == pytest.approx(1.0, abs=1e-12)
+        assert float(c @ c_new) == pytest.approx(cos_theta, abs=1e-9)  # angle == theta
+
+
+def test_rotate_direction_pole_special_case():
+    # |c_z| ~ 1 branch: z-component becomes cos_theta, norm preserved
+    c_new = rotate_direction(np.array([0.0, 0.0, 1.0]), 0.3, 1.2)
+    assert np.linalg.norm(c_new) == pytest.approx(1.0, abs=1e-12)
+    assert c_new[2] == pytest.approx(0.3)
+
+
+def test_trajectory_deterministic_and_physical(ni_crystal):
+    mp = MaterialProperties.from_crystal(ni_crystal)
+    a = simulate_trajectory(mp, 20.0, rng=np.random.default_rng(42))
+    b = simulate_trajectory(mp, 20.0, rng=np.random.default_rng(42))
+    assert a == b  # same seed -> identical trajectory
+    assert 0.0 < a.exit_energy_kev < 20.0  # electron lost energy
+    assert a.max_depth_nm > 0.0
+    assert a.n_steps >= 1
+
+
+def test_backscatter_yield_sanity(ni_crystal, si_crystal):
+    """Coarse yield check; the precise accum_z validation is M-MC.4."""
+    ni = MaterialProperties.from_crystal(ni_crystal)
+    si = MaterialProperties.from_crystal(si_crystal)
+
+    def yield_at_tilt(mat, n=300):
+        rng = np.random.default_rng(0)
+        hits = sum(
+            simulate_trajectory(mat, 20.0, tilt_deg=70.0, e_min_kev=2.0,
+                                max_steps=400, rng=rng).backscattered
+            for _ in range(n)
+        )
+        return hits / n
+
+    eta_ni, eta_si = yield_at_tilt(ni), yield_at_tilt(si)
+    assert 0.3 < eta_ni < 0.85  # high at 70 deg tilt
+    assert 0.2 < eta_si < 0.75
+    assert eta_ni > eta_si  # higher Z backscatters more
