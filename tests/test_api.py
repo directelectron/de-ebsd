@@ -92,10 +92,15 @@ def test_refine_reuses_structure_factors(sim):
         sim.refine(npix=64)
 
 
-def test_bloch_backend_reports_roadmap(sim):
-    bloch = sim.refine(backend="bloch")
-    with pytest.raises(NotImplementedError, match="DESIGN.md"):
-        bloch.compute()
+def test_bloch_backend_runs(sim):
+    bloch = sim.refine(backend="bloch", npx=6)
+    master = bloch.compute()
+    assert master.metadata["backend"] == "bloch"
+    assert torch.all(torch.isfinite(master.data))
+    assert master.data.std() > 0  # real dynamical contrast
+    # centrosymmetric crystal: south hemisphere is the inverted north
+    north, south = master.data[0, 0], master.data[0, 1]
+    assert torch.allclose(south, torch.flip(north, dims=(0, 1)), atol=1e-4)
 
 
 def test_stereographic_and_equirectangular_views(master):

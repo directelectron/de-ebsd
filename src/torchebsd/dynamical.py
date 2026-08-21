@@ -37,6 +37,7 @@ from torchebsd.reflections import (
     master_reflection_list,
     partition_strong_weak,
 )
+from torchebsd.scattering import atomic_number
 from torchebsd.structure_factors import StructureFactors
 
 if TYPE_CHECKING:
@@ -236,36 +237,146 @@ class KinematicalBackend(MasterPatternBackend):
         return profile @ self._weight
 
 
-class BlochWaveBackend(MasterPatternBackend):
-    """The physical Bloch-wave backend (EMsoft algorithm). Scheduled.
+def calc_lgh(
+    a: np.ndarray,
+    kn: float,
+    thick: float,
+    depthstep: float,
+    lambda_e: np.ndarray,
+    gzero: int,
+) -> np.ndarray:
+    """The depth-integrated intensity matrix L_gh (EMsoft ``CalcLgh``).
 
-    The full algorithm is specified in DESIGN.md (section "The dynamical
-    algorithm", roadmap M2): per energy bin and beam direction, classify
-    reflections, build the dynamical matrix (:func:`build_dynamical_matrix`,
-    implemented and testable today), eigendecompose with
-    ``torch.linalg.eig``, depth-integrate against the Monte Carlo profile
-    (EMsoft ``CalcLgh``), weight with the S_gh matrix, and accumulate.
+    Eigendecompose the dynamical matrix ``a`` (complex, nm^-2), scale
+    eigenvalues by ``1/(2 kn)``, and integrate the Bloch-wave interference
+    against the Monte Carlo exit-depth profile ``lambda_e`` (already corrected
+    for normal absorption), returning ``L_gh = conj(C) I C^T``.
+    """
+    w, c = np.linalg.eig(a)  # right eigenvectors are the columns of c (LAPACK zgeev)
+    c_inv = np.linalg.inv(c)
+    w = w / (2.0 * kn)
+    alpha = c_inv[:, gzero]  # incident-beam excitation amplitudes CGinv(:, gzero)
+
+    tpi = 2.0 * np.pi * depthstep
+    re, im = w.real, w.imag
+    q_re = tpi * (im[:, None] + im[None, :])  # real part of q_jk
+    q_im = tpi * (re[:, None] - re[None, :])  # imaginary part
+    qold = q_re + 1j * q_im
+    qold = np.where(q_re < 0.0, -qold, qold)  # fold the real part positive
+
+    # sum_z lambda_E[z] exp(-qold z) is a Horner polynomial in r = exp(-qold):
+    # sum_{z=1..Z} lambda_z r^z, evaluated with Z complex multiply-adds instead
+    # of materializing and exponentiating the full [S, S, Z] tensor -- identical
+    # to machine precision, ~20x fewer exponentials (the dominant cost here).
+    r = np.exp(-qold)
+    q = np.zeros_like(r)
+    for z in range(len(lambda_e), 0, -1):
+        q = q * r + lambda_e[z - 1]
+    q = q * r
+    ijk = np.conj(alpha)[:, None] * q * alpha[None, :] * (depthstep / thick)
+    return np.conj(c) @ ijk @ c.T
+
+
+class BlochWaveBackend(MasterPatternBackend):
+    """The physical Bloch-wave backend (EMsoft ``CalcLgh`` + ``Sgh``).
+
+    Per beam direction: classify reflections (Bethe), build the dynamical
+    matrix, eigendecompose and depth-integrate (:func:`calc_lgh`), weight with
+    the structure-factor-like ``Sgh`` matrix, and reduce to one backscatter
+    intensity ``I(k) = Re sum_gh L_gh S_gh / n_atoms``.
+
+    This is the float64 reference path (one direction at a time), the M2
+    correctness milestone; the batched GPU path (bucket by strong-beam count +
+    batched eig) is the follow-up optimization behind the same interface.
     """
 
     name = "bloch"
 
     def prepare(self, inputs: SimulationInputs) -> None:
-        self._inputs = inputs
+        from torchebsd.montecarlo import DepthDistribution
+
+        self.sf = inputs.sf
+        self.bethe = inputs.bethe
+        self.device = inputs.device
+        self.out_dtype = inputs.dtype
+        crystal = inputs.sf.crystal
+
+        # depth integration (EMsoft lambdaE / thick / izzmax, one energy bin)
+        energy = inputs.sf.energy_kev
+        mc = inputs.monte_carlo or DepthDistribution.single_energy(energy)
+        izzmax = max(int(mc.integration_depths()[mc.energy_index(energy)]), 1)
+        self.depthstep = float(mc.depth_step)
+        self.thick = izzmax * self.depthstep
+        weights = mc.depth_weights(energy, inputs.sf.normal_absorption_length)
+        self.lambda_e = np.ascontiguousarray(weights[:izzmax], dtype=np.float64)
+        self.kn = 1.0 / inputs.sf.wavelength
+        self.gzero = 0
+        self.n_atoms = int(sum(p.shape[0] for p in crystal.positions))
+
+        self._build_sgh_lut(inputs.sf, crystal)
+
+    def _build_sgh_lut(self, sf: StructureFactors, crystal) -> None:
+        """Sgh(h - g) = sum_atoms Z^2 occ exp(-B |h-g|^2/4) exp(2 pi i (h-g).r).
+
+        Stored as a dense LUT over the same +/- 2 hmax difference box the
+        structure-factor table uses, so per-direction assembly is a lookup.
+        """
+        self.hmax = sf.hmax
+        m = 2 * self.hmax
+        rng = np.arange(-m, m + 1)
+        hh, kk, ll = np.meshgrid(rng, rng, rng, indexing="ij")
+        box = np.stack([hh, kk, ll], axis=-1).reshape(-1, 3)
+        g2 = crystal.g_length(box) ** 2  # |h-g|^2 in the reciprocal frame
+
+        pos, z2occ, bfac = [], [], []
+        for site, positions in zip(crystal.sites, crystal.positions, strict=True):
+            z = atomic_number(site.element)
+            pos.append(positions)
+            z2occ.append(np.full(positions.shape[0], z**2 * site.occupancy))
+            bfac.append(np.full(positions.shape[0], site.debye_waller))
+        pos = np.concatenate(pos)
+        z2occ = np.concatenate(z2occ)
+        bfac = np.concatenate(bfac)
+
+        phase = np.exp(2j * np.pi * (box @ pos.T))
+        dwf = np.exp(-0.25 * g2[:, None] * bfac[None, :])
+        sgh = (phase * dwf * z2occ[None, :]).sum(axis=1)
+        n = 4 * self.hmax + 1
+        self.sgh_lut = sgh.reshape(n, n, n).astype(np.complex128)
+
+    def _sgh_matrix(self, hkl_strong: np.ndarray) -> np.ndarray:
+        """Sgh[g, h] = Sgh_lut(hkl[h] - hkl[g]) for the strong-beam list."""
+        diff = hkl_strong[None, :, :] - hkl_strong[:, None, :]  # [g, h] = h - g
+        idx = diff + 2 * self.hmax
+        return self.sgh_lut[idx[..., 0], idx[..., 1], idx[..., 2]]
+
+    def _intensity(self, k_hat: np.ndarray) -> float:
+        refl = classify_reflections(self.sf, k_hat, self.bethe)
+        hkl_s = refl.hkl[refl.status == STRONG]
+        a = build_dynamical_matrix(self.sf, refl)
+        lgh = calc_lgh(a, self.kn, self.thick, self.depthstep, self.lambda_e, self.gzero)
+        sgh = self._sgh_matrix(hkl_s)
+        return float(np.real(np.sum(lgh * sgh)) / self.n_atoms)
 
     def intensities(self, directions: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError(
-            "The Bloch-wave solve (eigendecomposition + CalcLgh depth integration) "
-            "is scheduled work: see DESIGN.md, roadmap milestone M2. The dynamical "
-            "matrix itself is available via MasterPatternSimulator.dynamical_matrix(k). "
-            "Use backend='kinematical' for a geometry-only master pattern today."
-        )
+        dirs = directions.detach().cpu().numpy().astype(np.float64)
+        out = np.empty(dirs.shape[0], dtype=np.float64)
+        for i in range(dirs.shape[0]):
+            out[i] = self._intensity(dirs[i])
+        return torch.as_tensor(out, device=self.device, dtype=self.out_dtype)
 
 
 def resolve_backend(backend: str | MasterPatternBackend) -> MasterPatternBackend:
     """Map a backend name to an instance; pass instances through."""
     if isinstance(backend, MasterPatternBackend):
         return backend
-    named = {"kinematical": KinematicalBackend, "bloch": BlochWaveBackend}
+    from torchebsd.prism import BlochPrismBackend  # deferred: prism imports this module
+
+    named = {
+        "kinematical": KinematicalBackend,
+        "bloch": BlochWaveBackend,
+        "bloch_prism": BlochPrismBackend,
+    }
     try:
         return named[backend]()
     except KeyError:

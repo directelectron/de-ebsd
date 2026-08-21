@@ -3,7 +3,36 @@
 import numpy as np
 import pytest
 
+from torchebsd import Crystal
 from torchebsd.constants import electron_wavelength_nm
+from torchebsd.structure_factors import compute_structure_factors
+
+# Complex U_g in nm^-2 dumped from EMsoft's ``EMqg`` utility (mod_diffraction
+# ``CalcUcg``, WK branch) for Si.xtal at 20 kV with B = 0.0045 nm^2. Real part is
+# the elastic amplitude, imaginary part the WK absorptive (anomalous) term.
+_EMSOFT_SI_UCG = {
+    (1, 1, 1): -3.763433 - 0.192065j,
+    (2, 2, 0): -2.980579 - 0.192851j,
+    (3, 1, 1): -1.678949 - 0.121393j,
+    (4, 0, 0): -1.787894 - 0.149561j,
+    (3, 3, 1): 1.104824 + 0.099184j,
+    (4, 2, 2): 1.296174 + 0.128256j,
+    (5, 1, 1): 0.832973 + 0.086546j,
+    (4, 4, 0): 1.024494 + 0.114072j,
+}
+
+
+def test_ug_matches_emsoft():
+    """Weickenmeier-Kohl U_g agree with EMsoft (``EMqg``) for both the real
+    amplitude and the anomalous absorptive part, reflection by reflection."""
+    crystal = Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.0045
+    )
+    sf = compute_structure_factors(crystal, 20.0, dmin=0.1)
+    for hkl, ucg in _EMSOFT_SI_UCG.items():
+        got = complex(sf.lookup(np.array(hkl)))
+        assert got.real == pytest.approx(ucg.real, abs=1e-3)
+        assert got.imag == pytest.approx(ucg.imag, abs=1e-3)
 
 
 def test_diamond_absences(si_sf):

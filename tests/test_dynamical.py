@@ -59,14 +59,38 @@ def test_weak_beams_perturb_matrix(si_sf):
     assert with_weak.shape != no_weak.shape or not np.allclose(with_weak, no_weak)
 
 
-def test_bloch_backend_is_explicitly_unfinished(si_sf):
+def test_calc_lgh_single_beam():
+    """The depth integral for a single (incident) beam matches a direct sum."""
+    from torchebsd.dynamical import calc_lgh
+
+    a = np.array([[0.0 + 0.3j]], dtype=np.complex128)  # one strong beam
+    kn, thick, depthstep = 116.0, 50.0, 1.0
+    lam = np.exp(-np.arange(20) / 5.0)
+    lgh = calc_lgh(a, kn, thick, depthstep, lam, gzero=0)
+
+    w = a[0, 0] / (2 * kn)
+    qold = complex(2 * np.pi * depthstep * 2 * w.imag, 0.0)
+    if qold.real < 0:
+        qold = -qold
+    q = sum(lam[iz - 1] * np.exp(-qold * iz) for iz in range(1, len(lam) + 1))
+    expected = q * (depthstep / thick)
+    assert lgh.shape == (1, 1)
+    assert abs(lgh[0, 0] - expected) < 1e-9
+
+
+def test_bloch_backend_intensities(si_sf):
+    """The Bloch backend returns finite, non-uniform backscatter intensities."""
     backend = BlochWaveBackend()
     backend.prepare(
         SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
                          device=torch.device("cpu"), dtype=torch.float32)
     )
-    with pytest.raises(NotImplementedError, match="DESIGN.md"):
-        backend.intensities(torch.eye(3))
+    v = torch.randn(12, 3)
+    v = v / v.norm(dim=-1, keepdim=True)
+    intensity = backend.intensities(v)
+    assert intensity.shape == (12,)
+    assert torch.all(torch.isfinite(intensity))
+    assert intensity.std() > 0  # real dynamical contrast, not a constant map
 
 
 def test_kinematical_backend_intensities(si_sf):
