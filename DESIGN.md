@@ -30,14 +30,14 @@ until the EBSD chain is validated.
 The simulation chain mirrors abTEM's `Atoms -> Potential -> PlaneWave ->
 multislice -> Detector -> Measurement` composition:
 
-| abTEM | torchebsd | Responsibility |
-| --- | --- | --- |
-| `Atoms` | `Crystal` | lattice, space group, asymmetric unit, metric tensors, orbits |
-| `Potential` | `StructureFactors` | complex U_g with absorption, V_0, wavelength (stage, cached) |
-| `PlaneWave`/`Probe` | `Microscope` + `KVectorGrid` | beam energy, geometry; incident directions on the Lambert grid |
-| `multislice()` | `MasterPatternBackend` | intensity per beam direction (Bloch / kinematical / scattering matrix) |
-| measurement | `MasterPattern` | Lambert-stored sphere; `.show()`, `.sample()`, `.project()`, `.save()` |
-| `Detector` | `EBSDDetector` | pixel grid, projection center, tilts; direction cosines |
+| abTEM               | torchebsd                    | Responsibility                                                         |
+|---------------------|------------------------------|------------------------------------------------------------------------|
+| `Atoms`             | `Crystal`                    | lattice, space group, asymmetric unit, metric tensors, orbits          |
+| `Potential`         | `StructureFactors`           | complex U_g with absorption, V_0, wavelength (stage, cached)           |
+| `PlaneWave`/`Probe` | `Microscope` + `KVectorGrid` | beam energy, geometry; incident directions on the Lambert grid         |
+| `multislice()`      | `MasterPatternBackend`       | intensity per beam direction (Bloch / kinematical / scattering matrix) |
+| measurement         | `MasterPattern`              | Lambert-stored sphere; `.show()`, `.sample()`, `.project()`, `.save()` |
+| `Detector`          | `EBSDDetector`               | pixel grid, projection center, tilts; direction cosines                |
 
 ```
 Crystal --+
@@ -52,25 +52,25 @@ Microscope+          |
 
 Module layout (flat, one concern per module):
 
-| Module | Contents |
-| --- | --- |
-| `crystal.py` | `AtomSite`, `Crystal` (diffpy space-group operators; origin choice 2 handling) |
-| `microscope.py` | `Microscope` (energy, sample tilt; relativistic quantities) |
-| `bethe.py` | `BetheParameters` (EMsoft defaults 8 / 50 / 100 / 1.0) |
-| `scattering.py` | Weickenmeier-Kohl `FSCATT` port (numpy float64) |
-| `data/scattering_tables.py` | WK coefficient tables, generated from the Fortran source |
-| `structure_factors.py` | `compute_structure_factors`, `StructureFactors` (U_g lookup box) |
-| `lambert.py` | square-Lambert forward/inverse (torch), master-pattern grid |
-| `kvectors.py` | incident-direction sampling (`KVectorGrid`) |
-| `reflections.py` | `ReflectionList`, excitation errors, Bethe partition |
-| `dynamical.py` | `build_dynamical_matrix`, `DynamicalMatrix`, backend seam + backends |
-| `montecarlo.py` | `DepthDistribution` (EMsoft MC HDF5 reader, fallback model) |
-| `simulator.py` | `MasterPatternSimulator` (composition root, stages, refine) |
-| `masterpattern.py` | `MasterPattern` (sample/project/show/save) |
-| `detector.py` | `EBSDDetector` (kikuchipy-parity direction cosines) |
-| `rotation.py` | orix-order quaternion rotations (torch) |
-| `display.py` | the anyplotlib display layer (all `.show()` implementations) |
-| `widgets.py` | `SetupWidget` (anywidget geometry schematic) |
+| Module                      | Contents                                                                       |
+|-----------------------------|--------------------------------------------------------------------------------|
+| `crystal.py`                | `AtomSite`, `Crystal` (diffpy space-group operators; origin choice 2 handling) |
+| `microscope.py`             | `Microscope` (energy, sample tilt; relativistic quantities)                    |
+| `bethe.py`                  | `BetheParameters` (EMsoft defaults 8 / 50 / 100 / 1.0)                         |
+| `scattering.py`             | Weickenmeier-Kohl `FSCATT` port (numpy float64)                                |
+| `data/scattering_tables.py` | WK coefficient tables, generated from the Fortran source                       |
+| `structure_factors.py`      | `compute_structure_factors`, `StructureFactors` (U_g lookup box)               |
+| `lambert.py`                | square-Lambert forward/inverse (torch), master-pattern grid                    |
+| `kvectors.py`               | incident-direction sampling (`KVectorGrid`)                                    |
+| `reflections.py`            | `ReflectionList`, excitation errors, Bethe partition                           |
+| `dynamical.py`              | `build_dynamical_matrix`, `DynamicalMatrix`, backend seam + backends           |
+| `montecarlo.py`             | `DepthDistribution` (EMsoft MC HDF5 reader, fallback model)                    |
+| `simulator.py`              | `MasterPatternSimulator` (composition root, stages, refine)                    |
+| `masterpattern.py`          | `MasterPattern` (sample/project/show/save)                                     |
+| `detector.py`               | `EBSDDetector` (kikuchipy-parity direction cosines)                            |
+| `rotation.py`               | orix-order quaternion rotations (torch)                                        |
+| `display.py`                | the anyplotlib display layer (all `.show()` implementations)                   |
+| `widgets.py`                | `SetupWidget` (anywidget geometry schematic)                                   |
 
 Design rules:
 
@@ -180,20 +180,26 @@ gridding, chunking, and assembly; backends own physics.
   of half-width theta_B weighted by |U_g|^2. One (K, G) matmul; correct
   band geometry, placeholder profiles. It exists to validate conventions
   end to end and to keep the pipeline runnable.
-- `BlochWaveBackend` [M2]: the physical model. GPU plan: classify all K
-  directions in torch (excitation errors are already batched), bucket
-  directions by strong-beam count, pad each bucket to a common size, and
-  run batched `torch.linalg.eig` + batched inversion + einsum depth
-  integration per bucket. FP32/complex64 first with an FP64 accuracy audit
-  against the CPU reference implementation (eigensolves are the accuracy
-  risk); chunk sizes bound peak memory. The CPU reference path reuses
-  the already-implemented `build_dynamical_matrix` verbatim.
-- Scattering-matrix backend [M5, designed extension point]: PRISM-style
-  acceleration -- precompute Bloch solutions (or exponentials of A) on a
-  coarse direction grid, then interpolate the compact scattering matrix
-  across nearby directions instead of re-solving per pixel. It slots in as
-  a third `MasterPatternBackend` with no API change; the accuracy knob is
-  the coarse-grid spacing, validated against the exact backend.
+- `BlochWaveBackend` (`bloch`) [M2, implemented]: the exact reference. Per
+  direction: classify (Bethe), build the dynamical matrix, eigendecompose and
+  depth-integrate (`calc_lgh`, with a Horner depth sum), weight with `S_gh`.
+  float64, one direction at a time -- the correctness oracle. The non-Hermitian
+  eigendecomposition neither batches nor GPU-accelerates (cuSOLVER has no
+  batched general-eig kernel; `torch.linalg.eig` on cuda ~= cpu), so this path
+  is CPU-bound and exists to validate the fast backend, not for production.
+- `BlochPrismBackend` (`bloch_prism`) [implemented]: the production GPU path.
+  Replaces the eigendecomposition with the physically equivalent scattering
+  matrix `exp(2 pi i A/(2 kn) z)` (batched `torch.linalg.matrix_exp`, pure
+  matmul) followed by a depth recurrence -- no eig. The whole pipeline is
+  batched: excitation errors, a candidate-restricted Bethe partition, the
+  dynamical-matrix build (weak folding), the propagation, and the `S_gh`
+  reduction, bucketed by strong-beam count so each batch is a uniform
+  `[B, S, S]`. Reproduces the reference to ~1e-13 (fp64) / ~1e-4 (fp32).
+  Measured: a full npx-500 Si master (~2e6 directions) in ~50 s at
+  **r = 1.0000** vs EMsoft on a Pascal TITAN X -- the run that makes a
+  native-resolution parity check practical (the eig reference would need ~1e6
+  eigendecompositions). A further PRISM-style coarse-grid interpolation of the
+  scattering matrix (M5) remains an optional accuracy/speed knob.
 - Symmetry reduction [M3]: sample only the fundamental sector
   (EMsoft `SamplingType` tables) and replicate -- an order-of-magnitude
   saving for high-symmetry crystals, orthogonal to the backend choice.
@@ -236,12 +242,18 @@ replacing the numpy structure-factor input with a torch one.
 
 ## 8. Validation
 
-EMsoft is the ground-truth oracle:
+EMsoft is the ground-truth oracle -- for *validation only*; torchebsd computes
+the master pattern itself and does not call EMsoft at runtime:
 
-- Ni, 20 keV, npx = 200: `kikuchipy.data.nickel_ebsd_master_pattern_small`.
-- Si, 20 keV, npx = 500, 11 energy bins: `D:\emsoft\EMdata\Si_MC.h5`
-  (also provides the Monte Carlo statistics used as simulation input, and
-  the exact crystal data and Bethe parameters of the reference run).
+- Ni, 20 keV, npx = 200: `kikuchipy.data.nickel_ebsd_master_pattern_small`
+  (bundled with kikuchipy -- Ni validates with no external files).
+- Si, 20 keV, npx = 500, 11 energy bins: a local EMsoft `Si_MC.h5` run (path
+  via `--mc` / `TORCHEBSD_SI_MC`; the file is not redistributed). It also
+  provides the reference-run Monte Carlo depth statistics, crystal data, and
+  Bethe parameters. When no MC file is supplied the depth integration falls back
+  to torchebsd's own `single_energy` model, so simulation stays EMsoft-free; a
+  native Monte Carlo that makes that path physically accurate is the next
+  milestone (M-MC below).
 
 `scripts/validate_master_pattern.py` builds the same crystal, simulates,
 resamples the reference onto the simulated grid through the shared
@@ -249,13 +261,24 @@ resamples the reference onto the simulated grid through the shared
 correlation per hemisphere -- scale invariant, so normalization differences
 do not matter; frame or symmetry errors collapse it toward zero.
 
-Current numbers (kinematical placeholder): Ni r = 0.64, Si r = 0.47, with
-identical north/south values as required by centrosymmetry -- band
-positions align, so the crystal frame, Lambert layout, and hemisphere
-conventions are right. The M2 acceptance gate is r >= 0.99 on both
-references with the Bloch backend at matched dmin and Bethe parameters.
+M2 status (backend done; Ni parity open). The exact `bloch` reference and the
+batched `bloch_prism` backend both reproduce EMsoft. The residual that initially capped Si near 0.94
+was traced not to the scattering factors (torchebsd `U_g` match EMsoft
+`CalcUcg` to <0.003%) but to the Bethe partition promoting systematically
+absent reflections to strong beams; excluding them (`status[forbidden] =
+IGNORED`) makes the strong-beam map pixel-exact against EMsoft. At matched
+resolution torchebsd equals EMsoft's own master to r = 1.00000; a full native
+npx-500 Si master via `bloch_prism` scores **r = 1.0000** against `Si_MC.h5`
+in ~50 s on a Pascal TITAN X (numbers from the maintainer's GPU, not
+reproduced in CI). The acceptance gate (r >= 0.99 on both references) is
+**met for Si (r = 1.0000)**; **Ni reaches r = 0.93** with its own Monte Carlo
+depth profile and remains below the bar -- an open item, tracked to reference
+provenance / settings rather than the diffraction physics (Si is pixel-exact),
+and not yet closed. The kinematical placeholder scores Ni 0.64 / Si 0.47 with
+identical north/south values -- band positions align, so the crystal frame,
+Lambert layout, and hemisphere conventions were right.
 
-The pytest suite (71 tests) covers: metric tensors and EMsoft structure
+The pytest suite (78 tests) covers: metric tensors and EMsoft structure
 matrices, orbit expansion including origin choice 2, WK tables verbatim
 against the Fortran source, Ei(x) against Abramowitz & Stegun, structure
 factor absences (diamond 200/222, FCC mixed parity), V_0 and wavelength
@@ -271,11 +294,20 @@ refine / save / project, and headless display + widget smoke tests.
   verifiable chain: crystal / WK structure factors with absorption /
   Lambert / reflections + Bethe / dynamical matrix / MC reader / detector
   / display + widget; kinematical end-to-end; validation harness green.
-- **M2 -- Bloch-wave backend.** Port `CalcLgh` + `S_gh` (steps 6-7 above):
-  first a CPU float64 reference solving one direction at a time (validated
-  beam-by-beam against EMsoft debug output if needed), then the batched
-  GPU path (bucket + pad + batched eig). Acceptance: Ni and Si
-  correlations >= 0.99.
+- **M2 -- Bloch-wave backend [done].** `CalcLgh` + `S_gh` ported: the
+  `bloch` float64 reference (one direction at a time) and the batched GPU
+  `bloch_prism` backend. The GPU path uses the scattering matrix
+  (`matrix_exp`), not batched eig -- non-Hermitian eig does not GPU-batch, and
+  the depth integration, not the eig, was the cost. Acceptance: Si r = 1.0000
+  (meets the >= 0.99 gate); Ni r = 0.93 (below the gate, open item).
+- **M-MC -- native Monte Carlo [next].** An EMsoft-independent electron
+  transport Monte Carlo for the exit depth/energy statistics: screened
+  Rutherford (or Mott) elastic scattering + a CSDA (Joy-Luo/Bethe) stopping
+  power, electrons into a tilted bulk sample, histogrammed to `accum_z` /
+  `accum_e` and reduced to `lambda_E(z)`. Removes the last EMsoft *runtime*
+  dependency (the depth profile), replacing the coarse `single_energy` stand-in;
+  EMsoft `accum_z` remains the validation oracle for the MC itself. This is the
+  priority follow-up to M2.
 - **M3 -- energy and symmetry.** Energy-bin loop with `lambda_E(z)`
   weighting; symmetry-reduced k sampling with `Apply3DPGSymmetry`
   replication; ITA origin-shift table; hexagonal Lambert grid for
@@ -284,8 +316,10 @@ refine / save / project, and headless display + widget smoke tests.
 - **M4 -- differentiability.** Torch structure factors (lattice, DW
   gradients); autograd through the Bloch solve; FP32 vs FP64 accuracy
   audit and dtype policy.
-- **M5 -- scattering-matrix backend.** PRISM-style coarse-grid
-  precomputation + interpolation as a third backend; accuracy/speed study
-  against the exact backend.
+- **M5 -- scattering-matrix backend [core done as `bloch_prism`].** The exact
+  per-direction scattering matrix (`matrix_exp`) is implemented and is the
+  production backend. Remaining optional extension: PRISM-style coarse-grid
+  precomputation + interpolation of the scattering matrix across nearby
+  directions, with a coarse-grid-spacing accuracy/speed study.
 - **M6 -- interoperability.** EMsoft-format HDF5 export, kikuchipy signal
   adapters, documented handoff to the `nn_hrebsd` projector.
