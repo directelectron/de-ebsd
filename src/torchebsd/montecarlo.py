@@ -78,8 +78,13 @@ class DepthDistribution:
     ) -> DepthDistribution:
         """A simple exponential exit-depth model for one energy bin.
 
-        A stand-in when no Monte Carlo file is available; the master pattern
-        then integrates ``exp(-z / decay_length)`` down to ``thickness`` nm.
+        The EMsoft-independent default: used whenever no Monte Carlo statistics
+        are supplied, so the master pattern is computable standalone. The depth
+        integration then weights ``exp(-z / decay_length)`` down to ``thickness``
+        nm. This is a coarse stand-in -- it reproduces band *geometry* but not
+        the full dynamical depth contrast; a native electron Monte Carlo that
+        supersedes it (and removes the EMsoft depth-file dependency entirely) is
+        on the roadmap (DESIGN.md).
         """
         n_z = int(round(thickness / depth_step))
         z = depth_step * np.arange(n_z)
@@ -133,6 +138,9 @@ class DepthDistribution:
         ``exp(+2 pi z / x_gp)`` to cancel the normal absorption that the
         Bloch eigenvalues already contain.
         """
+        # EMsoft's lateral window is -nsx/10:nsx/10 with nsx = (numsx-1)/2; for
+        # the stored accum_z that window spans its full lateral extent, so the
+        # full lateral sum is the correct match.
         i_e = self.energy_index(energy_kev)
         fraction = self.accum_z[i_e].sum(axis=(1, 2)) / self.n_total
         z = self.depth_step * np.arange(self.n_depths)

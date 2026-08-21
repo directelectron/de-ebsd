@@ -1,30 +1,38 @@
 """Validate torchebsd master patterns against EMsoft reference data.
 
-The references are dynamical (Bloch-wave) EMsoft master patterns:
+EMsoft is the validation *oracle* only -- torchebsd computes the master pattern
+itself (see DESIGN.md). This script builds the same crystal, simulates, and
+correlates against a reference EMsoft master pattern:
 
-- Ni: ``kikuchipy.data.nickel_ebsd_master_pattern_small`` (20 keV, npx = 200)
-- Si: the EMsoft run at ``D:\\emsoft\\EMdata\\Si_MC.h5`` (20 keV, npx = 500)
+- Ni: ``kikuchipy.data.nickel_ebsd_master_pattern_small`` (20 keV, npx = 200),
+  bundled with kikuchipy, so Ni runs with no external files.
+- Si: an EMsoft ``*_MC.h5`` run (20 keV, npx = 500), which also carries the
+  crystal data, Bethe parameters, and Monte Carlo depth statistics of the
+  reference run. Point ``--mc`` (or ``TORCHEBSD_SI_MC``) at your local copy.
 
-The comparison metric is the per-pixel Pearson correlation of the square
-Lambert maps (scale invariant: the intensity normalizations differ). The
-reference is resampled onto the simulated grid through the same validated
-interpolation used for projection, so any npx works.
+The reference HDF5 files are *not* redistributed here; there is no default that
+works on another machine. The comparison metric is the per-pixel Pearson
+correlation of the square Lambert maps (scale invariant: normalizations
+differ), the reference resampled onto the simulated grid through the same
+validated interpolation used for projection, so any npx works.
 
-While the Bloch-wave backend is unfinished (DESIGN.md, M2), the kinematical
-backend is compared instead: band positions should agree (frame conventions
-correct) while band profiles do not, so intermediate correlations are the
-expected outcome. Once the Bloch backend lands, this script is the parity
-gate and should approach a correlation of 1.0.
+The exit-depth profile that weights the Bloch depth integration comes from the
+EMsoft Monte Carlo file when one is supplied; otherwise torchebsd falls back to
+its own single-energy exponential model (``DepthDistribution.single_energy``),
+so the simulation stays runnable with no EMsoft input. A native Monte Carlo
+that removes this last runtime dependency is on the roadmap (DESIGN.md).
 
 Usage::
 
-    uv run python scripts/validate_master_pattern.py --material ni --device cuda
-    uv run python scripts/validate_master_pattern.py --material si --html out.html
+    uv run python scripts/validate_master_pattern.py --material ni --backend bloch_prism
+    uv run python scripts/validate_master_pattern.py --material si --backend bloch_prism \\
+        --mc /path/to/Si_MC.h5 --device cuda
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 
 import numpy as np
 import torch
@@ -32,7 +40,15 @@ import torch
 import torchebsd as te
 from torchebsd.lambert import master_pattern_grid
 
-SI_MC_PATH = r"D:\emsoft\EMdata\Si_MC.h5"
+# Reference EMsoft HDF5 paths. Overridable per material via the environment or
+# the --mc flag; the built-in fallbacks are the maintainer's local paths and are
+# not expected to exist elsewhere (the files are not redistributed).
+SI_MC_PATH = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+# Optional Monte Carlo exit-depth statistics for Ni (kikuchipy ships only the
+# master pattern, not the MC run). Generate with EMsoft (EMMCOpenCL on Ni.xtal,
+# same settings as Si_MC). If absent the Bloch backend falls back to torchebsd's
+# own single-energy depth model, which washes out the dynamical contrast.
+NI_MC_PATH = os.environ.get("TORCHEBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")
 
 
 def load_reference_ni() -> tuple[te.MasterPattern, dict]:
@@ -47,10 +63,17 @@ def load_reference_ni() -> tuple[te.MasterPattern, dict]:
     return reference, params
 
 
-def load_reference_si() -> tuple[te.MasterPattern, dict]:
+def load_reference_si(path: str) -> tuple[te.MasterPattern, dict]:
     import h5py
 
-    with h5py.File(SI_MC_PATH, "r") as f:
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"Si reference not found: {path}\n"
+            "Si validation needs the EMsoft Si_MC.h5 reference run (it supplies "
+            "the reference master pattern, crystal data, and Bethe parameters).\n"
+            "Point --mc or the TORCHEBSD_SI_MC environment variable at your copy."
+        )
+    with h5py.File(path, "r") as f:
         i_e = -1  # highest energy bin = 20 keV
         north = np.asarray(f["EMData/EBSDmaster/mLPNH"][0, i_e], dtype=np.float32)
         south = np.asarray(f["EMData/EBSDmaster/mLPSH"][0, i_e], dtype=np.float32)
@@ -58,6 +81,7 @@ def load_reference_si() -> tuple[te.MasterPattern, dict]:
         dmin = float(np.asarray(f["NMLparameters/EBSDMasterNameList/dmin"])[0])
         lattice = np.asarray(f["CrystalData/LatticeParameters"])  # nm, degrees
         atom_data = np.asarray(f["CrystalData/AtomData"])  # (5, n): x y z occ B
+        bethe = np.asarray(f["EMData/EBSDmaster/BetheParameters"])  # c1 c2 c3 sgdbdiff
     data = torch.as_tensor(np.stack([north, south]))[None]
     reference = te.MasterPattern(data=data, energies_kev=np.array([energy]),
                                  metadata={"backend": "EMsoft (Si_MC.h5)"})
@@ -68,6 +92,8 @@ def load_reference_si() -> tuple[te.MasterPattern, dict]:
         "sites": [te.AtomSite("Si", (float(x), float(y), float(z)), float(occupancy), float(dw))],
         "debye_waller": float(dw),
         "dmin": dmin,
+        "bethe": te.BetheParameters(strong=float(bethe[0]), weak=float(bethe[1]),
+                                    cutoff=float(bethe[2]), sg_double=float(bethe[3])),
     }
     return reference, params
 
@@ -89,10 +115,18 @@ def main() -> None:
                         help="dmin in nm (default: the reference run's value)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--backend", default="kinematical")
+    parser.add_argument(
+        "--mc", default=None,
+        help="EMsoft reference HDF5 for this material (Si: the reference+MC run; "
+             "Ni: optional exit-depth MC to refine the depth profile). Overrides "
+             "TORCHEBSD_{SI,NI}_MC and the built-in default.")
     parser.add_argument("--html", default=None, help="save a side-by-side figure to this file")
     args = parser.parse_args()
 
-    reference, params = load_reference_ni() if args.material == "ni" else load_reference_si()
+    mc_path = args.mc or {"si": SI_MC_PATH, "ni": NI_MC_PATH}[args.material]
+    reference, params = (
+        load_reference_ni() if args.material == "ni" else load_reference_si(mc_path)
+    )
     npx = args.npx if args.npx is not None else reference.npx
     dmin = args.dmin if args.dmin is not None else params["dmin"]
 
@@ -103,8 +137,17 @@ def main() -> None:
     )
     energy_kev = float(reference.energies_kev[-1])
     microscope = te.Microscope(energy=energy_kev * 1e3)
+    # The Bloch backend weights the depth integration by the exit-depth profile;
+    # use the reference EMsoft Monte Carlo when available so the profile matches
+    # exactly, otherwise fall back to torchebsd's own single-energy model.
+    monte_carlo = None
+    if mc_path and os.path.exists(mc_path):
+        from torchebsd.montecarlo import DepthDistribution
+
+        monte_carlo = DepthDistribution.from_emsoft(mc_path)
     simulator = te.MasterPatternSimulator(
-        crystal, microscope, npx=npx, dmin=dmin, backend=args.backend
+        crystal, microscope, npx=npx, dmin=dmin, backend=args.backend,
+        monte_carlo=monte_carlo, bethe=params.get("bethe"),
     )
     print(simulator)
     print(simulator.structure_factors())
