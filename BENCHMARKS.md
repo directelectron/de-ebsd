@@ -64,9 +64,15 @@ The first benchmark attempt used setting 1 and scored 0.588 — a textbook
 origin-choice pitfall, not a physics gap; with setting 2, Si is pixel-exact (and
 the canonical npx-500 validation against `Si_MC.h5` is `r = 1.0000`).
 
-‡ See [Findings](#findings): these are convention mismatches (hexagonal Cartesian
-frame; monoclinic space-group setting), the signature being partial (Ti) or full
-(ZrO2) decorrelation of two *internally valid* but differently-conventioned crystals.
+‡ **Ti** is *not* a frame/orientation mismatch: torchebsd's crystal frame is
+verified identical to orix's, the hexagonal metric is exact (d-spacings match
+analytic hcp to 1e-4), and the two masters share the same band geometry and
+orientation (no rigid rotation/mirror improves the match). The residual is a
+contrast/intensity difference in the hexagonal dynamical computation — an open
+item, small and localised, not a convention error. **ZrO2** is a space-group
+**setting** mismatch (the two codes build different cells from the same numbers —
+`r = 0`, the Si origin bug writ large for monoclinic); see
+[Conventions](#crystallographic-conventions-across-software).
 
 ## Speed
 
@@ -89,6 +95,52 @@ per-direction eigendecomposition EMsoft uses would need ~10^6 eigensolves.
 > treat the **~10x order-of-magnitude** as the robust claim, not any single
 > second-count.
 
+## Crystallographic conventions across software
+
+EBSD master patterns only compare pixel-for-pixel when two codes agree on a
+stack of conventions. torchebsd deliberately follows the **orix / kikuchipy**
+ecosystem (it already depends on orix); EMsoft is the physics oracle. Here is
+where each convention lives and whether they agree.
+
+| Convention | torchebsd | orix / kikuchipy | EMsoft | Agree? |
+| --- | --- | --- | --- | --- |
+| Crystal Cartesian frame | `direct_structure_matrix`: **x ∥ a, z ∥ c** | `Phase.structure.lattice.base`: **x ∥ a, z ∥ c** | x ∥ a for cubic/tetragonal; hexagonal frame differs subtly | torchebsd **= orix** (verified, bit-identical); EMsoft matches for cubic/tetragonal |
+| Lambert projection | square Rosca–Lambert | square Rosca–Lambert (reads EMsoft `mLPNH`) | square `mLPNH` output (hexagonal has an internal sampling variant) | yes for cubic (r = 1.0) |
+| Space-group engine | diffpy `GetSpaceGroup` | diffpy (same) | internal tables + `SpaceGroupSetting` | needs matching `setting` |
+| Origin choice | diffpy default (e.g. **2** for Fd-3m) | diffpy default | `SpaceGroupSetting` (1 or 2) | must be set to match — Si needs 2 |
+| Monoclinic/triclinic setting | diffpy default (unique axis b, cell choice 1) | diffpy default | `SpaceGroupSetting` | **mismatch** for ZrO2 → r = 0 |
+| Bethe parameters (default) | strong 8 / weak 50 / cutoff 100 | n/a | c1 4 / c2 8 / c3 50 | **differ** — must be matched |
+| Structure factors | Weickenmeier–Kohl | n/a | Weickenmeier–Kohl | yes (U_g match to < 0.003 %) |
+| Monte Carlo depth | native (EMsoft-free) or reads `accum_z` | uses EMsoft's | OpenCL, required | same profile when shared |
+
+**What this means in practice**
+
+- **The crystal frame is settled.** `torchebsd.Crystal.direct_structure_matrix`
+  transposed equals `orix.crystal_map.Phase(...).structure.lattice.base` exactly
+  (verified for hexagonal, the case where the a vs a\* choice matters). So a
+  torchebsd master is drop-in for the orix/kikuchipy world — the same convention
+  kikuchipy assumes when it loads an EMsoft master and applies orix orientations.
+  (Note: *raw* `diffpy.structure.Lattice(...).base` uses a different default
+  rotation; orix's `Phase` normalises it to x ∥ a, which is what torchebsd uses.)
+
+- **Matching EMsoft is a two-knob job** for high-symmetry: set the **Bethe
+  parameters** (EMsoft 4/8/50, not torchebsd's 8/50/100 default) and the
+  **origin choice** (`SpaceGroupSetting = 2` for diamond-type). With those,
+  cubic and tetragonal are pixel-exact (Ni, Si, GaAs, TiO2 above).
+
+- **Monoclinic/triclinic settings are the genuinely hard part.** Space group 14
+  alone has several settings (P2₁/c, P2₁/a, P2₁/n; unique axis b or c). diffpy
+  and EMsoft must be told the *same* one; otherwise they build different cells
+  from identical numbers and the patterns are uncorrelated (ZrO2, r = 0). This is
+  a specification/round-trip task (agree the setting string, or exchange the full
+  symmetry-expanded atom list) rather than a physics gap.
+
+- **Hexagonal has a small residual beyond conventions** (Ti, r = 0.87): frame,
+  metric, and band geometry all match, but the intensity distribution differs
+  slightly. This is the one item that is *not* explained by a convention and is
+  open for investigation (it aligns with the "hexagonal Lambert grid" work
+  already noted in DESIGN.md, M3).
+
 ## Findings
 
 1. **The dynamical physics is at full parity.** For every high-symmetry case,
@@ -102,29 +154,31 @@ per-direction eigendecomposition EMsoft uses would need ~10^6 eigensolves.
    (kikuchipy) was also computed with unknown settings. Matching them closes it:
    `r = 1.00000`.
 
-3. **Low-symmetry parity is gated by crystallographic conventions, not the
-   solver.** Two independent codes must agree on:
-   - **Origin choice** (e.g. Fd-3m setting 1 vs 2) — Si demonstrates this.
-   - **Space-group setting** for monoclinic/triclinic (unique axis, cell choice).
-     ZrO2 (sg 14) scored `r = 0` — the signature of the two codes building
-     *different* cells from the same numbers, exactly like the Si origin bug
-     writ large.
-   - **Hexagonal Cartesian frame** — Ti scored 0.871; the pattern is right but
-     rotated by the a-axis convention. torchebsd's hexagonal grid handling is
-     already flagged as open work in DESIGN.md (M3).
+3. **torchebsd already follows the orix/kikuchipy conventions.** Its crystal
+   Cartesian frame is bit-identical to orix's `Phase.lattice.base`, its metric
+   is exact, and its Lambert projection matches. So for the ecosystem it targets,
+   the conventions are settled — see
+   [Conventions](#crystallographic-conventions-across-software).
 
-   These are alignment tasks (match the setting/frame), not evidence of a
-   diffraction error — but until they are done, **low-symmetry parity is not
-   established**.
+4. **Low-symmetry EMsoft parity is gated by two remaining items:**
+   - **Space-group setting** for monoclinic/triclinic. ZrO2 (sg 14) scored
+     `r = 0` because diffpy/orix and EMsoft chose different settings for the same
+     numbers — a specification task (agree the setting), not a diffraction error;
+     the Si origin choice is the same class of pitfall, and it was closable.
+   - **A hexagonal intensity residual** (Ti, `r = 0.87`) that is *not* a
+     convention: frame, metric, and band geometry all match; only the intensity
+     distribution differs slightly. This is the single open physics-side item and
+     tracks the hexagonal-Lambert work in DESIGN.md (M3).
 
 ## What this means
 
 For the phases that dominate practical EBSD — cubic and tetragonal metals,
 semiconductors, and oxides, single- and multi-component — **torchebsd is a
 drop-in, bit-exact replacement for EMsoft's master-pattern computation, ~10x
-faster on a GPU, and differentiable.** Low-symmetry (hexagonal frame,
-monoclinic/triclinic settings) is the remaining frontier and is convention work,
-not physics.
+faster on a GPU, and differentiable**, and it already speaks the orix/kikuchipy
+convention. The remaining frontier is narrow: **monoclinic/triclinic space-group
+setting agreement** (a specification task) and **one hexagonal intensity residual**
+(the lone physics-side open item, ~0.87 with matching band geometry).
 
 ## Reproducing
 
