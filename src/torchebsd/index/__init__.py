@@ -14,6 +14,7 @@ from __future__ import annotations
 
 __all__ = [
     "SphericalIndexer",
+    "master_from_emsoft",
     "phase_from_crystal",
     "refine_orientation",
     "show_correlation",
@@ -37,7 +38,7 @@ def __getattr__(name: str):
         from torchebsd.index.refine import refine_orientation
 
         return refine_orientation
-    if name in ("phase_from_crystal", "to_crystal_map"):
+    if name in ("phase_from_crystal", "to_crystal_map", "master_from_emsoft"):
         from torchebsd.index import io
 
         return getattr(io, name)
