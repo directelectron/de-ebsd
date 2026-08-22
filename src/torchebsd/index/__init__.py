@@ -12,7 +12,7 @@ scaffolded -- implementations land per milestone.
 
 from __future__ import annotations
 
-__all__ = ["SphericalIndexer", "phase_from_crystal", "to_crystal_map"]
+__all__ = ["SphericalIndexer", "phase_from_crystal", "refine_orientation", "to_crystal_map"]
 
 
 def __getattr__(name: str):
@@ -22,6 +22,10 @@ def __getattr__(name: str):
         from torchebsd.index.indexer import SphericalIndexer
 
         return SphericalIndexer
+    if name == "refine_orientation":
+        from torchebsd.index.refine import refine_orientation
+
+        return refine_orientation
     if name in ("phase_from_crystal", "to_crystal_map"):
         from torchebsd.index import io
 

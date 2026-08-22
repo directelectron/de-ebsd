@@ -327,6 +327,63 @@ class SphericalIndexer:
         rotations = grid_to_rotation(self.bandwidth, j, k, p)
         return rotations, quality.detach()
 
+    def refine(
+        self,
+        patterns,
+        rotations=None,
+        pc=None,
+        refine_pc=False,
+        n_iters=100,
+        lr=0.05,
+        pc_lr=None,
+        return_history=False,
+    ):
+        """Gradient-refine indexed orientations (and optionally the pattern center).
+
+        Convenience wrapper around :func:`torchebsd.index.refine.refine_orientation` that
+        supplies this indexer's own master, detector, device and -- crucially -- its SHT
+        quadrature grid directions (``self._dirs``), so the refinement scores over the
+        *same* grid the coarse index used. If ``rotations`` is ``None`` the seeds are
+        obtained by calling :meth:`index` first, so a single call goes straight from raw
+        patterns to sharpened orientations (I6).
+
+        Parameters
+        ----------
+        patterns
+            A single detector image ``(H, W)`` or a stack ``(Np, H, W)`` (numpy or torch).
+        rotations
+            Seed orientations, an :class:`orix.quaternion.Rotation` of length ``Np``. If
+            ``None`` (default), :meth:`index` is run on ``patterns`` to obtain them.
+        pc, refine_pc, n_iters, lr, pc_lr, return_history
+            Passed through to :func:`~torchebsd.index.refine.refine_orientation` (see its
+            docstring). ``pc`` defaults to the indexer's ``detector.pc``.
+
+        Returns
+        -------
+        tuple
+            ``(rotation, score)`` -- the refined orix ``Rotation`` and final NCC of each
+            pattern; ``pc`` appended when ``refine_pc``, ``history`` appended when
+            ``return_history`` (same order as
+            :func:`~torchebsd.index.refine.refine_orientation`).
+        """
+        from torchebsd.index.refine import refine_orientation
+
+        if rotations is None:
+            rotations, _ = self.index(patterns)
+        return refine_orientation(
+            patterns,
+            self.master,
+            self.detector,
+            rotations,
+            pc=pc,
+            refine_pc=refine_pc,
+            n_iters=n_iters,
+            lr=lr,
+            pc_lr=pc_lr,
+            directions=self._dirs,
+            return_history=return_history,
+        )
+
     def index_scan(
         self,
         patterns,
@@ -335,6 +392,9 @@ class SphericalIndexer:
         phase=None,
         batch_size=None,
         normalize=True,
+        refine=False,
+        refine_iters=100,
+        refine_lr=0.05,
     ):
         """Index a whole scan and assemble the result into an orix ``CrystalMap``.
 
@@ -380,12 +440,23 @@ class SphericalIndexer:
         normalize
             Passed through to :meth:`index` (default ``True``, the locally-normalized
             masked cross-correlation).
+        refine
+            If ``True``, each mini-batch's coarse orientations are gradient-refined
+            (I6) with :meth:`refine` before assembly, and ``prop["quality"]`` becomes
+            the refined NCC score. The pattern center is *not* refined here (a scan
+            shares one detector geometry; joint pattern-center fitting over a whole scan
+            is left for later) -- only the orientations are sharpened. Default ``False``.
+        refine_iters, refine_lr
+            Adam iterations and rotation learning rate for the per-batch refinement when
+            ``refine`` is ``True`` (see
+            :func:`~torchebsd.index.refine.refine_orientation`).
 
         Returns
         -------
         orix.crystal_map.CrystalMap
             One orientation + ``prop["quality"]`` per scan point, single phase
-            (``phase_id`` all zero), on the ``(rows, cols)`` grid.
+            (``phase_id`` all zero), on the ``(rows, cols)`` grid. With ``refine=True``
+            the orientations are gradient-sharpened and the quality is the refined NCC.
         """
         import numpy as np
         from orix.quaternion import Rotation
@@ -431,6 +502,11 @@ class SphericalIndexer:
         for start in range(0, n, bs):
             chunk = patt[start : start + bs]
             rot_c, qual_c = self.index(chunk, normalize=normalize)
+            if refine:
+                # sharpen the coarse seeds; the refined NCC replaces quality
+                rot_c, qual_c = self.refine(
+                    chunk, rotations=rot_c, n_iters=refine_iters, lr=refine_lr
+                )
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c)
         rotations = Rotation(np.concatenate(rot_chunks, axis=0))
