@@ -160,8 +160,8 @@ constructor. Tests in `tests/test_montecarlo_sim.py`.
 | M-MC.2 | numpy single-trajectory reference + physics unit tests | M — **done** |
 | M-MC.3 | vectorized torch batch MC (hard mode) → `DepthDistribution.from_simulation` | M–L — **done** |
 | M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity | M — **done** |
-| M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L |
-| M-MC.6 | gradient validation (autograd vs CRN finite diff) + `τ`-annealing study | M |
+| M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L — **done** |
+| M-MC.6 | gradient validation (autograd vs CRN finite diff) + `τ`-annealing study | M — **done** |
 | M-MC.7 | wire in as the default depth source; docs; roadmap update | S — **done** |
 
 Sequencing: **M-MC.3 (hard mode) first** — it pins physics correctness against
@@ -258,3 +258,27 @@ Every energy bin agrees to > 0.995; mean exit depths match within ~0.5 nm (Si
   drops them; requiring an electron to have entered the bulk before a backscatter
   counts restores the top bin to 0.998. A `penetrated` flag enforces this in both
   the scalar reference and the batched MC.
+
+---
+
+## Appendix C. M-MC.5/.6 differentiable soft mode
+
+`soft_depth_histogram` is the reparameterized, differentiable counterpart of
+`simulate_depth_distribution`: detached uniforms, a fixed step count with sigmoid
+survival/exit gates, and bilinear (linear-interpolation) binning, so the
+histogram is a smooth function of the material tensors `mean_z`, `mean_a`,
+`density`, `mean_ionization_kev`. Validated (Ni, 20 keV):
+
+- **Forward -> hard as `tau -> 0`.** Yield rises 0.33 -> 0.42 as
+  (`tau_depth`, `tau_energy`) shrink 2.0/1.0 -> 0.25/0.12, toward the hard-mode
+  0.465; finite `tau` under-counts (soft gates leak).
+- **Gradients flow to all four parameters** (largest through `J`, via the
+  stopping power). Autograd `d(yield)/d(density)` matches common-random-number
+  finite differences to ~2 %.
+
+Known limitation: the grid-boundary acceptance (`0 <= i < num_bins`) is still a
+hard mask, so gradients of quantities dominated by electrons near the energy/
+depth grid edges are noisier (e.g. `d/dZ` of the total yield, which shifts
+electrons across the energy-window edge). Softening the boundary, or
+differentiating an interior functional, is the follow-up if edge-sensitive
+gradients are needed.

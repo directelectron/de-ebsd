@@ -38,6 +38,7 @@ __all__ = [
     "TrajectoryResult",
     "simulate_trajectory",
     "simulate_depth_distribution",
+    "soft_depth_histogram",
 ]
 
 # --- EMsoft Monte Carlo model constants (opencl/EMMC.cl, screened Rutherford +
@@ -413,3 +414,133 @@ def simulate_depth_distribution(
         accum_z=accum_z,
         n_total=float(n),
     )
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.5: differentiable (soft) Monte Carlo
+# --------------------------------------------------------------------------- #
+def _bilinear_accumulate(accum, contrib, e_val, z_val, e_min, e_bin, dz, num_e, num_z):
+    """Scatter ``contrib`` into a flat (E, z) grid by bilinear interpolation.
+
+    Differentiable in ``contrib``, ``e_val`` and ``z_val`` (the integer bin
+    indices are detached; the interpolation fractions carry the gradient), so a
+    histogram built this way has smooth gradients w.r.t. the exit energy/depth.
+    """
+    ef = (e_val - e_min) / e_bin
+    zf = z_val / dz
+    e0 = torch.floor(ef)
+    z0 = torch.floor(zf)
+    e_frac, z_frac = ef - e0, zf - z0
+    e0, z0 = e0.long(), z0.long()
+    for de, we in ((0, 1.0 - e_frac), (1, e_frac)):
+        ie = e0 + de
+        for dzi, wz in ((0, 1.0 - z_frac), (1, z_frac)):
+            iz = z0 + dzi
+            ok = (ie >= 0) & (ie < num_e) & (iz >= 0) & (iz < num_z)
+            wgt = contrib * we * wz * ok.to(contrib.dtype)
+            flat = ie.clamp(0, num_e - 1) * num_z + iz.clamp(0, num_z - 1)
+            accum = torch.index_add(accum, 0, flat, wgt)
+    return accum
+
+
+def soft_depth_histogram(
+    mean_z: torch.Tensor,
+    mean_a: torch.Tensor,
+    density: torch.Tensor,
+    mean_ionization_kev: torch.Tensor,
+    beam_energy_kev: float,
+    *,
+    tilt_deg: float = 70.0,
+    azimuth_deg: float = 0.0,
+    e_min_kev: float | None = None,
+    e_bin_kev: float = 1.0,
+    depth_step_nm: float = 1.0,
+    depth_max_nm: float = 100.0,
+    n_electrons: int = 40_000,
+    max_steps: int = 400,
+    tau_depth: float = 1.0,
+    tau_energy: float = 0.5,
+    seed: int | None = None,
+    device: str | torch.device | None = None,
+) -> torch.Tensor:
+    """Differentiable exit depth/energy histogram (soft mode, M-MC.5).
+
+    The reparameterized, soft counterpart of :func:`simulate_depth_distribution`:
+    the random draws are detached noise, so positions/energies (and hence the
+    ``accum_z`` weights) are smooth functions of the material parameters
+    ``mean_z``, ``mean_a``, ``density``, ``mean_ionization_kev`` (pass them as
+    ``requires_grad`` tensors to get gradients). A fixed ``max_steps`` electron
+    count with sigmoid survival/exit gates replaces the discrete termination, and
+    contributions are binned bilinearly (:func:`_bilinear_accumulate`) instead of
+    hard-rounded. The forward histogram approaches the hard-mode counts as
+    ``tau_depth``/``tau_energy`` -> 0; finite tau trades a little bias for smooth
+    gradients. Returns the ``(num_e_bins, num_z_bins)`` weighted histogram.
+
+    First-step surface reflections are excluded exactly as in hard mode: the exit
+    contribution is only accumulated from the second step on (an electron must
+    have entered the bulk).
+    """
+    dev = torch.device(device) if device is not None else torch.device("cpu")
+    gen = torch.Generator(device=dev)
+    if seed is not None:
+        gen.manual_seed(int(seed))
+    f64 = torch.float64
+    z = mean_z.to(dev, f64)
+    a_weight = mean_a.to(dev, f64)
+    rho = density.to(dev, f64)
+    j_kev = mean_ionization_kev.to(dev, f64)
+    if e_min_kev is None:
+        e_min_kev = beam_energy_kev - 5.0
+
+    num_e = int(round((beam_energy_kev - e_min_kev) / e_bin_kev)) + 1
+    num_z = int(depth_max_nm / depth_step_nm) + 1
+    n = int(n_electrons)
+
+    sig, omega = np.deg2rad(tilt_deg), np.deg2rad(azimuth_deg)
+    c0 = torch.tensor(
+        [np.cos(omega) * np.sin(sig), np.sin(omega) * np.sin(sig), np.cos(sig)],
+        device=dev, dtype=f64,
+    )
+    pos = torch.zeros(n, 3, device=dev, dtype=f64)
+    direction = c0.expand(n, 3).clone()
+    energy = torch.full((n,), float(beam_energy_kev), device=dev, dtype=f64)
+    survive = torch.ones(n, device=dev, dtype=f64)  # continuous "still in flight"
+    accum = torch.zeros(num_e * num_z, device=dev, dtype=f64)
+
+    def _rand():
+        return torch.rand(n, generator=gen, device=dev, dtype=f64)
+
+    for step_idx in range(max_steps):
+        e = energy
+        alpha = _SCREEN_C * z ** (2.0 / 3.0) / e
+        rel = ((e + _REST_KEV) / (e + _REST2_KEV)) ** 2
+        sig_ena = _SIGMA_C * z * z / (e * e) * 4.0 * np.pi / (alpha * (1.0 + alpha)) * rel
+        mfp = a_weight * _CM_TO_NM / (rho * sig_ena)
+        step = -mfp * torch.log(1.0 - _rand())
+        de_ds = -_STOP_C * z / (a_weight * e) * torch.log(_STOP_A * e / j_kev + _STOP_B)
+        cos_theta = 1.0 - 2.0 * alpha * (u := _rand()) / (1.0 + alpha - u)
+        psi = 2.0 * np.pi * _rand()
+        c_new = _rotate_batch(direction, cos_theta, psi)
+
+        cz = c_new[:, 2]
+        cz_safe = torch.where(cz.abs() > 1e-5, cz, torch.full_like(cz, 1e-5))
+        escape = (pos[:, 2] / cz_safe).abs()
+        new_pos = pos + step[:, None] * c_new
+        new_e = e + step * rho * de_ds
+
+        # soft gates: exited (crossed z<=0), absorbed (dropped below e_min)
+        exit_gate = torch.sigmoid(-new_pos[:, 2] / tau_depth)
+        absorb_gate = torch.sigmoid((e_min_kev - new_e) / tau_energy)
+        if step_idx >= 1:  # first-step surface reflections do not count
+            contrib = survive * exit_gate * (1.0 - absorb_gate)
+            accum = _bilinear_accumulate(
+                accum, contrib, new_e, escape, e_min_kev, e_bin_kev, depth_step_nm, num_e, num_z
+            )
+        leave = exit_gate + absorb_gate - exit_gate * absorb_gate  # soft OR
+        survive = survive * (1.0 - leave)
+
+        pos, direction, energy = new_pos, c_new, new_e
+        if float(survive.sum()) < 1e-6:
+            break
+
+    return accum.reshape(num_e, num_z)

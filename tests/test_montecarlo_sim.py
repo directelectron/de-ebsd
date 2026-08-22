@@ -10,6 +10,7 @@ import os
 
 import numpy as np
 import pytest
+import torch
 
 from torchebsd import Crystal
 from torchebsd.constants import C_AVOGADRO
@@ -24,9 +25,20 @@ from torchebsd.montecarlo_sim import (
     screening_parameter,
     simulate_depth_distribution,
     simulate_trajectory,
+    soft_depth_histogram,
     stopping_power,
 )
 from torchebsd.scattering import atomic_weight
+
+
+def _ni_material():
+    return MaterialProperties.from_crystal(
+        Crystal.from_parameters(a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))])
+    )
+
+
+def _ni_crystal():
+    return Crystal.from_parameters(a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))])
 
 
 def test_atomic_weight_values():
@@ -284,6 +296,65 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     assert inten.shape == (8,)
     assert torch.all(torch.isfinite(inten))
     assert inten.std() > 0  # real dynamical contrast with the native depth profile
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.5: differentiable (soft) Monte Carlo
+# --------------------------------------------------------------------------- #
+def _soft_yield(params, td, te_, n=8000, max_steps=300, seed=1):
+    z, a, r, j = params
+    acc = soft_depth_histogram(z, a, r, j, 20.0, e_min_kev=15.0, n_electrons=n,
+                               max_steps=max_steps, tau_depth=td, tau_energy=te_, seed=seed)
+    return acc.sum() / n
+
+
+def _tensors(mat, requires_grad=False):
+    return tuple(
+        torch.tensor(v, dtype=torch.float64, requires_grad=requires_grad)
+        for v in (mat.mean_z, mat.mean_a, mat.density, mat.mean_ionization_kev)
+    )
+
+
+def test_soft_histogram_approaches_hard_as_tau_shrinks():
+    mat = _ni_material()
+    params = _tensors(mat)
+    y_wide = float(_soft_yield(params, 2.0, 1.0, n=6000))
+    y_narrow = float(_soft_yield(params, 0.3, 0.15, n=6000))
+    hard = simulate_depth_distribution(_ni_crystal(), 20.0, e_min_kev=15.0,
+                                       n_electrons=6000, seed=1)
+    hard_yield = hard.accum_z.sum() / hard.n_total
+    assert y_wide < hard_yield  # soft gates leak, underestimating the yield
+    assert y_narrow > y_wide  # sharper gates -> closer to the hard limit
+    assert abs(y_narrow - hard_yield) < abs(y_wide - hard_yield)  # converging
+
+
+def test_soft_histogram_gradients_flow_to_all_params():
+    params = _tensors(_ni_material(), requires_grad=True)
+    (_soft_yield(params, 0.6, 0.3)).backward()
+    grads = [p.grad for p in params]
+    assert all(g is not None and torch.isfinite(g) for g in grads)
+    assert sum(abs(float(g)) for g in grads) > 0  # yield depends on the material
+
+
+def test_soft_histogram_gradient_matches_finite_difference():
+    """Autograd d(yield)/d(density) matches common-random-number finite diff."""
+    mat = _ni_material()
+    z, a, j = (torch.tensor(v, dtype=torch.float64)
+               for v in (mat.mean_z, mat.mean_a, mat.mean_ionization_kev))
+
+    def yield_at(rho_val, want_grad):
+        rho = torch.tensor(rho_val, dtype=torch.float64, requires_grad=want_grad)
+        y = _soft_yield((z, a, rho, j), 0.6, 0.3, seed=2)
+        if want_grad:
+            y.backward()
+            return float(rho.grad)
+        return float(y)
+
+    g_auto = yield_at(mat.density, want_grad=True)
+    d = 0.05
+    g_fd = (yield_at(mat.density + d, False) - yield_at(mat.density - d, False)) / (2 * d)
+    assert g_auto < 0  # denser -> shorter free path -> fewer escape, yield falls
+    assert abs(g_auto - g_fd) / (abs(g_fd) + 1e-12) < 0.1  # CRN finite-diff agreement
 
 
 # --------------------------------------------------------------------------- #
