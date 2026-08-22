@@ -300,20 +300,20 @@ refine / save / project, and headless display + widget smoke tests.
   (`matrix_exp`), not batched eig -- non-Hermitian eig does not GPU-batch, and
   the depth integration, not the eig, was the cost. Acceptance: Si r = 1.0000
   (meets the >= 0.99 gate); Ni r = 0.93 (below the gate, open item).
-- **M-MC -- native Monte Carlo [hard mode done + validated].** An
-  EMsoft-independent electron transport Monte Carlo for the exit depth/energy
-  statistics: screened
-  Rutherford (or Mott) elastic scattering + a CSDA (Joy-Luo/Bethe) stopping
-  power, electrons into a tilted bulk sample, histogrammed to `accum_z` /
-  `accum_e` and reduced to `lambda_E(z)`. Removes the last EMsoft *runtime*
-  dependency (the depth profile), replacing the coarse `single_energy` stand-in;
-  EMsoft `accum_z` remains the validation oracle for the MC itself. Screened
-  Rutherford matching EMsoft's `EMMC.cl`; the hard-mode forward
-  (`from_simulation`) reproduces EMsoft's `accum_z` per energy bin to
-  correlation > 0.995 for Si and Ni with matching yields (M-MC.4). Remaining:
-  the differentiable soft mode (reparameterized draws + soft gates) and wiring
-  it in as the simulator's default depth source. Full scope, task breakdown, and
-  validation numbers in [MC_DESIGN.md](MC_DESIGN.md).
+- **M-MC -- native Monte Carlo [done].** An EMsoft-independent electron
+  transport Monte Carlo for the exit depth/energy statistics: screened
+  Rutherford elastic scattering + a CSDA (Joy-Luo/Bethe) stopping power,
+  electrons into a tilted bulk sample, histogrammed to `accum_z` and reduced to
+  `lambda_E(z)`. Removes the last EMsoft *runtime* dependency; a plain
+  `compute()` now builds it automatically (`from_simulation`), retiring the
+  coarse `single_energy` stand-in, and EMsoft `accum_z` remains the validation
+  oracle only. The hard-mode forward reproduces EMsoft's `accum_z` per energy
+  bin to correlation > 0.995 for Si and Ni with matching yields (M-MC.4); a
+  differentiable soft mode (`soft_depth_histogram`: reparameterized draws + soft
+  gates + bilinear binning) gives gradients to the material parameters, matching
+  finite differences to ~2 % (M-MC.5/.6). Full scope, task breakdown, and
+  validation numbers in [MC_DESIGN.md](MC_DESIGN.md). Optional later: Mott
+  cross-sections, energy-bin master loop (M3).
 - **M3 -- energy and symmetry.** Energy-bin loop with `lambda_E(z)`
   weighting; symmetry-reduced k sampling with `Apply3DPGSymmetry`
   replication; ITA origin-shift table; hexagonal Lambert grid for
