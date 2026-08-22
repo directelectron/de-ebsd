@@ -10,8 +10,8 @@ import numpy as np
 import torch
 
 from torchebsd import BetheParameters
-from torchebsd.dynamical import SimulationInputs, resolve_backend
-from torchebsd.prism import BlochPrismBackend
+from torchebsd.sim.dynamical import SimulationInputs, resolve_backend
+from torchebsd.sim.prism import BlochPrismBackend
 
 
 def _dirs(n, seed=0):
@@ -128,7 +128,7 @@ def test_intensity_differentiable_wrt_positions(si_sf):
     This closes the differentiable chain from a crystal parameter to the master-
     pattern intensity: torch U_g (differentiable_ucg_lut) feeds the torch backend.
     """
-    from torchebsd.structure_factors import differentiable_ucg_lut
+    from torchebsd.sim.structure_factors import differentiable_ucg_lut
 
     crystal = si_sf.crystal
     prism = resolve_backend("bloch_prism")
@@ -157,7 +157,7 @@ def test_intensity_differentiable_wrt_positions(si_sf):
 def test_intensity_differentiable_wrt_debye_waller(si_sf):
     """End-to-end d(intensity)/d(Debye-Waller) through the torch WK amplitude,
     the structure factors, and the prism Bloch solve, matching finite diffs."""
-    from torchebsd.structure_factors import differentiable_ucg_lut
+    from torchebsd.sim.structure_factors import differentiable_ucg_lut
 
     crystal = si_sf.crystal
     prism = resolve_backend("bloch_prism")

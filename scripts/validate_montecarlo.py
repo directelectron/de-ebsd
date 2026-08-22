@@ -1,7 +1,7 @@
 """Validate the native Monte Carlo depth statistics against EMsoft ``accum_z``.
 
 EMsoft is the oracle (validation only). This compares torchebsd's native
-:func:`~torchebsd.montecarlo_sim.simulate_depth_distribution` against a reference
+:func:`~torchebsd.sim.montecarlo_sim.simulate_depth_distribution` against a reference
 EMsoft ``*_MC.h5`` run: per-energy-bin Pearson correlation of the exit-depth
 profiles and the total backscatter yield. The native MC is run with the
 reference run's own parameters (tilt, energy/depth binning), read from its
@@ -23,8 +23,8 @@ import h5py
 import numpy as np
 
 import torchebsd as te
-from torchebsd.montecarlo import DepthDistribution
-from torchebsd.montecarlo_sim import simulate_depth_distribution
+from torchebsd.sim.montecarlo import DepthDistribution
+from torchebsd.sim.montecarlo_sim import simulate_depth_distribution
 
 SI_MC_PATH = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
 NI_MC_PATH = os.environ.get("TORCHEBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")

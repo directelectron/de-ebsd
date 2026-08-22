@@ -6,7 +6,7 @@ kikuchipy: shape ``(n_energies, 2, n, n)`` with hemisphere index 0 = north,
 1 = south, ``n = 2 npx + 1``, row = Lambert Y, column = Lambert X).
 
 It can be interpolated at arbitrary unit vectors (:meth:`sample`), projected
-onto an :class:`~torchebsd.detector.EBSDDetector` for a batch of orientations
+onto an :class:`~torchebsd.sim.detector.EBSDDetector` for a batch of orientations
 (:meth:`project`), displayed in Lambert / stereographic / sphere projections
 (:meth:`show`), and saved to / loaded from HDF5.
 """
@@ -22,9 +22,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from torchebsd.detector import EBSDDetector
-from torchebsd.lambert import SQRT_PI_HALF, sphere_to_square
-from torchebsd.rotation import quaternion_to_matrix
+from torchebsd.sim.detector import EBSDDetector
+from torchebsd.sim.lambert import SQRT_PI_HALF, sphere_to_square
+from torchebsd.sim.rotation import quaternion_to_matrix
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
@@ -202,7 +202,7 @@ class MasterPattern:
         energy_kev
             Energy bin to display (default: highest).
         """
-        from torchebsd import display
+        from torchebsd.sim import display
 
         i_e = self.energy_index(energy_kev)
         label = f"{self.energies_kev[i_e]:g} keV"

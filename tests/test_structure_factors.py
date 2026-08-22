@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from torchebsd import Crystal
-from torchebsd.constants import electron_wavelength_nm
-from torchebsd.structure_factors import compute_structure_factors, differentiable_ucg_lut
+from torchebsd.sim.constants import electron_wavelength_nm
+from torchebsd.sim.structure_factors import compute_structure_factors, differentiable_ucg_lut
 
 
 def _si():

@@ -131,7 +131,7 @@ class EBSDDetector:
         return torch.as_tensor(dc, device=device, dtype=dtype)
 
     def show(self, microscope=None, crystal=None):
-        """Interactive geometry widget (see :class:`torchebsd.widgets.SetupWidget`)."""
-        from torchebsd.widgets import SetupWidget
+        """Interactive geometry widget (see :class:`torchebsd.sim.widgets.SetupWidget`)."""
+        from torchebsd.sim.widgets import SetupWidget
 
         return SetupWidget.from_setup(microscope=microscope, detector=self, crystal=crystal)

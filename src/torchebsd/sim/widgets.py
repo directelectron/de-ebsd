@@ -12,8 +12,8 @@ from __future__ import annotations
 import anywidget
 import traitlets
 
-from torchebsd.detector import EBSDDetector
-from torchebsd.microscope import Microscope
+from torchebsd.sim.detector import EBSDDetector
+from torchebsd.sim.microscope import Microscope
 
 __all__ = ["SetupWidget"]
 

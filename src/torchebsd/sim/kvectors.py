@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from torchebsd.lambert import master_pattern_grid
+from torchebsd.sim.lambert import master_pattern_grid
 
 __all__ = ["KVectorGrid", "sample_incident_directions", "reduce_to_fundamental_sector"]
 

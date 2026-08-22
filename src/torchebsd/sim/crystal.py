@@ -20,8 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 from diffpy.structure.spacegroups import GetSpaceGroup
 
-from torchebsd.constants import C_AVOGADRO
-from torchebsd.scattering import atomic_number, atomic_weight
+from torchebsd.sim.constants import C_AVOGADRO
+from torchebsd.sim.scattering import atomic_number, atomic_weight
 
 __all__ = ["AtomSite", "Crystal"]
 

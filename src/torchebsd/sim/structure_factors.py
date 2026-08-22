@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchebsd.constants import C_PI, DWWK, PREF_COEF, PREG, SWK, electron_wavelength_nm
-from torchebsd.crystal import Crystal
-from torchebsd.scattering import atomic_number, wk_scattering_factor
-from torchebsd.scattering_torch import wk_scattering_factor_torch
+from torchebsd.sim.constants import C_PI, DWWK, PREF_COEF, PREG, SWK, electron_wavelength_nm
+from torchebsd.sim.crystal import Crystal
+from torchebsd.sim.scattering import atomic_number, wk_scattering_factor
+from torchebsd.sim.scattering_torch import wk_scattering_factor_torch
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
@@ -116,7 +116,7 @@ class StructureFactors:
 
         Systematic absences appear as (near-)zero bars.
         """
-        from torchebsd import display
+        from torchebsd.sim import display
 
         hkl, g, ucg = self.families(n)
         labels = [f"{h} {k} {l_}" for h, k, l_ in hkl]
@@ -260,7 +260,7 @@ def differentiable_ucg_lut(
     - **positions** -- the structure-factor phase ``sum_r exp(-2 pi i g.r)``;
     - **occupancies** -- the linear per-site weight;
     - **debye_waller** (``B`` in nm^2, one per site) -- feeds the torch WK
-      amplitude (:func:`torchebsd.scattering_torch.wk_scattering_factor_torch`),
+      amplitude (:func:`torchebsd.sim.scattering_torch.wk_scattering_factor_torch`),
       so ``U_g`` differentiates w.r.t. the thermal factor.
 
     When ``debye_waller`` is None the amplitudes are evaluated in numpy and held

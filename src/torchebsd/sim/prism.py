@@ -1,6 +1,6 @@
 """PRISM scattering-matrix backend: batched, GPU-native, no eigendecomposition.
 
-The reference :class:`~torchebsd.dynamical.BlochWaveBackend` diagonalizes the
+The reference :class:`~torchebsd.sim.dynamical.BlochWaveBackend` diagonalizes the
 dynamical matrix per direction; that eigendecomposition is complex, small, and
 non-Hermitian, so it neither batches nor GPU-accelerates. This backend replaces
 it with the physically equivalent scattering-matrix propagation:
@@ -28,9 +28,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-import torchebsd.reflections as _R
-from torchebsd.dynamical import BlochWaveBackend, SimulationInputs
-from torchebsd.reflections import excitation_errors, master_reflection_list
+import torchebsd.sim.reflections as _R
+from torchebsd.sim.dynamical import BlochWaveBackend, SimulationInputs
+from torchebsd.sim.reflections import excitation_errors, master_reflection_list
 
 
 class BlochPrismBackend(BlochWaveBackend):

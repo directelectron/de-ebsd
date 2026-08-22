@@ -75,7 +75,7 @@ def test_compute_master_pattern(sim, master):
 
 def test_master_pattern_sampling_consistency(sim, master):
     """Sampling exactly at grid directions returns the grid values."""
-    from torchebsd.lambert import master_pattern_grid
+    from torchebsd.sim.lambert import master_pattern_grid
 
     grid = master_pattern_grid(sim.npx)
     values = master.sample(grid)

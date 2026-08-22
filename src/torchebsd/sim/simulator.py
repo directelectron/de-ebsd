@@ -21,9 +21,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from torchebsd.bethe import BetheParameters
-from torchebsd.crystal import Crystal
-from torchebsd.dynamical import (
+from torchebsd.sim.bethe import BetheParameters
+from torchebsd.sim.crystal import Crystal
+from torchebsd.sim.dynamical import (
     DynamicalMatrix,
     MasterPatternBackend,
     SimulationInputs,
@@ -31,12 +31,12 @@ from torchebsd.dynamical import (
     classify_reflections,
     resolve_backend,
 )
-from torchebsd.kvectors import reduce_to_fundamental_sector, sample_incident_directions
-from torchebsd.masterpattern import MasterPattern
-from torchebsd.microscope import Microscope
-from torchebsd.montecarlo import DepthDistribution
-from torchebsd.reflections import ReflectionList, master_reflection_list
-from torchebsd.structure_factors import StructureFactors, compute_structure_factors
+from torchebsd.sim.kvectors import reduce_to_fundamental_sector, sample_incident_directions
+from torchebsd.sim.masterpattern import MasterPattern
+from torchebsd.sim.microscope import Microscope
+from torchebsd.sim.montecarlo import DepthDistribution
+from torchebsd.sim.reflections import ReflectionList, master_reflection_list
+from torchebsd.sim.structure_factors import StructureFactors, compute_structure_factors
 
 __all__ = ["MasterPatternSimulator"]
 
@@ -64,7 +64,7 @@ class MasterPatternSimulator:
     backend
         ``"kinematical"`` (runs today; band geometry only), ``"bloch"``
         (the physical model; scheduled -- see DESIGN.md), or any
-        :class:`~torchebsd.dynamical.MasterPatternBackend` instance.
+        :class:`~torchebsd.sim.dynamical.MasterPatternBackend` instance.
     """
 
     def __init__(
@@ -253,7 +253,7 @@ class MasterPatternSimulator:
 
     def show_setup(self, detector=None):
         """Interactive geometry widget for this simulation's setup."""
-        from torchebsd.widgets import SetupWidget
+        from torchebsd.sim.widgets import SetupWidget
 
         return SetupWidget.from_setup(
             microscope=self.microscope, detector=detector, crystal=self.crystal

@@ -98,11 +98,11 @@ class DepthDistribution:
     def from_simulation(cls, material, beam_energy_kev: float, **kwargs) -> DepthDistribution:
         """Build depth statistics from the native Monte Carlo (EMsoft-free).
 
-        Delegates to :func:`torchebsd.montecarlo_sim.simulate_depth_distribution`
+        Delegates to :func:`torchebsd.sim.montecarlo_sim.simulate_depth_distribution`
         (see it for the keyword arguments); ``material`` is a
-        :class:`~torchebsd.crystal.Crystal` or a ``MaterialProperties``.
+        :class:`~torchebsd.sim.crystal.Crystal` or a ``MaterialProperties``.
         """
-        from torchebsd.montecarlo_sim import simulate_depth_distribution
+        from torchebsd.sim.montecarlo_sim import simulate_depth_distribution
 
         return simulate_depth_distribution(material, beam_energy_kev, **kwargs)
 

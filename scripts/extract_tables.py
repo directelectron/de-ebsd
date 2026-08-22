@@ -53,7 +53,7 @@ AA_rows = [AA[4 * z:4 * z + 4] for z in range(98)]  # AA_rows[z-1] = [a1..a4] fo
 BB_rows = [BB[4 * z:4 * z + 4] for z in range(98)]
 SC_rows = [scatfac[8 * z:8 * z + 8] for z in range(98)]  # [a1..a4,b1..b4]
 
-out = Path(__file__).resolve().parents[1] / "src/torchebsd/data/scattering_tables.py"
+out = Path(__file__).resolve().parents[1] / "src/torchebsd/sim/data/scattering_tables.py"
 out.parent.mkdir(parents=True, exist_ok=True)
 
 with out.open("w", encoding="utf-8") as f:

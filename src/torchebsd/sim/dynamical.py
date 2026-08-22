@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchebsd.bethe import BetheParameters
-from torchebsd.reflections import (
+from torchebsd.sim.bethe import BetheParameters
+from torchebsd.sim.reflections import (
     STRONG,
     WEAK,
     ReflectionList,
@@ -37,13 +37,13 @@ from torchebsd.reflections import (
     master_reflection_list,
     partition_strong_weak,
 )
-from torchebsd.scattering import atomic_number
-from torchebsd.structure_factors import StructureFactors
+from torchebsd.sim.scattering import atomic_number
+from torchebsd.sim.structure_factors import StructureFactors
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
 
-    from torchebsd.montecarlo import DepthDistribution
+    from torchebsd.sim.montecarlo import DepthDistribution
 
 __all__ = [
     "DynamicalMatrix",
@@ -138,7 +138,7 @@ class DynamicalMatrix:
 
     def show(self) -> Figure:
         """Heat map of log10 |A_gh|."""
-        from torchebsd import display
+        from torchebsd.sim import display
 
         with np.errstate(divide="ignore"):
             image = np.log10(np.maximum(np.abs(self.matrix), 1e-12))
@@ -297,7 +297,7 @@ class BlochWaveBackend(MasterPatternBackend):
     uses_depth_profile = True
 
     def prepare(self, inputs: SimulationInputs) -> None:
-        from torchebsd.montecarlo import DepthDistribution
+        from torchebsd.sim.montecarlo import DepthDistribution
 
         self.sf = inputs.sf
         self.bethe = inputs.bethe
@@ -374,7 +374,7 @@ def resolve_backend(backend: str | MasterPatternBackend) -> MasterPatternBackend
     """Map a backend name to an instance; pass instances through."""
     if isinstance(backend, MasterPatternBackend):
         return backend
-    from torchebsd.prism import BlochPrismBackend  # deferred: prism imports this module
+    from torchebsd.sim.prism import BlochPrismBackend  # deferred: prism imports this module
 
     named = {
         "kinematical": KinematicalBackend,

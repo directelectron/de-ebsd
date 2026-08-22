@@ -13,9 +13,9 @@ import pytest
 import torch
 
 from torchebsd import Crystal
-from torchebsd.constants import C_AVOGADRO
-from torchebsd.montecarlo import DepthDistribution
-from torchebsd.montecarlo_sim import (
+from torchebsd.sim.constants import C_AVOGADRO
+from torchebsd.sim.montecarlo import DepthDistribution
+from torchebsd.sim.montecarlo_sim import (
     MaterialProperties,
     elastic_cross_section_na,
     mean_free_path_nm,
@@ -28,7 +28,7 @@ from torchebsd.montecarlo_sim import (
     soft_depth_histogram,
     stopping_power,
 )
-from torchebsd.scattering import atomic_weight
+from torchebsd.sim.scattering import atomic_weight
 
 
 def _ni_material():
@@ -279,7 +279,7 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     import torch
 
     from torchebsd import BetheParameters
-    from torchebsd.dynamical import BlochWaveBackend, SimulationInputs
+    from torchebsd.sim.dynamical import BlochWaveBackend, SimulationInputs
 
     dd = simulate_depth_distribution(
         si_crystal, si_sf.energy_kev, e_min_kev=si_sf.energy_kev - 5.0,
@@ -361,7 +361,7 @@ def test_soft_histogram_gradient_matches_finite_difference():
 # M-MC.7: native MC is the simulator's default depth source
 # --------------------------------------------------------------------------- #
 def test_backend_depth_profile_flags():
-    from torchebsd.dynamical import resolve_backend
+    from torchebsd.sim.dynamical import resolve_backend
 
     assert resolve_backend("bloch").uses_depth_profile is True
     assert resolve_backend("bloch_prism").uses_depth_profile is True
@@ -399,7 +399,7 @@ def test_native_mc_matches_emsoft_accum_z():
     Bloch backend uses), and the mean correlation. The two bins at the Ehistmin
     cutoff are boundary-truncated and noisier at this electron count.
     """
-    from torchebsd.montecarlo import DepthDistribution
+    from torchebsd.sim.montecarlo import DepthDistribution
 
     ref = DepthDistribution.from_emsoft(_SI_MC)
     crystal = Crystal.from_parameters(

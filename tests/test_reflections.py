@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from torchebsd import BetheParameters
-from torchebsd.dynamical import classify_reflections
-from torchebsd.reflections import (
+from torchebsd.sim.dynamical import classify_reflections
+from torchebsd.sim.reflections import (
     IGNORED,
     STRONG,
     WEAK,

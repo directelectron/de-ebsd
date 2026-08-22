@@ -1,6 +1,7 @@
 """torchebsd: differentiable, GPU-accelerated dynamical EBSD master patterns.
 
-A composable, object-oriented simulation chain (inspired by abTEM)::
+The simulation code lives in :mod:`torchebsd.sim`; the full public API is
+re-exported here so that ``import torchebsd as te; te.Crystal`` keeps working::
 
     import torchebsd as te
 
@@ -10,29 +11,22 @@ A composable, object-oriented simulation chain (inspired by abTEM)::
     microscope = te.Microscope(energy=20e3, sample_tilt=70.0)
     sim = te.MasterPatternSimulator(crystal, microscope, npx=200, dmin=0.1)
 
-    sim.structure_factors().show()
-    sim.reflections(k=(0, 0, 1)).show()
-    master = sim.compute(device="cuda")
-    master.show(projection="sphere")
-
-    detector = te.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
-    patterns = master.project(detector, orientation=rotation)  # orix Rotation
-
 See DESIGN.md for the architecture and the roadmap toward full EMsoft parity.
 """
 
-from torchebsd.bethe import BetheParameters
-from torchebsd.crystal import AtomSite, Crystal
-from torchebsd.detector import EBSDDetector
-from torchebsd.dynamical import (
+from torchebsd.sim import (
+    AtomSite,
+    BetheParameters,
     BlochWaveBackend,
+    Crystal,
+    DepthDistribution,
+    EBSDDetector,
     KinematicalBackend,
+    MasterPattern,
     MasterPatternBackend,
+    MasterPatternSimulator,
+    Microscope,
 )
-from torchebsd.masterpattern import MasterPattern
-from torchebsd.microscope import Microscope
-from torchebsd.montecarlo import DepthDistribution
-from torchebsd.simulator import MasterPatternSimulator
 
 __version__ = "0.1.0"
 
@@ -57,7 +51,7 @@ def __getattr__(name: str):
     # SetupWidget is imported lazily so that `import torchebsd` stays light
     # and functional on headless nodes without the widget stack.
     if name == "SetupWidget":
-        from torchebsd.widgets import SetupWidget
+        from torchebsd.sim.widgets import SetupWidget
 
         return SetupWidget
     raise AttributeError(f"module 'torchebsd' has no attribute {name!r}")

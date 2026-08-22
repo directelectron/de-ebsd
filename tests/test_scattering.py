@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from torchebsd.data.scattering_tables import ELEMENT_SYMBOLS, WK_A, WK_B
-from torchebsd.scattering import _ei, atomic_number, wk_scattering_factor
+from torchebsd.sim.data.scattering_tables import ELEMENT_SYMBOLS, WK_A, WK_B
+from torchebsd.sim.scattering import _ei, atomic_number, wk_scattering_factor
 
 
 def test_tables_verbatim_from_emsoft():

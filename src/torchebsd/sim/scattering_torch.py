@@ -15,8 +15,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from torchebsd.data.scattering_tables import WK_A, WK_B
-from torchebsd.scattering import (
+from torchebsd.sim.data.scattering_tables import WK_A, WK_B
+from torchebsd.sim.scattering import (
     _C_EULER,
     _FOURPI,
     _FOURPI_PHON,
@@ -211,7 +211,7 @@ def wk_scattering_factor_torch(
 ) -> torch.Tensor:
     """Complex WK scattering amplitude in torch, differentiable in ``ul``/``g_wk``.
 
-    Torch port of :func:`torchebsd.scattering.wk_scattering_factor`; see that for
+    Torch port of :func:`torchebsd.sim.scattering.wk_scattering_factor`; see that for
     the parameters and units. ``ul`` and ``g_wk`` are tensors (pass ``ul`` as a
     ``requires_grad`` leaf for Debye-Waller gradients). Returns a complex tensor.
     """

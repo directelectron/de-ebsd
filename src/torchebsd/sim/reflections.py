@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchebsd.bethe import BetheParameters
-from torchebsd.structure_factors import StructureFactors
+from torchebsd.sim.bethe import BetheParameters
+from torchebsd.sim.structure_factors import StructureFactors
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
@@ -107,7 +107,7 @@ class ReflectionList:
         With a classification, bars are colored by status (strong / weak /
         ignored); without one, all bars share one color.
         """
-        from torchebsd import display
+        from torchebsd.sim import display
 
         take = slice(0, n)
         labels = [f"{h} {k} {l_}" for h, k, l_ in self.hkl[take]]

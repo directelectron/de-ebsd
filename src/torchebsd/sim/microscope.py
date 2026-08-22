@@ -3,14 +3,14 @@
 The :class:`Microscope` collects the experimental parameters that belong to
 the instrument rather than to the crystal or the detector: accelerating
 voltage and the sample tilt. Detector geometry lives on
-:class:`torchebsd.detector.EBSDDetector`.
+:class:`torchebsd.sim.detector.EBSDDetector`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from torchebsd.constants import (
+from torchebsd.sim.constants import (
     electron_wavelength_nm,
     interaction_constant,
     relativistic_correction,
@@ -57,7 +57,7 @@ class Microscope:
 
         The in-crystal wavelength (corrected for the mean inner potential)
         is computed by the simulator once structure factors are available;
-        see :attr:`torchebsd.structure_factors.StructureFactors.wavelength`.
+        see :attr:`torchebsd.sim.structure_factors.StructureFactors.wavelength`.
         """
         return electron_wavelength_nm(self.energy_kev, v0mod=0.0)
 

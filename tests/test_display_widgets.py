@@ -47,7 +47,7 @@ def test_master_pattern_show_projections(sim):
 
 
 def test_to_uint8_rgb():
-    from torchebsd.display import to_uint8_rgb
+    from torchebsd.sim.display import to_uint8_rgb
 
     image = np.array([[0.0, 1.0], [2.0, 4.0]])
     rgb = to_uint8_rgb(image)
@@ -58,7 +58,7 @@ def test_to_uint8_rgb():
 
 def test_setup_widget_round_trip():
     pytest.importorskip("anywidget")
-    from torchebsd.widgets import SetupWidget
+    from torchebsd.sim.widgets import SetupWidget
 
     microscope = te.Microscope(energy=15e3, sample_tilt=68.0)
     detector = te.EBSDDetector(shape=(240, 320), pc=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)

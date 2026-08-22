@@ -2,7 +2,7 @@
 
 ``ATOMIC_WEIGHTS[i]`` is the standard atomic weight (g/mol) of the element with
 atomic number ``Z = i + 1`` (Z in 1..98), matching the ``ELEMENT_SYMBOLS``
-ordering in :mod:`torchebsd.data.scattering_tables`. Values are IUPAC
+ordering in :mod:`torchebsd.sim.data.scattering_tables`. Values are IUPAC
 conventional atomic weights; for elements with no stable isotope the mass number
 of the most stable common isotope is used (Tc, Pm, and Z >= 84 except Th/Pa/U).
 

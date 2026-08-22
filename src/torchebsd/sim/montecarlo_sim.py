@@ -1,7 +1,7 @@
 """Native electron Monte Carlo for exit depth/energy statistics (M-MC).
 
 Scoped in ``MC_DESIGN.md``: an EMsoft-independent Monte Carlo that produces the
-depth statistics (:class:`torchebsd.montecarlo.DepthDistribution`) the Bloch
+depth statistics (:class:`torchebsd.sim.montecarlo.DepthDistribution`) the Bloch
 depth integration consumes, removing the last EMsoft runtime dependency.
 
 This is M-MC.1, the material foundation. EMsoft's Monte Carlo treats the sample
@@ -9,7 +9,7 @@ as a homogeneous bulk with mean properties rather than resolving individual
 atoms, so the elastic (screened Rutherford) and inelastic (CSDA stopping power)
 models need only the composition-averaged atomic number and weight, the mass and
 number densities, and the mean ionization potential. :class:`MaterialProperties`
-reduces a :class:`~torchebsd.crystal.Crystal` to exactly that.
+reduces a :class:`~torchebsd.sim.crystal.Crystal` to exactly that.
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from torchebsd.constants import C_AVOGADRO
-from torchebsd.crystal import Crystal
+from torchebsd.sim.constants import C_AVOGADRO
+from torchebsd.sim.crystal import Crystal
 
 if TYPE_CHECKING:
-    from torchebsd.montecarlo import DepthDistribution
+    from torchebsd.sim.montecarlo import DepthDistribution
 
 __all__ = [
     "mean_ionization_potential_kev",
@@ -311,8 +311,8 @@ def simulate_depth_distribution(
     then bins the backscattered electrons into EMsoft's ``accum_z`` layout --
     energy ``iE = round((E - Ehistmin)/Ebinsize)``, depth
     ``iz = round(|escape_depth|/depthstep)`` -- and returns a
-    :class:`~torchebsd.montecarlo.DepthDistribution`, a drop-in for
-    :meth:`~torchebsd.montecarlo.DepthDistribution.from_emsoft`.
+    :class:`~torchebsd.sim.montecarlo.DepthDistribution`, a drop-in for
+    :meth:`~torchebsd.sim.montecarlo.DepthDistribution.from_emsoft`.
 
     This is the M-MC.3 hard-mode forward. It counts every backscattered electron
     (no lateral exit-direction window yet; EMsoft's central +/- numsx/10 accum_z
@@ -320,7 +320,7 @@ def simulate_depth_distribution(
     energy-bin floor (``Ehistmin``) and the absorption cutoff -- an electron that
     slows below it can only lose more energy, so it could never land in a bin.
     """
-    from torchebsd.montecarlo import DepthDistribution
+    from torchebsd.sim.montecarlo import DepthDistribution
 
     if isinstance(material, Crystal):
         material = MaterialProperties.from_crystal(material)

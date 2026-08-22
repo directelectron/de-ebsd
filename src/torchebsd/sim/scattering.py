@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from torchebsd.data.element_properties import ATOMIC_WEIGHTS
-from torchebsd.data.scattering_tables import ELEMENT_SYMBOLS, WK_A, WK_B
+from torchebsd.sim.data.element_properties import ATOMIC_WEIGHTS
+from torchebsd.sim.data.scattering_tables import ELEMENT_SYMBOLS, WK_A, WK_B
 
 # Exact constants from the Fortran source (single-precision literals).
 _FOURPI = 12.56637062  # FSCATT
