@@ -314,14 +314,17 @@ refine / save / project, and headless display + widget smoke tests.
   finite differences to ~2 % (M-MC.5/.6). Full scope, task breakdown, and
   validation numbers in [MC_DESIGN.md](MC_DESIGN.md). Optional later: Mott
   cross-sections, energy-bin master loop (M3).
-- **M3 -- energy and symmetry.** Symmetry-reduced k sampling **[done]**:
+- **M3 -- energy and symmetry [done].** Symmetry-reduced k sampling:
   `reduce_to_fundamental_sector` folds the grid onto the point-group fundamental
   sector via orix (`in_fundamental_sector`); symmetry-equivalent grid points
   reduce to a bit-identical representative, so the fold is exact (~16x fewer
   evaluations for cubic) and matches the fully-sampled master bit-for-bit.
-  Remaining: the energy-bin loop with `lambda_E(z)` weighting (a full
-  (nE, 2, n, n) master matching `Si_MC.h5` across bins), and the hexagonal
-  Lambert grid for trigonal/hexagonal systems.
+  Energy loop: `compute(energy_resolved=True)` produces one Lambert map per MC
+  energy bin (structure factors and depth profile per energy) -> an
+  `(nE, 2, n, n)` master; the top bin is bit-identical to the single-energy
+  path, and Si bins correlate ~0.93 with `Si_MC.h5`'s `mLPNH` at coarse npx
+  (the top bin reaches r = 1.0 at native resolution, M2). Remaining (optional):
+  the hexagonal Lambert grid for trigonal/hexagonal systems.
 - **M4 -- differentiability.** Torch structure factors (lattice, DW
   gradients); autograd through the Bloch solve; FP32 vs FP64 accuracy
   audit and dtype policy.

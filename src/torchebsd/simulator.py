@@ -132,6 +132,7 @@ class MasterPatternSimulator:
         chunk_size: int = 262_144,
         mc_electrons: int = 200_000,
         symmetry: bool = True,
+        energy_resolved: bool = False,
     ) -> MasterPattern:
         """Compute the master pattern on the Lambert grid.
 
@@ -151,9 +152,13 @@ class MasterPatternSimulator:
             Fold the beam directions onto the point-group fundamental sector so
             each symmetry-distinct direction is computed once (exact; ~15x fewer
             evaluations for cubic). Disable to evaluate every grid point.
+        energy_resolved
+            Compute one Lambert map per Monte Carlo energy bin (structure factors
+            and depth profile per energy), giving an ``(nE, 2, n, n)`` master.
+            Requires a depth-integrating backend; ignored otherwise. Default is a
+            single map at the beam energy.
         """
         device = torch.device(device) if device is not None else torch.device("cpu")
-        sf = self.structure_factors()
         backend = resolve_backend(self.backend)
 
         # depth-integrating backends need a Monte Carlo exit-depth profile; when
@@ -166,34 +171,38 @@ class MasterPatternSimulator:
                 tilt_deg=self.microscope.sample_tilt,
                 n_electrons=mc_electrons, device=device, seed=0,
             )
-        backend.prepare(
-            SimulationInputs(
-                sf=sf,
-                bethe=self.bethe,
-                monte_carlo=monte_carlo,
-                device=device,
-                dtype=dtype,
-            )
-        )
 
+        # beam directions and the (energy-independent) symmetry fold
         grid = sample_incident_directions(self.npx, device=device, dtype=dtype)
         directions = grid.flat()
         if symmetry:
             reps, inverse = reduce_to_fundamental_sector(directions, self.crystal.space_group)
         else:
             reps, inverse = directions, None
-
-        rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
-        for start in range(0, reps.shape[0], chunk_size):
-            stop = min(start + chunk_size, reps.shape[0])
-            rep_values[start:stop] = backend.intensities(reps[start:stop])
-        values = rep_values if inverse is None else rep_values[inverse]
-
         n = 2 * self.npx + 1
-        data = values.reshape(1, 2, n, n)
+
+        if energy_resolved and backend.uses_depth_profile:
+            energies = np.asarray(monte_carlo.energies_kev, dtype=float)
+        else:
+            energies = np.array([self.energy_kev])
+
+        maps = []
+        for energy in energies:
+            sf = (self.structure_factors() if abs(energy - self.energy_kev) < 1e-9
+                  else compute_structure_factors(self.crystal, float(energy), self.dmin))
+            backend.prepare(SimulationInputs(
+                sf=sf, bethe=self.bethe, monte_carlo=monte_carlo, device=device, dtype=dtype,
+            ))
+            rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
+            for start in range(0, reps.shape[0], chunk_size):
+                stop = min(start + chunk_size, reps.shape[0])
+                rep_values[start:stop] = backend.intensities(reps[start:stop])
+            values = rep_values if inverse is None else rep_values[inverse]
+            maps.append(values.reshape(2, n, n))
+
         return MasterPattern(
-            data=data,
-            energies_kev=np.array([self.energy_kev]),
+            data=torch.stack(maps, dim=0),
+            energies_kev=energies,
             metadata={
                 "crystal": repr(self.crystal),
                 "backend": backend.name,
@@ -201,6 +210,7 @@ class MasterPatternSimulator:
                 "dmin": self.dmin,
                 "energy_kev": self.energy_kev,
                 "bethe": repr(self.bethe),
+                "energy_resolved": len(energies) > 1,
             },
         )
 

@@ -32,6 +32,24 @@ def test_symmetry_reduction_matches_full(sim):
     assert torch.allclose(reduced.data, full.data, atol=1e-5)
 
 
+def test_energy_resolved_master():
+    """A depth-integrating backend yields one Lambert map per MC energy bin."""
+    crystal = te.Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    )
+    sim = te.MasterPatternSimulator(
+        crystal, te.Microscope(energy=20e3, sample_tilt=70.0), npx=8, dmin=0.1, backend="bloch"
+    )
+    er = sim.compute(energy_resolved=True, mc_electrons=20_000, dtype=torch.float64)
+    assert er.data.shape[0] == er.energies_kev.shape[0] > 1  # (nE, 2, n, n)
+    assert er.energies_kev[-1] == pytest.approx(20.0)  # top bin is the beam energy
+    assert torch.all(torch.isfinite(er.data))
+    assert er.data[-1].std() > 0  # per-energy dynamical contrast
+    # the top energy bin reproduces the single-energy compute exactly
+    se = sim.compute(mc_electrons=20_000, dtype=torch.float64)
+    assert torch.allclose(er.data[-1], se.data[0], atol=1e-9)
+
+
 def test_stage_objects(sim):
     sf = sim.structure_factors()
     assert sf is sim.structure_factors()  # cached

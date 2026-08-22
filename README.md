@@ -81,7 +81,7 @@ sim.show_setup(detector=detector)
 | Scattering-matrix (PRISM) GPU backend, exact vs `bloch` (`bloch_prism`) | implemented, tested |
 | Native electron Monte Carlo (EMsoft-independent depth/energy stats) | implemented, validated vs EMsoft `accum_z` |
 | Symmetry-reduced sampling (point-group fundamental sector, via orix) | implemented, tested |
-| Energy-resolved master patterns | roadmap; DESIGN.md M3 |
+| Energy-resolved master patterns (per MC energy bin) | implemented, tested |
 
 ## Validation
 
