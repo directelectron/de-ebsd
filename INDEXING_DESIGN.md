@@ -50,27 +50,37 @@ The primitives are therefore: a **spherical harmonic transform (SHT)**, the
      becomes possible. This is the research frontier the differentiable simulator
      uniquely opens.
 
-## 3. Groundwork already done elsewhere (leverage, do not rebuild)
+## 3. Dependency direction & the groundwork we build on
 
-| Piece | Provided by | Used for |
+**torchebsd is a foundational engine.** In the crystallography ecosystem it
+depends only on **orix** -- the shared base that kikuchipy also builds on. It does
+**not** depend on kikuchipy. The intended direction is the reverse: **kikuchipy
+(and other tools) depend on torchebsd** and call it as a GPU-accelerated,
+differentiable simulation + indexing backend, consuming its orix-native output.
+So `torchebsd.index` reuses only orix and `torchebsd.sim`'s own detector geometry;
+it never imports kikuchipy.
+
+| Piece | From | Used for |
 | --- | --- | --- |
-| Orientations, symmetry, SO(3) / fundamental-zone sampling, misorientation | **orix** | trial grid, refinement search, output `Rotation` |
-| `CrystalMap`, IPF colouring, quality maps | **orix** | the indexed orientation map + visualization |
-| `EBSDDetector` (geometry, pattern-center conventions), pattern I/O, EBSD `Signal`, background correction, existing DI/refinement | **kikuchipy** | ingest, preprocess, back-projection geometry, baseline to beat |
-| Differentiable dynamical **master pattern** on the square-Lambert sphere, detector projection, EMsoft/kikuchipy master import | **`torchebsd.sim`** | the continuous "dictionary" `M(n)`, the forward model for refinement |
+| Orientations, symmetry, SO(3)/FZ sampling, misorientation, `CrystalMap`, IPF colouring | **orix** (dependency) | trial grid, refinement search, output `Rotation`/`CrystalMap`, viz |
+| `EBSDDetector` geometry (kikuchipy-parity PC conventions), master projection, square-Lambert sphere | **`torchebsd.sim`** (in-package) | back-projection geometry, the continuous "dictionary" `M(n)` |
+| Differentiable master, differentiable in crystal params (DESIGN.md M4) | **`torchebsd.sim`** | forward model for refinement / fitting |
 
-The novel part we build is the **SH + SO(3) matching engine** on top of these.
-Because the output is orix/kikuchipy-native, the module is designed to be
-**upstreamable into kikuchipy**.
+The novel part we build is the **SH + SO(3) matching engine** on top of orix +
+`torchebsd.sim`. Everything geometric (detector, projection, Lambert sphere) is
+already in `torchebsd.sim` -- torchebsd is self-contained, no kikuchipy needed.
+kikuchipy appears only as an **optional validation baseline** (its dictionary
+indexing, behind a test/benchmark extra), never at runtime. Emitting orix-native
+objects is exactly what lets kikuchipy depend on torchebsd and call it.
 
 ## 4. The pipeline
 
 ```
-kikuchipy EBSD signal ─┐
-EBSDDetector ──────────┤
-torchebsd master M(n) ─┘
+pattern arrays (H x W scan) ─┐
+torchebsd EBSDDetector ──────┤   (kikuchipy hands us arrays + geometry; we don't import it)
+torchebsd master M(n) ───────┘
         │
-  1. preprocess (kikuchipy: background, mask, normalize)
+  1. preprocess (background / mask / normalize -- basic in-package, or done upstream)
   2. back-project each pattern to the sphere  E(n)           [index.backproject]
   3. forward SHT:  M -> a_lm (once) ;  E -> b_lm (batched)    [index.harmonics]
   4. SO(3) cross-correlation via Wigner-D FFT  ->  C(g)       [index.wigner + index.correlation]
@@ -116,7 +126,7 @@ and both are differentiable and GPU-native.
 | I5 | **Scan indexing** — batched map → `CrystalMap` | full Ni/Si map; **benchmark vs kikuchipy DI** (and EMSphInx if available) |
 | I6 | **Refinement** — sub-pixel SO(3) + gradient orientation/PC | orientation error below the DI grid; PC refinement demonstrated |
 | I7 | **Visualization** — SO(3) surface, IPF + quality maps, pattern overlay | interactive figures like `sim.show_setup` |
-| I8 | **Integration** — orix `CrystalMap` out, kikuchipy adapters in, documented handoff | round-trip through kikuchipy; ready to upstream |
+| I8 | **Integration** — orix-native output (`Rotation`/`CrystalMap`), array-based ingest (no kikuchipy import); documented so kikuchipy can *depend on* torchebsd | orix round-trip; a kikuchipy dataset indexes through torchebsd |
 
 Sequencing: **I1 → I2 first** (the maths engine, validated against brute force),
 then I3–I4 (geometry + one pattern), then I5 (scale + benchmark), then I6–I8
@@ -149,7 +159,9 @@ numbers.
 
 ## 9. Dependencies
 
-All already present in the project: `torch`, `numpy`, **`orix`**, **`kikuchipy`**,
-`diffsims`, `anyplotlib`, `anywidget`, plus **`torchebsd.sim`** as the forward
-model. No new hard dependency is anticipated (the SH/SO(3) transforms are
-implemented in torch for GPU execution and autograd).
+Runtime: `torch`, `numpy`, **`orix`**, `diffsims`, `h5py`, `anyplotlib`,
+`anywidget`, plus **`torchebsd.sim`** as the forward model. **kikuchipy is NOT a
+runtime dependency** -- it is an optional validation/benchmark baseline only (the
+reverse direction is the goal: kikuchipy depends on torchebsd). No new hard
+dependency is anticipated (the SH/SO(3) transforms are implemented in torch for
+GPU execution and autograd).

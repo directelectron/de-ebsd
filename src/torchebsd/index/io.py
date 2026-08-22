@@ -1,9 +1,9 @@
-"""orix / kikuchipy adapters (I8) -- the ecosystem handoff.
+"""orix-native output + array ingest (I8) -- the ecosystem handoff.
 
-Converts between the indexer's internal tensors and the community objects, so the
-module is drop-in for the orix/kikuchipy world (and ultimately upstreamable into
-kikuchipy): indexed orientations -> orix ``Rotation`` / ``CrystalMap``, kikuchipy
-EBSD ``Signal`` in, and import of EMsoft/kikuchipy master patterns. See
+torchebsd is the *foundation*: it emits orix objects and takes plain pattern
+arrays, so it never imports kikuchipy. The intended direction is that kikuchipy
+(and other tools) depend on torchebsd -- they pass their pattern data + detector
+in and consume the orix ``Rotation`` / ``CrystalMap`` out. See
 ``INDEXING_DESIGN.md`` (milestone I8).
 """
 
@@ -15,6 +15,6 @@ def to_crystal_map(rotations, quality, shape, phase):
     raise NotImplementedError("I8: orix CrystalMap output")
 
 
-def master_from_kikuchipy(signal):
-    """Adapt a kikuchipy/EMsoft master pattern to the indexer's representation."""
-    raise NotImplementedError("I8: kikuchipy/EMsoft master import")
+def master_from_emsoft(path):
+    """Load an EMsoft master pattern (via ``torchebsd.sim``) for indexing."""
+    raise NotImplementedError("I8: EMsoft master import")

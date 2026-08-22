@@ -16,10 +16,10 @@ class SphericalIndexer:
     Parameters
     ----------
     master
-        A ``torchebsd.sim`` ``MasterPattern`` (or an imported EMsoft/kikuchipy
-        master) -- the continuous "dictionary" ``M(n)``.
+        A ``torchebsd.sim`` ``MasterPattern`` (or one imported from EMsoft) --
+        the continuous "dictionary" ``M(n)``.
     detector
-        kikuchipy ``EBSDDetector`` geometry.
+        ``torchebsd.sim`` ``EBSDDetector`` geometry.
     bandwidth
         Spherical-harmonic bandwidth ``L`` (the accuracy/speed knob).
     device
@@ -29,6 +29,10 @@ class SphericalIndexer:
     def __init__(self, master, detector, bandwidth=88, device=None):
         raise NotImplementedError("I4/I5: SphericalIndexer")
 
-    def index(self, signal, refine=False):
-        """Index a kikuchipy EBSD ``signal`` (a scan) -> orix ``CrystalMap``."""
+    def index(self, patterns, refine=False):
+        """Index a scan of ``patterns`` (an array of shape (n, H, W)) -> orix ``CrystalMap``.
+
+        Takes plain pattern arrays so no kikuchipy import is needed; a kikuchipy
+        signal's ``.data`` and detector can be passed straight in.
+        """
         raise NotImplementedError("I5: batched scan indexing -> CrystalMap")
