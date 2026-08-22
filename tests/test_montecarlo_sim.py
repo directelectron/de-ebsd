@@ -11,6 +11,7 @@ import pytest
 
 from torchebsd import Crystal
 from torchebsd.constants import C_AVOGADRO
+from torchebsd.montecarlo import DepthDistribution
 from torchebsd.montecarlo_sim import (
     MaterialProperties,
     elastic_cross_section_na,
@@ -19,6 +20,7 @@ from torchebsd.montecarlo_sim import (
     rotate_direction,
     sample_scattering_cos,
     screening_parameter,
+    simulate_depth_distribution,
     simulate_trajectory,
     stopping_power,
 )
@@ -189,3 +191,94 @@ def test_backscatter_yield_sanity(ni_crystal, si_crystal):
     assert 0.3 < eta_ni < 0.85  # high at 70 deg tilt
     assert 0.2 < eta_si < 0.75
     assert eta_ni > eta_si  # higher Z backscatters more
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.3: vectorized MC -> DepthDistribution
+# --------------------------------------------------------------------------- #
+def test_from_simulation_returns_usable_distribution(ni_crystal):
+    dd = DepthDistribution.from_simulation(
+        ni_crystal, 20.0, e_min_kev=15.0, e_bin_kev=1.0,
+        depth_step_nm=1.0, depth_max_nm=100.0, n_electrons=20_000, seed=0,
+    )
+    assert isinstance(dd, DepthDistribution)
+    assert dd.n_energies == 6 and dd.n_depths == 101  # 15..20 keV, 0..100 nm
+    assert np.all(np.diff(dd.energies_kev) > 0)  # ascending, like from_emsoft
+    assert dd.energy_index(20.0) == dd.n_energies - 1  # beam energy is the top bin
+    # the derived quantities the Bloch backend calls must accept it
+    w = dd.depth_weights(20.0, normal_absorption_length=50.0)
+    assert w.shape == (dd.n_depths,) and np.all(np.isfinite(w))
+    assert dd.integration_depths().shape == (dd.n_energies,)
+
+
+def test_depth_distribution_deterministic(ni_crystal):
+    kw = dict(e_min_kev=15.0, n_electrons=20_000, seed=42)
+    a = simulate_depth_distribution(ni_crystal, 20.0, **kw)
+    b = simulate_depth_distribution(ni_crystal, 20.0, **kw)
+    assert np.array_equal(a.accum_z, b.accum_z)
+
+
+def test_depth_profile_is_shallow_weighted(ni_crystal):
+    """High-energy backscatter comes from shallow depths: the profile decays."""
+    dd = simulate_depth_distribution(ni_crystal, 20.0, e_min_kev=15.0,
+                                     n_electrons=40_000, seed=1)
+    top = dd.accum_z[-1, :, 0, 0]  # ~20 keV bin
+    assert top.sum() > 0
+    assert top[:5].sum() > top[20:].sum()  # concentrated near the surface
+
+
+def test_vectorized_matches_scalar_yield(ni_crystal):
+    """The batched MC reproduces the scalar reference's accepted yield."""
+    mp = MaterialProperties.from_crystal(ni_crystal)
+    rng = np.random.default_rng(7)
+    m = 500
+    scalar_hits = 0
+    for _ in range(m):
+        tr = simulate_trajectory(mp, 20.0, tilt_deg=70.0, e_min_kev=15.0, rng=rng)
+        accepted = (
+            tr.backscattered
+            and 15.0 < tr.exit_energy_kev <= 20.0
+            and abs(tr.escape_depth_nm) <= 100.0
+        )
+        scalar_hits += int(accepted)
+    scalar_frac = scalar_hits / m
+
+    dd = simulate_depth_distribution(ni_crystal, 20.0, e_min_kev=15.0,
+                                     depth_max_nm=100.0, n_electrons=40_000, seed=3)
+    vec_frac = dd.accum_z.sum() / dd.n_total
+    assert abs(vec_frac - scalar_frac) < 0.05  # agree within Monte Carlo noise
+
+
+def test_higher_energy_penetrates_deeper(ni_crystal):
+    def mean_top_depth(energy_kev):
+        dd = simulate_depth_distribution(ni_crystal, energy_kev, e_min_kev=energy_kev - 5.0,
+                                         depth_max_nm=200.0, n_electrons=30_000, seed=5)
+        top = dd.accum_z[-1, :, 0, 0]
+        z = np.arange(len(top)) * dd.depth_step
+        return (z * top).sum() / top.sum()
+
+    assert mean_top_depth(30.0) > mean_top_depth(20.0)
+
+
+def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
+    """The native MC depth profile is a drop-in for the Bloch depth integration."""
+    import torch
+
+    from torchebsd import BetheParameters
+    from torchebsd.dynamical import BlochWaveBackend, SimulationInputs
+
+    dd = simulate_depth_distribution(
+        si_crystal, si_sf.energy_kev, e_min_kev=si_sf.energy_kev - 5.0,
+        n_electrons=8_000, seed=0,
+    )
+    backend = BlochWaveBackend()
+    backend.prepare(SimulationInputs(
+        sf=si_sf, bethe=BetheParameters(), monte_carlo=dd,
+        device=torch.device("cpu"), dtype=torch.float32,
+    ))
+    v = torch.randn(8, 3)
+    v = v / v.norm(dim=-1, keepdim=True)
+    inten = backend.intensities(v)
+    assert inten.shape == (8,)
+    assert torch.all(torch.isfinite(inten))
+    assert inten.std() > 0  # real dynamical contrast with the native depth profile

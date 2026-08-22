@@ -158,8 +158,8 @@ constructor. Tests in `tests/test_montecarlo_sim.py`.
 | --- | --- | --- |
 | M-MC.1 | `atomic_weight`, `Crystal.density`/`Z̄`/`Ā`, `J(Z)`, MC constants | S — **done** |
 | M-MC.2 | numpy single-trajectory reference + physics unit tests | M — **done** |
-| M-MC.3 | vectorized torch batch MC (hard mode) → `DepthDistribution.from_simulation` | M–L |
-| M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity | M |
+| M-MC.3 | vectorized torch batch MC (hard mode) → `DepthDistribution.from_simulation` | M–L — **done** |
+| M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity; add the lateral exit window | M |
 | M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L |
 | M-MC.6 | gradient validation (autograd vs CRN finite diff) + `τ`-annealing study | M |
 | M-MC.7 | wire in as the default depth source; docs; roadmap update | S |
@@ -223,4 +223,14 @@ Note the angular distribution is strongly forward-peaked (`alpha` ~ 1e-3), so
 large-angle events need `u` within ~1e-9 of 1 -- backscatter accumulates from
 many small deflections, not single large ones. There is **no** energy floor in
 the kernel; the `Emin` cutoff and `accum_z`/`accum_e` binning live host-side
-(`mod_MCOpenCL`), to be reproduced in M-MC.3.
+(`mod_MCOpenCL`).
+
+The host-side binning is now reproduced (M-MC.3): energy
+`iE = round((E - Ehistmin)/Ebinsize)`, depth `iz = round(|escape_depth|/depthstep)`,
+accept `Ehistmin < E <= EkeV` and `0 <= iz < numzbins`, where
+`escape_depth = z_pre / c_z` (pre-step depth over the exit direction's z-cosine).
+The `Emin` cutoff doubles as the MC absorption threshold (a sub-`Emin` electron
+can only lose more energy, so it can never re-enter a bin). **Not yet ported:**
+EMsoft restricts `accum_z` to a central `+/- numsx/10` lateral exit window; the
+v1 `from_simulation` counts every backscattered electron. Reconciling that
+window against EMsoft's `accum_z` shape is the first task of M-MC.4.

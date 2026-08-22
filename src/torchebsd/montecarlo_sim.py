@@ -15,11 +15,16 @@ reduces a :class:`~torchebsd.crystal.Crystal` to exactly that.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from torchebsd.constants import C_AVOGADRO
 from torchebsd.crystal import Crystal
+
+if TYPE_CHECKING:
+    from torchebsd.montecarlo import DepthDistribution
 
 __all__ = [
     "mean_ionization_potential_kev",
@@ -32,6 +37,7 @@ __all__ = [
     "rotate_direction",
     "TrajectoryResult",
     "simulate_trajectory",
+    "simulate_depth_distribution",
 ]
 
 # --- EMsoft Monte Carlo model constants (opencl/EMMC.cl, screened Rutherford +
@@ -182,8 +188,9 @@ class TrajectoryResult:
     exit_energy_kev
         Kinetic energy when the trajectory ended.
     escape_depth_nm
-        EMsoft ``escape_depth = z / c_z`` at the final step (the depth measure
-        binned into ``accum_z``; its exact role is finalized in M-MC.3).
+        EMsoft ``depth`` value at exit: the pre-step depth over the exit
+        direction's z-cosine (a slant path to the surface). Signed like EMsoft's
+        ``depth[]``; ``accum_z`` bins its magnitude.
     max_depth_nm
         Deepest z reached along the trajectory.
     n_steps
@@ -238,11 +245,15 @@ def simulate_trajectory(
 
         cos_theta = sample_scattering_cos(alpha, rng.random())
         psi = 2.0 * np.pi * rng.random()
-        c = rotate_direction(c, cos_theta, psi)
-        r = r + step * c
+        c_new = rotate_direction(c, cos_theta, psi)
 
-        if abs(c[2]) > 1e-5:
-            escape_depth = r[2] / c[2]
+        # EMsoft escape_depth: pre-move depth over the new direction's z-cosine
+        # (a slant path to the surface); binning takes its magnitude.
+        if abs(c_new[2]) > 1e-5:
+            escape_depth = r[2] / c_new[2]
+        r = r + step * c_new
+        c = c_new
+
         max_depth = max(max_depth, r[2])
         if r[2] <= 0.0:
             backscattered = True
@@ -251,3 +262,145 @@ def simulate_trajectory(
             break
 
     return TrajectoryResult(backscattered, energy, escape_depth, max_depth, n_steps)
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.3: vectorized (batched) Monte Carlo -> DepthDistribution
+# --------------------------------------------------------------------------- #
+def _rotate_batch(c: torch.Tensor, cos_theta: torch.Tensor, psi: torch.Tensor) -> torch.Tensor:
+    """Batched EMsoft direction-cosine rotation for a [N, 3] stack of directions."""
+    ct = cos_theta
+    st = torch.sqrt(torch.clamp(1.0 - ct * ct, min=0.0))
+    cp, sp = torch.cos(psi), torch.sin(psi)
+    cx, cy, cz = c[:, 0], c[:, 1], c[:, 2]
+    dsqi = 1.0 / torch.sqrt(torch.clamp(1.0 - cz * cz, min=1e-30))
+    gx = st * (cx * cz * cp - cy * sp) * dsqi + cx * ct
+    gy = st * (cy * cz * cp + cx * sp) * dsqi + cy * ct
+    gz = -st * cp / dsqi + cz * ct
+    pole = cz.abs() >= 0.99999
+    nx = torch.where(pole, st * cp, gx)
+    ny = torch.where(pole, st * sp, gy)
+    nz = torch.where(pole, torch.sign(cz) * ct, gz)
+    return torch.stack([nx, ny, nz], dim=-1)
+
+
+def simulate_depth_distribution(
+    material: MaterialProperties | Crystal,
+    beam_energy_kev: float,
+    *,
+    e_min_kev: float | None = None,
+    e_bin_kev: float = 1.0,
+    depth_step_nm: float = 1.0,
+    depth_max_nm: float = 100.0,
+    n_electrons: int = 100_000,
+    tilt_deg: float = 70.0,
+    azimuth_deg: float = 0.0,
+    max_steps: int = 1000,
+    device: str | torch.device | None = None,
+    seed: int | None = None,
+) -> DepthDistribution:
+    """Native (EMsoft-free) exit depth/energy statistics via a batched MC.
+
+    Vectorizes :func:`simulate_trajectory` over ``n_electrons`` advanced in
+    lockstep (an alive mask retires each one as it backscatters or is absorbed),
+    then bins the backscattered electrons into EMsoft's ``accum_z`` layout --
+    energy ``iE = round((E - Ehistmin)/Ebinsize)``, depth
+    ``iz = round(|escape_depth|/depthstep)`` -- and returns a
+    :class:`~torchebsd.montecarlo.DepthDistribution`, a drop-in for
+    :meth:`~torchebsd.montecarlo.DepthDistribution.from_emsoft`.
+
+    This is the M-MC.3 hard-mode forward. It counts every backscattered electron
+    (no lateral exit-direction window yet; EMsoft's central +/- numsx/10 accum_z
+    window is the reconciliation item for M-MC.4). ``e_min_kev`` doubles as the
+    energy-bin floor (``Ehistmin``) and the absorption cutoff -- an electron that
+    slows below it can only lose more energy, so it could never land in a bin.
+    """
+    from torchebsd.montecarlo import DepthDistribution
+
+    if isinstance(material, Crystal):
+        material = MaterialProperties.from_crystal(material)
+    if e_min_kev is None:
+        e_min_kev = beam_energy_kev - 5.0
+
+    dev = torch.device(device) if device is not None else torch.device("cpu")
+    gen = torch.Generator(device=dev)
+    if seed is not None:
+        gen.manual_seed(int(seed))
+
+    z, a_weight = float(material.mean_z), float(material.mean_a)
+    rho, j_kev = float(material.density), float(material.mean_ionization_kev)
+    z23 = z ** (2.0 / 3.0)
+    n = int(n_electrons)
+    f64 = torch.float64
+
+    sig, omega = np.deg2rad(tilt_deg), np.deg2rad(azimuth_deg)
+    c0 = torch.tensor(
+        [np.cos(omega) * np.sin(sig), np.sin(omega) * np.sin(sig), np.cos(sig)],
+        device=dev, dtype=f64,
+    )
+    pos = torch.zeros(n, 3, device=dev, dtype=f64)
+    direction = c0.expand(n, 3).clone()
+    energy = torch.full((n,), float(beam_energy_kev), device=dev, dtype=f64)
+    alive = torch.ones(n, dtype=torch.bool, device=dev)
+    escape_depth = torch.zeros(n, device=dev, dtype=f64)
+    exit_energy = torch.zeros(n, device=dev, dtype=f64)
+    backscattered = torch.zeros(n, dtype=torch.bool, device=dev)
+
+    def _rand():
+        return torch.rand(n, generator=gen, device=dev, dtype=f64)
+
+    for _ in range(max_steps):
+        if not bool(alive.any()):
+            break
+        e = energy
+        alpha = _SCREEN_C * z23 / e
+        rel = ((e + _REST_KEV) / (e + _REST2_KEV)) ** 2
+        sig_ena = _SIGMA_C * z * z / (e * e) * 4.0 * np.pi / (alpha * (1.0 + alpha)) * rel
+        mfp = a_weight * _CM_TO_NM / (rho * sig_ena)
+        step = -mfp * torch.log(1.0 - _rand())  # exponential free path (nm)
+        de_ds = -_STOP_C * z / (a_weight * e) * torch.log(_STOP_A * e / j_kev + _STOP_B)
+
+        cos_theta = 1.0 - 2.0 * alpha * (u := _rand()) / (1.0 + alpha - u)
+        psi = 2.0 * np.pi * _rand()
+        c_new = _rotate_batch(direction, cos_theta, psi)
+
+        cz = c_new[:, 2]
+        upd = alive & (cz.abs() > 1e-5)
+        escape_depth = torch.where(upd, pos[:, 2] / cz, escape_depth)
+
+        new_pos = pos + step[:, None] * c_new
+        new_e = e + step * rho * de_ds
+        exited = alive & (new_pos[:, 2] <= 0.0)
+        absorbed = alive & ~exited & (new_e <= e_min_kev)
+
+        backscattered = backscattered | exited
+        exit_energy = torch.where(exited, new_e, exit_energy)
+        pos = torch.where(alive[:, None], new_pos, pos)
+        direction = torch.where(alive[:, None], c_new, direction)
+        energy = torch.where(alive, new_e, energy)
+        alive = alive & ~exited & ~absorbed
+
+    # bin backscattered electrons into EMsoft's accum_z (E, z) layout
+    num_e_bins = int(round((beam_energy_kev - e_min_kev) / e_bin_kev)) + 1
+    num_z_bins = int(depth_max_nm / depth_step_nm) + 1
+    edis = escape_depth.abs()
+    i_e = torch.round((exit_energy - e_min_kev) / e_bin_kev).long()
+    i_z = torch.round(edis / depth_step_nm).long()
+    valid = (
+        backscattered
+        & (exit_energy > e_min_kev) & (exit_energy <= beam_energy_kev)
+        & (i_e >= 0) & (i_e < num_e_bins)
+        & (i_z >= 0) & (i_z < num_z_bins)
+    )
+    accum = torch.zeros(num_e_bins * num_z_bins, device=dev, dtype=f64)
+    flat = i_e[valid] * num_z_bins + i_z[valid]
+    accum.index_add_(0, flat, torch.ones(int(valid.sum()), device=dev, dtype=f64))
+    accum_z = accum.reshape(num_e_bins, num_z_bins).cpu().numpy()[:, :, None, None]
+    energies_kev = e_min_kev + e_bin_kev * np.arange(num_e_bins)
+
+    return DepthDistribution(
+        energies_kev=energies_kev,
+        depth_step=float(depth_step_nm),
+        accum_z=accum_z,
+        n_total=float(n),
+    )
