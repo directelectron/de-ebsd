@@ -12,12 +12,23 @@ scaffolded -- implementations land per milestone.
 
 from __future__ import annotations
 
-__all__ = ["SphericalIndexer", "phase_from_crystal", "refine_orientation", "to_crystal_map"]
+__all__ = [
+    "SphericalIndexer",
+    "phase_from_crystal",
+    "refine_orientation",
+    "show_correlation",
+    "show_map",
+    "show_match",
+    "show_refinement",
+    "to_crystal_map",
+]
+
+_DISPLAY_FUNCS = ("show_correlation", "show_map", "show_match", "show_refinement")
 
 
 def __getattr__(name: str):
     # lazy so ``import torchebsd.index`` stays light until the engine is built
-    # (and so orix/diffpy are only imported when the orix bridges are used)
+    # (and so orix/diffpy/anyplotlib are only imported when actually used)
     if name == "SphericalIndexer":
         from torchebsd.index.indexer import SphericalIndexer
 
@@ -30,4 +41,8 @@ def __getattr__(name: str):
         from torchebsd.index import io
 
         return getattr(io, name)
+    if name in _DISPLAY_FUNCS:
+        from torchebsd.index import display
+
+        return getattr(display, name)
     raise AttributeError(f"module 'torchebsd.index' has no attribute {name!r}")
