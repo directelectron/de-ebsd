@@ -159,7 +159,7 @@ constructor. Tests in `tests/test_montecarlo_sim.py`.
 | M-MC.1 | `atomic_weight`, `Crystal.density`/`Z̄`/`Ā`, `J(Z)`, MC constants | S — **done** |
 | M-MC.2 | numpy single-trajectory reference + physics unit tests | M — **done** |
 | M-MC.3 | vectorized torch batch MC (hard mode) → `DepthDistribution.from_simulation` | M–L — **done** |
-| M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity; add the lateral exit window | M |
+| M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity | M — **done** |
 | M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L |
 | M-MC.6 | gradient validation (autograd vs CRN finite diff) + `τ`-annealing study | M |
 | M-MC.7 | wire in as the default depth source; docs; roadmap update | S |
@@ -230,7 +230,31 @@ The host-side binning is now reproduced (M-MC.3): energy
 accept `Ehistmin < E <= EkeV` and `0 <= iz < numzbins`, where
 `escape_depth = z_pre / c_z` (pre-step depth over the exit direction's z-cosine).
 The `Emin` cutoff doubles as the MC absorption threshold (a sub-`Emin` electron
-can only lose more energy, so it can never re-enter a bin). **Not yet ported:**
-EMsoft restricts `accum_z` to a central `+/- numsx/10` lateral exit window; the
-v1 `from_simulation` counts every backscattered electron. Reconciling that
-window against EMsoft's `accum_z` shape is the first task of M-MC.4.
+can only lose more energy, so it can never re-enter a bin).
+
+---
+
+## Appendix B. M-MC.4 validation result
+
+Validated against EMsoft's `Si_MC.h5` and `Ni_MC.h5` (`scripts/validate_montecarlo.py`,
+run with each reference's own tilt / energy / depth binning). Per-energy-bin
+Pearson correlation of the exit-depth profiles and total backscatter yield:
+
+| Material | min per-bin corr | yield (EMsoft / native) |
+| --- | --- | --- |
+| Si | 0.9959 | 0.4496 / 0.4499 |
+| Ni | 0.9989 | 0.5687 / 0.5655 |
+
+Every energy bin agrees to > 0.995; mean exit depths match within ~0.5 nm (Si
+~18 nm, Ni ~4 nm -- Ni is denser, so shallower). Two findings changed the plan:
+
+- **The lateral exit window is not needed** (and hurts). EMsoft stores `accum_z`
+  on a central `+/- numsx/10` window; restricting the native MC to near-normal
+  exit *lowered* the correlation. Counting every backscattered electron matches
+  EMsoft's depth profile, so `from_simulation` deliberately applies no window.
+- **Surface reflections must be excluded.** Electrons that scatter back out on
+  step 1 (never entering the bulk, `z_pre = 0 -> escape_depth = 0`) piled a spike
+  into the top energy bin's `z = 0` and dropped its correlation to 0.59. EMsoft
+  drops them; requiring an electron to have entered the bulk before a backscatter
+  counts restores the top bin to 0.998. A `penetrated` flag enforces this in both
+  the scalar reference and the batched MC.

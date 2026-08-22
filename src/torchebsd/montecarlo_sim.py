@@ -234,6 +234,7 @@ def simulate_trajectory(
     escape_depth = 0.0
     max_depth = 0.0
     backscattered = False
+    penetrated = False
     n_steps = 0
     for _ in range(max_steps):
         n_steps += 1
@@ -256,8 +257,11 @@ def simulate_trajectory(
 
         max_depth = max(max_depth, r[2])
         if r[2] <= 0.0:
-            backscattered = True
+            # a surface reflection that never entered the bulk is not a
+            # backscatter event (it sampled no depth); EMsoft drops it too
+            backscattered = penetrated
             break
+        penetrated = True
         if energy <= e_min_kev:
             break
 
@@ -342,6 +346,7 @@ def simulate_depth_distribution(
     direction = c0.expand(n, 3).clone()
     energy = torch.full((n,), float(beam_energy_kev), device=dev, dtype=f64)
     alive = torch.ones(n, dtype=torch.bool, device=dev)
+    penetrated = torch.zeros(n, dtype=torch.bool, device=dev)
     escape_depth = torch.zeros(n, device=dev, dtype=f64)
     exit_energy = torch.zeros(n, device=dev, dtype=f64)
     backscattered = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -373,8 +378,12 @@ def simulate_depth_distribution(
         exited = alive & (new_pos[:, 2] <= 0.0)
         absorbed = alive & ~exited & (new_e <= e_min_kev)
 
-        backscattered = backscattered | exited
-        exit_energy = torch.where(exited, new_e, exit_energy)
+        # only electrons that entered the bulk count as backscattered -- a step-1
+        # surface reflection sampled no depth (escape_depth 0); EMsoft drops it
+        valid = exited & penetrated
+        backscattered = backscattered | valid
+        exit_energy = torch.where(valid, new_e, exit_energy)
+        penetrated = penetrated | (alive & (new_pos[:, 2] > 0.0))
         pos = torch.where(alive[:, None], new_pos, pos)
         direction = torch.where(alive[:, None], c_new, direction)
         energy = torch.where(alive, new_e, energy)

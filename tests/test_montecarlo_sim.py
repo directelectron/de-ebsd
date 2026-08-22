@@ -6,6 +6,8 @@ number densities). Densities are checked against handbook values as an
 end-to-end test of the unit conversions.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -282,3 +284,53 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     assert inten.shape == (8,)
     assert torch.all(torch.isfinite(inten))
     assert inten.std() > 0  # real dynamical contrast with the native depth profile
+
+
+# --------------------------------------------------------------------------- #
+# M-MC.4: validation against EMsoft accum_z (needs the reference file)
+# --------------------------------------------------------------------------- #
+_SI_MC = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+
+
+@pytest.mark.skipif(not os.path.exists(_SI_MC), reason="EMsoft Si_MC.h5 reference not available")
+def test_native_mc_matches_emsoft_accum_z():
+    """The native MC reproduces EMsoft's depth statistics (no lateral window).
+
+    Runs with the reference run's own binning and correlates the exit-depth
+    profiles. The full per-bin check (every bin > 0.995) is in
+    ``scripts/validate_montecarlo.py`` at high electron count; this lighter
+    regression guards the yield, the beam-energy bin (the one the single-energy
+    Bloch backend uses), and the mean correlation. The two bins at the Ehistmin
+    cutoff are boundary-truncated and noisier at this electron count.
+    """
+    from torchebsd.montecarlo import DepthDistribution
+
+    ref = DepthDistribution.from_emsoft(_SI_MC)
+    crystal = Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    )
+    e_min = float(ref.energies_kev.min())
+    e_bin = float(np.diff(ref.energies_kev)[0])
+    native = simulate_depth_distribution(
+        crystal, float(ref.energies_kev.max()), e_min_kev=e_min, e_bin_kev=e_bin,
+        depth_step_nm=ref.depth_step, depth_max_nm=ref.depth_step * (ref.n_depths - 1),
+        n_electrons=200_000, tilt_deg=70.0, seed=0,
+    )
+
+    def pearson(a, b):
+        a = a.astype(np.float64) - a.mean()
+        b = b.astype(np.float64) - b.mean()
+        return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-30))
+
+    ref_yield = ref.accum_z.sum() / ref.n_total
+    nat_yield = native.accum_z.sum() / native.n_total
+    assert abs(ref_yield - nat_yield) < 0.02  # total backscatter yield
+
+    corrs = []
+    for i_e in range(ref.n_energies):
+        r = ref.accum_z[i_e].sum(axis=(1, 2))
+        n = native.accum_z[i_e].sum(axis=(1, 2))
+        if r.sum() and n.sum():
+            corrs.append(pearson(r, n))
+    assert corrs[-1] > 0.99  # beam-energy bin (used by the Bloch backend)
+    assert float(np.mean(corrs)) > 0.99  # profiles match across the spectrum

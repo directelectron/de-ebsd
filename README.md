@@ -79,7 +79,7 @@ sim.show_setup(detector=detector)
 | Kinematical backend (band geometry; validation placeholder) | implemented, tested |
 | Bloch-wave backend: eigendecomposition + `CalcLgh` depth integration (`bloch`) | implemented, tested |
 | Scattering-matrix (PRISM) GPU backend, exact vs `bloch` (`bloch_prism`) | implemented, tested |
-| Native electron Monte Carlo (EMsoft-independent depth/energy stats) | roadmap; DESIGN.md M-MC |
+| Native electron Monte Carlo (EMsoft-independent depth/energy stats) | implemented, validated vs EMsoft `accum_z` |
 | Energy-resolved master patterns, symmetry-reduced sampling | roadmap; DESIGN.md M3 |
 
 ## Validation
