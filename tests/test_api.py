@@ -25,6 +25,13 @@ def test_public_api_surface():
         assert getattr(te, name) is not None
 
 
+def test_symmetry_reduction_matches_full(sim):
+    """Fundamental-sector folding must reproduce the fully-sampled master."""
+    reduced = sim.compute(symmetry=True)
+    full = sim.compute(symmetry=False)
+    assert torch.allclose(reduced.data, full.data, atol=1e-5)
+
+
 def test_stage_objects(sim):
     sf = sim.structure_factors()
     assert sf is sim.structure_factors()  # cached

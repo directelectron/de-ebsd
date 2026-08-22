@@ -314,11 +314,14 @@ refine / save / project, and headless display + widget smoke tests.
   finite differences to ~2 % (M-MC.5/.6). Full scope, task breakdown, and
   validation numbers in [MC_DESIGN.md](MC_DESIGN.md). Optional later: Mott
   cross-sections, energy-bin master loop (M3).
-- **M3 -- energy and symmetry.** Energy-bin loop with `lambda_E(z)`
-  weighting; symmetry-reduced k sampling with `Apply3DPGSymmetry`
-  replication; ITA origin-shift table; hexagonal Lambert grid for
-  trigonal/hexagonal systems. Acceptance: full (nE, 2, n, n) Si master
-  matching `Si_MC.h5` across bins; a hexagonal reference case.
+- **M3 -- energy and symmetry.** Symmetry-reduced k sampling **[done]**:
+  `reduce_to_fundamental_sector` folds the grid onto the point-group fundamental
+  sector via orix (`in_fundamental_sector`); symmetry-equivalent grid points
+  reduce to a bit-identical representative, so the fold is exact (~16x fewer
+  evaluations for cubic) and matches the fully-sampled master bit-for-bit.
+  Remaining: the energy-bin loop with `lambda_E(z)` weighting (a full
+  (nE, 2, n, n) master matching `Si_MC.h5` across bins), and the hexagonal
+  Lambert grid for trigonal/hexagonal systems.
 - **M4 -- differentiability.** Torch structure factors (lattice, DW
   gradients); autograd through the Bloch solve; FP32 vs FP64 accuracy
   audit and dtype policy.

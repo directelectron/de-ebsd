@@ -31,7 +31,7 @@ from torchebsd.dynamical import (
     classify_reflections,
     resolve_backend,
 )
-from torchebsd.kvectors import sample_incident_directions
+from torchebsd.kvectors import reduce_to_fundamental_sector, sample_incident_directions
 from torchebsd.masterpattern import MasterPattern
 from torchebsd.microscope import Microscope
 from torchebsd.montecarlo import DepthDistribution
@@ -131,6 +131,7 @@ class MasterPatternSimulator:
         dtype: torch.dtype = torch.float32,
         chunk_size: int = 262_144,
         mc_electrons: int = 200_000,
+        symmetry: bool = True,
     ) -> MasterPattern:
         """Compute the master pattern on the Lambert grid.
 
@@ -146,6 +147,10 @@ class MasterPatternSimulator:
             Electron count for the native Monte Carlo depth profile built when
             the backend needs one and no ``monte_carlo`` was supplied. Ignored if
             a depth profile is provided or the backend does not use one.
+        symmetry
+            Fold the beam directions onto the point-group fundamental sector so
+            each symmetry-distinct direction is computed once (exact; ~15x fewer
+            evaluations for cubic). Disable to evaluate every grid point.
         """
         device = torch.device(device) if device is not None else torch.device("cpu")
         sf = self.structure_factors()
@@ -173,10 +178,16 @@ class MasterPatternSimulator:
 
         grid = sample_incident_directions(self.npx, device=device, dtype=dtype)
         directions = grid.flat()
-        values = torch.empty(directions.shape[0], device=device, dtype=dtype)
-        for start in range(0, directions.shape[0], chunk_size):
-            stop = min(start + chunk_size, directions.shape[0])
-            values[start:stop] = backend.intensities(directions[start:stop])
+        if symmetry:
+            reps, inverse = reduce_to_fundamental_sector(directions, self.crystal.space_group)
+        else:
+            reps, inverse = directions, None
+
+        rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
+        for start in range(0, reps.shape[0], chunk_size):
+            stop = min(start + chunk_size, reps.shape[0])
+            rep_values[start:stop] = backend.intensities(reps[start:stop])
+        values = rep_values if inverse is None else rep_values[inverse]
 
         n = 2 * self.npx + 1
         data = values.reshape(1, 2, n, n)

@@ -80,7 +80,8 @@ sim.show_setup(detector=detector)
 | Bloch-wave backend: eigendecomposition + `CalcLgh` depth integration (`bloch`) | implemented, tested |
 | Scattering-matrix (PRISM) GPU backend, exact vs `bloch` (`bloch_prism`) | implemented, tested |
 | Native electron Monte Carlo (EMsoft-independent depth/energy stats) | implemented, validated vs EMsoft `accum_z` |
-| Energy-resolved master patterns, symmetry-reduced sampling | roadmap; DESIGN.md M3 |
+| Symmetry-reduced sampling (point-group fundamental sector, via orix) | implemented, tested |
+| Energy-resolved master patterns | roadmap; DESIGN.md M3 |
 
 ## Validation
 

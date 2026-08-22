@@ -1,21 +1,51 @@
 """Incident beam directions on the master pattern grid.
 
 For the master pattern every pixel of the square Lambert grid is one incident
-beam direction (EMsoft ``Calckvectors`` with the Rosca-Lambert map mode).
-This first version samples both full hemispheres; reducing the sampling to
-the point-group fundamental sector and filling the rest by symmetry is the
-planned optimization (DESIGN.md, roadmap M3) and belongs in this module.
+beam direction (EMsoft ``Calckvectors`` with the Rosca-Lambert map mode). Both
+hemispheres are sampled; :func:`reduce_to_fundamental_sector` then folds the
+directions onto the crystal point group's fundamental sector so a backend
+computes each symmetry-distinct direction only once (DESIGN.md, roadmap M3).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from torchebsd.lambert import master_pattern_grid
 
-__all__ = ["KVectorGrid", "sample_incident_directions"]
+__all__ = ["KVectorGrid", "sample_incident_directions", "reduce_to_fundamental_sector"]
+
+
+def reduce_to_fundamental_sector(
+    directions: torch.Tensor, space_group: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fold directions onto the point-group fundamental sector.
+
+    The master pattern is invariant under the crystal point group -- ``I(k) =
+    I(g k)`` -- so directions related by symmetry share one intensity. Reduces
+    every direction to its canonical fundamental-sector representative (orix
+    ``in_fundamental_sector``) and deduplicates: symmetry-equivalent grid points
+    map to a bit-identical representative, so the fold is exact (no
+    interpolation). Cubic grids collapse ~15x; low-symmetry groups less.
+
+    Returns ``(reps, inverse)`` -- the unique representative directions to
+    evaluate, and an index mapping each input direction to its representative,
+    so ``full_values = backend(reps)[inverse]``.
+    """
+    from orix.quaternion.symmetry import get_point_group
+    from orix.vector import Vector3d
+
+    dev, dt = directions.device, directions.dtype
+    pg = get_point_group(int(space_group))
+    reduced = Vector3d(directions.detach().cpu().numpy()).in_fundamental_sector(pg).data
+    key = np.round(reduced, 6)
+    _, first, inverse = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    reps = torch.as_tensor(reduced[first], device=dev, dtype=dt)
+    inverse = torch.as_tensor(np.asarray(inverse).ravel(), device=dev, dtype=torch.long)
+    return reps, inverse
 
 
 @dataclass
