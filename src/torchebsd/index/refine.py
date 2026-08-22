@@ -160,6 +160,7 @@ def refine_orientation(
     pc_lr=None,
     directions=None,
     device=None,
+    keep_best=True,
     return_history=False,
 ):
     """Refine ``rotations`` (and optionally the pattern center) by autograd.
@@ -219,6 +220,13 @@ def refine_orientation(
         there (:meth:`~torchebsd.index.indexer.SphericalIndexer.refine` passes the
         indexer's own device). The result ``Rotation`` is device-independent; the
         returned ``score`` (and ``pc``) live on this device.
+    keep_best
+        If ``True`` (default), refinement never returns an orientation *worse* than the
+        seed: for any pattern whose refined NCC does not exceed its seed NCC, the coarse
+        seed orientation (and seed score) is kept. This makes refinement monotone -- it
+        can only sharpen, never degrade -- which removes the stray outliers that gradient
+        refinement can introduce on low-quality real patterns. Set ``False`` to always
+        take the optimizer's result.
     return_history
         If ``True``, also return the per-iteration NCC trajectory (see Returns).
 
@@ -317,6 +325,10 @@ def refine_orientation(
         m_r = master.sample(v).to(device=device, dtype=dtype)  # (Np, M)
         return _masked_ncc(e, m_r, mask)
 
+    # seed NCC (w = 0), for the keep_best gate below
+    with torch.no_grad():
+        seed_score = _score().detach()
+
     for _ in range(n_iters):
         opt.zero_grad()
         s = _score()
@@ -326,9 +338,22 @@ def refine_orientation(
         opt.step()
 
     with torch.no_grad():
-        score = _score().detach()
-        d_r = torch.matrix_exp(_skew(w))
-        r_final = (r0_mat @ d_r).cpu().numpy()
+        refined_score = _score().detach()
+        r_ref = r0_mat @ torch.matrix_exp(_skew(w))  # (Np, 3, 3)
+        if keep_best:
+            # never return an orientation worse than the seed: where refinement did not
+            # raise the NCC (e.g. it overshot the shallow, noisy basin of a low-quality
+            # real pattern) keep the coarse seed. Guarantees monotonic non-degradation
+            # and removes the stray outliers refinement can introduce. (For refine_pc the
+            # shared refined pattern center is still returned; the gate reverts only the
+            # per-pattern orientation, so seed_score -- taken at the seed pc -- is an
+            # approximation there, but a safe one.)
+            keep = (refined_score >= seed_score).reshape(-1, 1, 1)
+            r_final = torch.where(keep, r_ref, r0_mat).cpu().numpy()
+            score = torch.maximum(refined_score, seed_score)
+        else:
+            r_final = r_ref.cpu().numpy()
+            score = refined_score
 
     from orix.quaternion import Rotation
 

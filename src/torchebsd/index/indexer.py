@@ -375,6 +375,7 @@ class SphericalIndexer:
         n_iters=100,
         lr=0.02,
         pc_lr=None,
+        keep_best=True,
         return_history=False,
     ):
         """Gradient-refine indexed orientations (and optionally the pattern center).
@@ -393,9 +394,11 @@ class SphericalIndexer:
         rotations
             Seed orientations, an :class:`orix.quaternion.Rotation` of length ``Np``. If
             ``None`` (default), :meth:`index` is run on ``patterns`` to obtain them.
-        pc, refine_pc, n_iters, lr, pc_lr, return_history
+        pc, refine_pc, n_iters, lr, pc_lr, keep_best, return_history
             Passed through to :func:`~torchebsd.index.refine.refine_orientation` (see its
-            docstring). ``pc`` defaults to the indexer's ``detector.pc``.
+            docstring). ``pc`` defaults to the indexer's ``detector.pc``. ``keep_best``
+            (default ``True``) makes refinement monotone -- it never returns an
+            orientation worse than the seed.
 
         Returns
         -------
@@ -421,6 +424,7 @@ class SphericalIndexer:
             pc_lr=pc_lr,
             directions=self._dirs,
             device=self.device,
+            keep_best=keep_best,
             return_history=return_history,
         )
 
@@ -434,7 +438,7 @@ class SphericalIndexer:
         normalize=True,
         refine=False,
         refine_iters=100,
-        refine_lr=0.05,
+        refine_lr=0.02,
     ):
         """Index a whole scan and assemble the result into an orix ``CrystalMap``.
 

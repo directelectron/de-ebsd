@@ -413,3 +413,32 @@ def test_refine_stable_under_moderate_noise(master, detector, indexer):
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < GRID_STEP_DEG  # converges toward truth
         assert _dis(coarse[i], refined[i]) < GRID_STEP_DEG  # small, controlled step
+
+
+def test_keep_best_never_degrades_below_seed(master, detector, indexer):
+    """``keep_best`` guarantees refinement is monotone: it never returns a worse fit.
+
+    Forced with an absurd ``lr`` that makes the optimizer overshoot and *degrade* the
+    NCC, ``keep_best=True`` reverts each such pattern to its coarse seed (so the score
+    never drops below the seed's), while ``keep_best=False`` lets the degradation
+    through. This is the guard that removes the stray refinement outliers seen on real
+    data.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse = indexer.index(patterns)[0]
+    _, seed_score = indexer.refine(patterns, rotations=coarse, n_iters=0)  # seed NCC
+
+    gated, s_gated = indexer.refine(
+        patterns, rotations=coarse, n_iters=30, lr=2.0, keep_best=True
+    )
+    ungated, s_ungated = indexer.refine(
+        patterns, rotations=coarse, n_iters=30, lr=2.0, keep_best=False
+    )
+    # gated is never worse than the seed; the absurd lr degrades the ungated result
+    assert torch.all(s_gated >= seed_score - 1e-6)
+    assert torch.any(s_ungated < seed_score - 1e-3)
+    # where the ungated run degraded, the gated run kept the seed orientation exactly
+    for i in range(r_true.size):
+        if float(s_ungated[i]) < float(seed_score[i]) - 1e-3:
+            assert _dis(coarse[i], gated[i]) < 1e-4
