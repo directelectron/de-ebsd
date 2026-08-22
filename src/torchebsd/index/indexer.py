@@ -373,7 +373,7 @@ class SphericalIndexer:
         pc=None,
         refine_pc=False,
         n_iters=100,
-        lr=0.05,
+        lr=0.02,
         pc_lr=None,
         return_history=False,
     ):

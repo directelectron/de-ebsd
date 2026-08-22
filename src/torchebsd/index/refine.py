@@ -50,9 +50,17 @@ a contrast-invariant correlation coefficient in ``[-1, 1]``, differentiable in b
 ``w`` and (via ``E``) the pattern center. It is *maximized* (loss ``-NCC``) with Adam;
 the per-pattern NCCs are summed into one scalar loss, so a whole stack refines in
 parallel with fully independent per-pattern gradients (the pattern center is the one
-optionally-shared parameter). ~100 Adam steps at ``lr = 0.05`` take a coarse seed a few
+optionally-shared parameter). ~100 Adam steps at ``lr = 0.02`` take a coarse seed a few
 degrees off down to well under half a degree; the pattern center is refined with a
 smaller step (``pc_lr``, default ``lr / 5``) since its natural scale is finer.
+
+``lr`` is the key stability knob. The objective's basin around the true orientation is
+sharp and deep for a clean, band-limited synthetic master but *shallow and noisy* for
+real, low-resolution experimental patterns; too large a step then overshoots that basin
+and the optimizer walks off into noise (an ``lr = 0.05`` that converges beautifully on a
+synthetic master was observed to diverge by ~18 degrees on real Ni patterns). The
+default ``0.02`` is stable on real data while still converging on synthetic; drop to
+``~0.01`` for especially noisy scans.
 
 Because the master is *also* differentiable in the crystal parameters (DESIGN.md M4),
 this same machinery extends to forward-model fitting of the structure. See
@@ -148,7 +156,7 @@ def refine_orientation(
     pc=None,
     refine_pc=False,
     n_iters=100,
-    lr=0.05,
+    lr=0.02,
     pc_lr=None,
     directions=None,
     device=None,
@@ -192,7 +200,10 @@ def refine_orientation(
         Number of Adam iterations (default 100).
     lr
         Adam learning rate for the rotation-vector correction ``w`` (radians; default
-        0.05).
+        0.02). The key stability knob (see the module docstring): too large a step
+        overshoots the shallow, noisy objective basin of real experimental patterns and
+        the optimizer diverges. ``0.02`` is stable on real data and converges on
+        synthetic; use ``~0.01`` for especially noisy scans.
     pc_lr
         Adam learning rate for the pattern center when ``refine_pc`` (default
         ``lr / 5``): the pattern center's natural scale is finer than the orientation's,

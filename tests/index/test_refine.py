@@ -369,3 +369,47 @@ def test_refine_device_arg_is_honored_cuda(master, detector):
     )
     assert score.device.type == "cuda"
     assert _dis(r_true[0], refined[0]) < 0.5
+
+
+# --------------------------------------------------------------------------- #
+# 6. stability -- the real-data (kikuchipy Ni) lesson
+# --------------------------------------------------------------------------- #
+def test_default_refine_lr_is_conservative():
+    """The default rotation ``lr`` stays small enough for real, shallow-basin data.
+
+    The divergence a too-large ``lr`` causes shows up only on *real* low-resolution
+    patterns: the synthetic band master's NCC basin is too deep to reproduce it (even
+    ``lr = 0.05`` converges on synthetic data, noise included), so this guards the value
+    directly. A regression to the old ``lr = 0.05`` -- which walked the seed off by ~18
+    deg on real kikuchipy Ni patterns while ``lr <= 0.02`` refined cleanly -- fails here.
+    """
+    import inspect
+
+    for fn in (refine_orientation, SphericalIndexer.refine):
+        default_lr = inspect.signature(fn).parameters["lr"].default
+        assert default_lr <= 0.02, (
+            f"{fn.__qualname__} default lr {default_lr} is too aggressive for real data"
+        )
+
+
+def test_refine_stable_under_moderate_noise(master, detector, indexer):
+    """With the default ``lr``, refinement converges on a noise-perturbed pattern.
+
+    A behavioral check that additive noise does not make refinement diverge: the refined
+    orientation lands near the truth and moves the coarse seed only a little (a small,
+    controlled step, not a walk-off).
+    """
+    rng = np.random.default_rng(0)
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[2:4]))  # two asymmetric
+    clean = master.project(detector, r_true, rescale=True)  # (2, H, W) in [-1, 1]
+    noise = torch.as_tensor(
+        rng.normal(0.0, 0.25, size=tuple(clean.shape)), dtype=clean.dtype
+    )
+    patterns = clean + noise
+    coarse = indexer.index(patterns)[0]
+
+    refined, score = indexer.refine(patterns, rotations=coarse, n_iters=100)  # default lr
+    assert torch.isfinite(score).all()
+    for i in range(r_true.size):
+        assert _dis(r_true[i], refined[i]) < GRID_STEP_DEG  # converges toward truth
+        assert _dis(coarse[i], refined[i]) < GRID_STEP_DEG  # small, controlled step
