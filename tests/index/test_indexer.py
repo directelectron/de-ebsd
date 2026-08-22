@@ -11,14 +11,21 @@ is asserted to be the orientation passed to ``project`` *directly* (no ``~R``, n
 transpose), so a wrong convention fails here loudly (the recovered orientation would
 sit ~90-180 degrees away).
 
-The synthetic master is a sum of bright **great-circle bands** (a stand-in for real
-Kikuchi bands): bands tile the whole sphere, so the master has roughly uniform local
-norm and the *unnormalized* masked cross-correlation of I4 is unbiased and recovers
-the orientation reliably over the detector's partial field of view. (A master with a
-few isolated bright spots would instead exercise the documented I4 bias toward
-orientations that place those spots in the field of view -- the ``g``-dependent
-normalization that removes it is the deferred I5 enhancement.) The bands are smooth
-on the pixel scale, so the field is band-limited well within ``L = 16``. fp64 on CPU
+The synthetic band master is a sum of bright **great-circle bands** (a stand-in for
+real Kikuchi bands): bands tile the whole sphere, so the master has roughly uniform
+local norm and the *unnormalized* masked cross-correlation of I4 is unbiased and
+recovers the orientation reliably over the detector's partial field of view. The bands
+are smooth on the pixel scale, so the field is band-limited well within ``L = 16``.
+
+The **locally-normalized (masked) cross-correlation** (``normalize=True``, now the
+default) is exercised by a second master with a few isolated bright **spots** on top of
+the bands: its local norm varies strongly across the sphere, so the *unnormalized*
+score is biased toward orientations that merely place a bright spot in the field of
+view -- and misindexes some orientations by ~100-180 degrees. The money test
+(:func:`test_normalized_cc_fixes_bright_spot_bias`) reproduces that failure with
+``normalize=False`` and shows ``normalize=True`` recovers every one of the same
+orientations to within the SOFT grid cell. The bands underneath guarantee non-zero
+local variance in every FOV, so the normalized correlation is well-posed. fp64 on CPU
 throughout for an exact-ish check that runs fast and fits in memory.
 """
 
@@ -41,6 +48,12 @@ BANDWIDTH = 16
 # and the correlation-level round-trip test).
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)
 TOL_DEG = 1.5 * GRID_STEP_DEG
+
+# The bright-spot / normalization tests use a slightly larger bandwidth so the narrow
+# spots are well represented; still modest (fp64 CPU, fast).
+BW_SPOT = 20
+GRID_STEP_SPOT_DEG = 360.0 / (2 * BW_SPOT + 2)
+TOL_SPOT_DEG = 1.5 * GRID_STEP_SPOT_DEG
 
 
 def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
@@ -86,6 +99,81 @@ def master() -> MasterPattern:
 def detector() -> EBSDDetector:
     """A realistic tilted detector with a generous (~38%) field of view."""
     return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+
+
+def _spot_field(
+    v: torch.Tensor,
+    poles: torch.Tensor,
+    pamps: torch.Tensor,
+    bwidth: float,
+    centers: torch.Tensor,
+    camps: torch.Tensor,
+    cwidth: float,
+) -> torch.Tensor:
+    """Great-circle bands PLUS a few isolated bright Gaussian spots.
+
+    The band part (as in :func:`_band_field`) gives every field of view non-zero local
+    variance so the normalized correlation is well-posed; the spots (``camps`` large)
+    make the *local norm* vary strongly across the sphere, which is exactly what biases
+    the unnormalized masked correlation toward orientations that put a spot in the FOV.
+    """
+    v = v.to(torch.float64)
+    d = v @ poles.T
+    bands = (pamps * torch.exp(-(d / bwidth) ** 2)).sum(-1)
+    ang = torch.arccos((v @ centers.T).clamp(-1.0, 1.0))  # angle to each spot center
+    spots = (camps * torch.exp(-0.5 * (ang / cwidth) ** 2)).sum(-1)
+    return bands + spots
+
+
+@pytest.fixture(scope="module")
+def spot_master() -> MasterPattern:
+    """A bright-spot master: 12 bands + 3 very bright, narrow, isolated spots.
+
+    The spots (base amplitude ~12x the bands) dominate the *unnormalized* correlation
+    wherever they fall in the FOV, so it misindexes some orientations grossly; the
+    ``g``-dependent normalization divides that local energy out and fixes it.
+    """
+    g = torch.Generator().manual_seed(3)
+    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
+    poles = poles / poles.norm(dim=-1, keepdim=True)
+    pamps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
+    centers = torch.randn(3, 3, generator=g, dtype=torch.float64)
+    centers = centers / centers.norm(dim=-1, keepdim=True)
+    camps = 12.0 * (0.6 + 0.4 * torch.rand(3, generator=g, dtype=torch.float64))
+
+    npx = 200
+    north = master_pattern_grid(npx, dtype=torch.float64)
+    south = north.clone()
+    south[..., 2] = -south[..., 2]
+    data = torch.stack(
+        [
+            _spot_field(north, poles, pamps, 0.11, centers, camps, 0.16),
+            _spot_field(south, poles, pamps, 0.11, centers, camps, 0.16),
+        ],
+        dim=0,
+    )[None]  # (1, 2, n, n)
+    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+
+
+@pytest.fixture(scope="module")
+def detector_partial() -> EBSDDetector:
+    """A tilted detector with a partial (~35%) field of view for the bias test."""
+    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.25), sample_tilt=70.0, tilt=5.0)
+
+
+# eight known orientations (Bunge Euler, degrees) for the bright-spot money test
+_SPOT_EULER_DEG = np.array(
+    [
+        [10.0, 20.0, 30.0],
+        [45.0, 55.0, 15.0],
+        [123.0, 47.0, 205.0],
+        [200.0, 100.0, 300.0],
+        [300.0, 80.0, 40.0],
+        [15.0, 35.0, 95.0],
+        [250.0, 60.0, 150.0],
+        [88.0, 120.0, 260.0],
+    ]
+)
 
 
 def _disorientation_deg(r_a: Rotation, r_b: Rotation) -> float:
@@ -190,15 +278,18 @@ def _windowed_pattern_coeffs(indexer, pattern):
 def test_quality_is_finite_and_peaks_above_random_orientation(master, detector):
     """Quality is finite and the peak beats the score at a random (wrong) orientation.
 
-    ``quality`` is the peak of the SO(3) correlation surface; for a genuine pattern it
-    is the maximum over the grid, so it must exceed the surface's value at a randomly
-    chosen orientation cell (and it does so with a clear margin for the band master).
+    Pins the ``normalize=False`` (unnormalized) baseline: ``quality`` is then the peak
+    of the raw ``X`` SO(3) correlation surface, so it must equal that surface's maximum
+    and exceed its value at a randomly chosen orientation cell (with a clear margin for
+    the band master). (The ``normalize=True`` default instead returns the peak of the
+    locally-normalized ``gamma`` surface -- a different, correlation-coefficient-like
+    number -- which is checked in the bright-spot tests below.)
     """
     r_true = Rotation.from_euler(np.deg2rad([[15.0, 35.0, 95.0]]))
     pattern = master.project(detector, r_true, rescale=True)[0]
 
     indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
-    _, quality = indexer.index(pattern)
+    _, quality = indexer.index(pattern, normalize=False)
     assert torch.isfinite(quality).all()
 
     # the full correlation surface for this pattern
@@ -259,3 +350,132 @@ def test_cuda_path_matches_cpu(master, detector):
     rot_out, quality = indexer.index(pattern)
     assert torch.isfinite(quality).all()
     assert _disorientation_deg(r_true[0], rot_out[0]) < TOL_DEG
+
+
+# --------------------------------------------------------------------------- #
+# I5: locally-normalized (masked) cross-correlation -- the bright-spot bias fix
+# --------------------------------------------------------------------------- #
+def test_normalized_cc_fixes_bright_spot_bias(spot_master, detector_partial):
+    """THE money test: unnormalized misindexes the bright-spot master; normalized fixes it.
+
+    On a master with a few very bright localized spots and a partial FOV, the
+    *unnormalized* masked correlation (``normalize=False``) is biased toward
+    orientations that place a spot in the field of view, so it misindexes at least one
+    of the known orientations by ~100-180 degrees (a gross, far-off spurious peak, not a
+    near-miss). The **locally-normalized** correlation (``normalize=True``, the default)
+    divides out that ``g``-dependent local energy and recovers every one of the *same*
+    orientations to within ~1.5x the SOFT grid cell.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_SPOT_EULER_DEG))
+    patterns = spot_master.project(detector_partial, r_true, rescale=True)  # (8, H, W)
+
+    indexer = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+
+    # (1) unnormalized baseline is biased -> at least one gross misindexing
+    rot_u, _ = indexer.index(patterns, normalize=False)
+    dis_u = [_disorientation_deg(r_true[i], rot_u[i]) for i in range(r_true.size)]
+    n_fail_u = sum(d > TOL_SPOT_DEG for d in dis_u)
+    assert n_fail_u >= 1, (
+        "expected the unnormalized bright-spot bias to misindex >= 1 orientation "
+        f"(so normalization is what fixes it); got disorientations {dis_u}"
+    )
+    assert max(dis_u) > 90.0  # the failure is a far-off spurious peak, not a near-miss
+
+    # (2) normalized correlation recovers every one of the same orientations
+    rot_n, quality = indexer.index(patterns, normalize=True)
+    dis_n = [_disorientation_deg(r_true[i], rot_n[i]) for i in range(r_true.size)]
+    for i, dis in enumerate(dis_n):
+        assert dis < TOL_SPOT_DEG, (
+            f"orientation {i}: normalized {dis:.2f} deg > {TOL_SPOT_DEG:.2f} deg tol "
+            f"(unnormalized was {dis_u[i]:.2f} deg)"
+        )
+    assert torch.isfinite(quality).all()
+
+
+def test_normalized_quality_in_correlation_range(spot_master, detector_partial):
+    """``normalize=True`` quality is finite and correlation-coefficient-like (~[-1, 1])."""
+    r_true = Rotation.from_euler(np.deg2rad(_SPOT_EULER_DEG))
+    patterns = spot_master.project(detector_partial, r_true, rescale=True)
+
+    indexer = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+    _, quality = indexer.index(patterns, normalize=True)
+
+    assert torch.isfinite(quality).all()
+    # gamma is a proper correlation-coefficient-like number: for genuine matches it is
+    # clearly positive and around [0, 1] (small band-limiting overshoot above 1 is fine).
+    assert float(quality.min()) > 0.0
+    assert float(quality.max()) < 1.3
+
+
+def test_geometry_normalizer_computed_once_and_shared(spot_master, detector_partial):
+    """The geometry-derived denominator is built once, shaped (N, N, N), and reused.
+
+    ``a2_lm`` is precomputed in ``__init__``; the FOV-mask normalizer is built lazily on
+    the first ``normalize=True`` call, cached, and shared across the batch (and across
+    later calls) -- it is a function of the master + fixed detector geometry only.
+    """
+    n = 2 * BW_SPOT + 2
+    indexer = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+    # a2_lm (the S2 spectrum) is precomputed alongside a_lm in __init__
+    assert indexer.a2_lm.shape == ((BW_SPOT + 1) ** 2,)
+    assert indexer.a2_lm.dtype == torch.complex128
+    # the geometry normalizer is not built until the first normalized index
+    assert indexer._denom_geo is None
+
+    r_true = Rotation.from_euler(np.deg2rad(_SPOT_EULER_DEG[:3]))
+    patterns = spot_master.project(detector_partial, r_true, rescale=True)
+    indexer.index(patterns, normalize=True)
+
+    denom = indexer._denom_geo
+    assert denom is not None
+    assert tuple(denom.shape) == (n, n, n)  # the local-norm field over the SO(3) grid
+    assert torch.isfinite(denom).all()
+    assert float(denom.min()) > 0.0  # bands keep the local norm off zero everywhere
+    assert indexer._a_w is not None and float(indexer._a_w) > 0.0
+
+    # a second (single-pattern) call reuses the SAME cached tensor -- not recomputed
+    indexer.index(patterns[0], normalize=True)
+    assert indexer._denom_geo is denom
+
+    # the unnormalized path neither needs nor builds the normalizer
+    idx_u = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+    idx_u.index(patterns, normalize=False)
+    assert idx_u._denom_geo is None
+
+
+def test_normalized_batched_and_single_agree(spot_master, detector_partial):
+    """``normalize=True`` works for a stack and a bare ``(H, W)``, and they agree."""
+    r_true = Rotation.from_euler(np.deg2rad(_SPOT_EULER_DEG))
+    patterns = spot_master.project(detector_partial, r_true, rescale=True)
+
+    indexer = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+    rot_b, q_b = indexer.index(patterns, normalize=True)  # batched
+    assert rot_b.size == r_true.size
+    assert tuple(q_b.shape) == (r_true.size,)
+
+    for i in range(r_true.size):
+        rot_s, q_s = indexer.index(patterns[i], normalize=True)  # single (H, W)
+        assert rot_s.size == 1
+        assert tuple(q_s.shape) == (1,)
+        assert _disorientation_deg(rot_b[i], rot_s[0]) < 1e-6
+        assert float(q_s[0]) == pytest.approx(float(q_b[i]), rel=1e-9)
+
+
+def test_band_master_roundtrip_normalized(master, detector):
+    """``normalize=True`` still passes the band-master round trip (the default flip is safe).
+
+    On the near-uniform-norm band master both modes land in the same grid cell; the
+    normalized quality is finite and in the correlation-coefficient range.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)
+
+    indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
+    rot_n, q_n = indexer.index(patterns, normalize=True)
+    rot_u, _ = indexer.index(patterns, normalize=False)
+    for i in range(r_true.size):
+        assert _disorientation_deg(r_true[i], rot_n[i]) < TOL_DEG
+        assert _disorientation_deg(rot_n[i], rot_u[i]) < TOL_DEG  # same cell, uniform norm
+    assert torch.isfinite(q_n).all()
+    assert float(q_n.min()) > 0.0
+    assert float(q_n.max()) < 1.3

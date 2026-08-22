@@ -14,8 +14,9 @@ orientation from a detector pattern:
    (:func:`torchebsd.index.backproject.pattern_to_sphere`), window it over the
    detector field of view, transform to ``b_lm``;
 4. cross-correlate the two spectra over all of SO(3)
-   (:func:`torchebsd.index.correlation.so3_cross_correlation`), take the peak, and
-   read the orientation off the SOFT grid with
+   (:func:`torchebsd.index.correlation.so3_cross_correlation`), **locally normalize
+   the correlation over the field of view** (the default; ``normalize=False`` for the
+   raw baseline), take the peak, and read the orientation off the SOFT grid with
    :func:`torchebsd.index.wigner.grid_to_rotation`.
 
 **Convention (pinned).** ``grid_to_rotation(argmax)`` is *directly* the sample
@@ -26,21 +27,59 @@ sits at ``R^-1`` at the active-matrix level, but the orix ZYZ->Bunge bridge in
 cancels it, so the returned orix ``Rotation`` is ``R`` itself. The round-trip
 acceptance test (``tests/index/test_indexer.py``) pins this end to end.
 
-**Field-of-view windowing (settled policy).** Each back-projected pattern is
-standardized to zero-mean, unit-variance *over the field of view* and zeroed
-outside it. Zeroing the FOV mean makes the pattern's ``l = 0`` (DC) harmonic
-vanish, which kills the DC-alignment bias and makes the master's own DC irrelevant
-to the masked correlation. The correlation itself is the plain (unnormalized)
-masked cross-correlation; full masked *normalized* cross-correlation (a
-``g``-dependent, EMSphInx-style normalization) is a deferred I5 enhancement. The
-unnormalized form is sufficient to recover orientation but can bias toward
-orientations that place bright master regions inside the field of view.
+**Field-of-view windowing.** Each back-projected pattern is standardized to
+zero-mean, unit-variance *over the field of view* (FOV) and zeroed outside it (call
+the result ``E``). Zeroing the FOV mean makes ``E``'s ``l = 0`` (DC) harmonic vanish,
+which kills the DC-alignment bias and makes the master's own DC irrelevant to the
+masked correlation (``b_00 = 0`` => the ``l = 0`` cross term drops).
+
+**Locally-normalized (masked) cross-correlation -- the default.** The masked
+cross-correlation ``X(g) = int_W E(n) M(g^-1 n) dn`` that I4 computes is *unnormalized*:
+it carries the ``g``-dependent master energy over the FOV, so it can be outscored by a
+spurious orientation that merely places a bright master region inside the FOV (I4
+measured, on a bright-spot master, a true-cell score below a far-off spurious peak).
+The robustness fix I4 deferred -- a ``g``-dependent, EMSphInx-style normalization -- is
+now applied **by default** (``normalize=True``). The score becomes the spherical
+zero-mean masked normalized cross-correlation
+
+    gamma(g) = X(g) / [ sqrt(P) * sqrt(S2(g) - S1(g)^2 / A_W) ],
+
+a correlation-coefficient-like number (roughly in ``[-1, 1]``). Here ``W(n)`` is the
+detector's fixed FOV indicator (``1`` inside, ``0`` outside), ``M_g(n) = M(g^-1 n)``,
+and
+
+    X(g)  = int E M_g dn   = so3_cross_correlation(master=a_lm,  pattern=b_lm)
+    S1(g) = int W M_g  dn   = so3_cross_correlation(master=a_lm,  pattern=w_lm)
+    S2(g) = int W M_g^2 dn  = so3_cross_correlation(master=a2_lm, pattern=w_lm)
+
+with ``a2_lm`` the spectrum of ``M^2`` and ``w_lm`` that of ``W``. The denominator
+``sqrt(S2 - S1^2 / A_W)`` is the local norm of the master inside the *rotated* FOV
+(``A_W = int W dn`` its spherical area), which divides out exactly the ``g``-dependent
+master energy that biased ``X``. ``A_W`` and ``P = int W E^2 dn`` (the pattern's FOV
+energy) are ``g``-independent scalars, so they set only the quality scale, not the
+argmax; both are the spherical quadrature integral of a field, ``sqrt(4 pi) Re(f_00)``.
+
+The three terms are the **same** :func:`so3_cross_correlation` evaluated three ways on
+one SO(3) grid (same ``(alpha, beta, gamma)`` axis order), so they are aligned
+elementwise and ``gamma`` is a straightforward elementwise combination followed by the
+*identical* argmax + :func:`grid_to_rotation` chain -- normalization does **not** touch
+the rotation convention. ``w_lm``, ``S1``, ``S2``, ``A_W`` and the whole denominator
+field depend only on the (fixed) detector geometry and the master, so they are computed
+**once** and cached on the indexer, shared across every pattern in a batch; the only
+per-pattern extra cost is forming ``gamma`` from ``X`` and ``P``.
+
+``normalize=False`` keeps the honest **unnormalized** baseline ``X(g)``: sufficient for
+near-uniform-norm masters (dense Kikuchi bands) but biased for masters with localized
+bright regions -- it is retained so the bias, and that normalization removes it, stay
+testable.
 
 See ``INDEXING_DESIGN.md`` (milestone I4). Scan -> ``CrystalMap`` assembly (I5),
 gradient refinement (I6), and visualization (I7) are separate milestones.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 
@@ -92,6 +131,19 @@ class SphericalIndexer:
         The single shared transform plan (master and patterns both go through it).
     a_lm : torch.Tensor
         The precomputed master spectrum, complex, shape ``((L+1)**2,)``.
+    a2_lm : torch.Tensor
+        The precomputed spectrum of the *squared* master ``M^2``, complex, shape
+        ``((L+1)**2,)`` -- the ``S2`` term of the masked normalization (see the module
+        docstring). Precomputed here because it depends only on the master.
+
+    Notes
+    -----
+    The geometry-derived masked-normalization terms (the FOV mask spectrum ``w_lm``,
+    the FOV area ``A_W`` and the denominator field ``sqrt(S2 - S1^2 / A_W)``) are
+    computed once on the first ``normalize=True`` call and cached, since they depend
+    only on the master and the *fixed* detector pattern center -- they are shared
+    across every pattern in a scan. If the pattern center were later made variable (I6
+    refinement), this cache would have to be invalidated.
     """
 
     def __init__(self, master, detector, bandwidth=53, device=None):
@@ -131,11 +183,56 @@ class SphericalIndexer:
         # own device; move the samples onto the plan's device/dtype before forward.
         m_samples = master.sample(self._dirs)  # (M,), on master.device
         m_samples = m_samples.to(device=self.device, dtype=self.dtype)
-        self.a_lm = self.sht.forward(
-            m_samples.reshape(self.sht.n_theta, self.sht.n_phi)
-        )  # ((L+1)**2,) complex
+        grid_shape = (self.sht.n_theta, self.sht.n_phi)
+        self.a_lm = self.sht.forward(m_samples.reshape(grid_shape))  # ((L+1)**2,) complex
+        # spectrum of M^2 for the S2 term of the masked normalization; master-only, so
+        # precomputed here alongside a_lm.
+        self.a2_lm = self.sht.forward((m_samples**2).reshape(grid_shape))
 
-    def index(self, patterns):
+        # flat quadrature weights (M,), used for the g-independent FOV integrals A_W, P
+        self._weights_flat = self.sht.weights.reshape(-1)
+        # geometry-derived normalizer, cached lazily on the first normalize=True call
+        # (depends only on the master and the fixed detector pc -- see class Notes).
+        self._w_lm = None  # FOV mask spectrum
+        self._a_w = None  # FOV spherical area A_W
+        self._denom_geo = None  # sqrt(clamp(S2 - S1^2 / A_W)), shape (N, N, N)
+
+    def _geometry_normalizer(self):
+        """Compute (once) and return the cached masked-NCC denominator field.
+
+        Returns the ``g``-dependent local-norm field ``sqrt(S2(g) - S1(g)^2 / A_W)``
+        (clamped), shape ``(N, N, N)`` with ``N = 2L + 2``, on the same SO(3) grid as
+        the per-pattern cross term ``X``. It reuses :func:`so3_cross_correlation` twice
+        -- ``S1`` against the FOV mask spectrum ``w_lm`` and ``S2`` against ``a2_lm``.
+        Everything here depends only on the master and the fixed detector pattern
+        center, so it is computed once and cached (``_w_lm``, ``_a_w``, ``_denom_geo``)
+        and shared across the whole batch. (If ``pc`` were made variable for I6
+        refinement, this cache would need invalidating.)
+        """
+        if self._denom_geo is not None:
+            return self._denom_geo
+        # The FOV mask W is pattern-independent (fixed by detector geometry), so recover
+        # it by back-projecting a zero pattern and keeping only the mask output.
+        zero = torch.zeros(
+            (1, self.detector.nrows, self.detector.ncols),
+            device=self.device,
+            dtype=self.dtype,
+        )
+        _, w = pattern_to_sphere(zero, self.detector, self._dirs)  # (M,), 1 in FOV else 0
+        w_lm = self.sht.forward(w.reshape(self.sht.n_theta, self.sht.n_phi))
+        # S1, S2: the same so3_cross_correlation as X, against w_lm (master mean and
+        # second moment over the rotated FOV). Aligned elementwise with X.
+        s1 = so3_cross_correlation(self.a_lm, w_lm, self.bandwidth)  # (N, N, N)
+        s2 = so3_cross_correlation(self.a2_lm, w_lm, self.bandwidth)  # (N, N, N)
+        # A_W = int W dn = sqrt(4 pi) Re(w_00): the FOV spherical area (a scalar).
+        a_w = math.sqrt(4.0 * math.pi) * w_lm[0].real
+        denom = (s2 - s1**2 / a_w.clamp_min(self._eps)).clamp_min(self._eps).sqrt()
+        self._w_lm = w_lm
+        self._a_w = a_w
+        self._denom_geo = denom
+        return denom
+
+    def index(self, patterns, normalize=True):
         """Index one pattern or a stack, returning orix orientations and quality.
 
         Parameters
@@ -145,6 +242,15 @@ class SphericalIndexer:
             array or a torch tensor (``H = detector.nrows``, ``W = detector.ncols``).
             Plain arrays are accepted directly, so no kikuchipy import is needed --
             a kikuchipy signal's ``.data`` can be passed straight in.
+        normalize
+            When ``True`` (default) the score is the **locally-normalized (masked)
+            cross-correlation** ``gamma(g)`` (see the module docstring): the raw masked
+            cross term ``X(g)`` divided by the master's local FOV norm, which removes
+            the bias toward orientations that place bright master regions in the field
+            of view. When ``False`` the score is the raw **unnormalized** masked
+            cross-correlation ``X(g)`` -- the honest I4 baseline, unbiased only for
+            near-uniform-norm masters. Both share the identical argmax + rotation
+            convention chain; only the per-pattern scaling of the surface differs.
 
         Returns
         -------
@@ -154,14 +260,19 @@ class SphericalIndexer:
             that was passed to :meth:`torchebsd.sim.MasterPattern.project` (no
             inverse/transpose -- see the module docstring).
         quality : torch.Tensor
-            The peak correlation value of each pattern, a length-``Np`` real tensor.
-            Higher means a better match; use it as a per-pattern confidence metric.
+            The peak score of each pattern, a length-``Np`` real tensor. For
+            ``normalize=True`` this is the peak of ``gamma`` -- a
+            correlation-coefficient-like number, roughly in ``[-1, 1]``, comparable
+            across patterns and FOVs. For ``normalize=False`` it is the raw peak of
+            ``X`` (arbitrary scale). Higher means a better match; use it as a
+            per-pattern confidence metric.
 
         Notes
         -----
-        I5 will wrap this into an orix :class:`~orix.crystal_map.CrystalMap` (one
-        orientation + quality per scan point); here the raw ``Rotation`` and quality
-        are returned so the single-pattern path stays dependency-light.
+        The scan-indexing milestone (I5) will wrap this into an orix
+        :class:`~orix.crystal_map.CrystalMap` (one orientation + quality per scan
+        point); here the raw ``Rotation`` and quality are returned so the
+        single-pattern path stays dependency-light.
         """
         patt = torch.as_tensor(patterns, device=self.device, dtype=self.dtype)
         single = patt.ndim == 2
@@ -188,12 +299,27 @@ class SphericalIndexer:
             e.reshape(*e.shape[:-1], self.sht.n_theta, self.sht.n_phi)
         )  # (Np, (L+1)**2)
 
-        # cross-correlate over SO(3): C[np, alpha, beta, gamma], N = 2L+2
+        # cross-correlate over SO(3): the masked cross term X[np, alpha, beta, gamma].
+        # This is exactly so3_cross_correlation's X(g); the S1/S2 terms of the
+        # normalization reuse the same call against w_lm / a2_lm.
         c = so3_cross_correlation(self.a_lm, b_lm, self.bandwidth)  # (Np, N, N, N)
         n_grid = 2 * self.bandwidth + 2
 
+        if normalize:
+            # locally-normalized (masked) correlation gamma = X / (sqrt(P) * denom_geo).
+            # denom_geo = sqrt(S2 - S1^2 / A_W) is geometry+master only (cached, shared
+            # across the batch); P = int W E^2 dn is the per-pattern FOV energy, the
+            # quadrature integral sqrt(4 pi) Re((E^2)_00) = sum_grid weights * E^2. Both
+            # P and A_W are g-independent, so they scale the surface but not the argmax.
+            denom_geo = self._geometry_normalizer()  # (N, N, N)
+            p_energy = (e**2 * self._weights_flat).sum(-1)  # (Np,)
+            scale = p_energy.clamp_min(self._eps).sqrt().reshape(-1, 1, 1, 1)
+            surface = c / (scale * denom_geo[None])  # (Np, N, N, N)
+        else:
+            surface = c
+
         # per-pattern peak over the three orientation axes
-        flat = c.reshape(c.shape[0], -1)
+        flat = surface.reshape(surface.shape[0], -1)
         quality, peak_flat = flat.max(dim=-1)  # (Np,), (Np,)
         j, k, p = (idx.cpu() for idx in torch.unravel_index(peak_flat, (n_grid, n_grid, n_grid)))
 
