@@ -178,6 +178,9 @@ class MasterPatternBackend(ABC):
     """
 
     name: str = "abstract"
+    #: whether this backend consumes a Monte Carlo exit-depth profile; the
+    #: simulator builds a native one (EMsoft-free) when the user supplies none.
+    uses_depth_profile: bool = False
 
     @abstractmethod
     def prepare(self, inputs: SimulationInputs) -> None:
@@ -291,6 +294,7 @@ class BlochWaveBackend(MasterPatternBackend):
     """
 
     name = "bloch"
+    uses_depth_profile = True
 
     def prepare(self, inputs: SimulationInputs) -> None:
         from torchebsd.montecarlo import DepthDistribution

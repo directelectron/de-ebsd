@@ -287,6 +287,31 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
 
 
 # --------------------------------------------------------------------------- #
+# M-MC.7: native MC is the simulator's default depth source
+# --------------------------------------------------------------------------- #
+def test_backend_depth_profile_flags():
+    from torchebsd.dynamical import resolve_backend
+
+    assert resolve_backend("bloch").uses_depth_profile is True
+    assert resolve_backend("bloch_prism").uses_depth_profile is True
+    assert resolve_backend("kinematical").uses_depth_profile is False
+
+
+def test_simulator_defaults_to_native_mc(si_crystal, microscope):
+    """A plain bloch compute() with no Monte Carlo runs the native MC itself."""
+    import torch
+
+    from torchebsd import MasterPatternSimulator
+
+    sim = MasterPatternSimulator(si_crystal, microscope, npx=6, dmin=0.1, backend="bloch")
+    assert sim.monte_carlo is None  # nothing supplied; standalone by default
+    master = sim.compute(mc_electrons=20_000)
+    assert master.metadata["backend"] == "bloch"
+    assert torch.all(torch.isfinite(master.data))
+    assert master.data.std() > 0  # real dynamical contrast, EMsoft-free
+
+
+# --------------------------------------------------------------------------- #
 # M-MC.4: validation against EMsoft accum_z (needs the reference file)
 # --------------------------------------------------------------------------- #
 _SI_MC = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")

@@ -130,6 +130,7 @@ class MasterPatternSimulator:
         device: torch.device | str | None = None,
         dtype: torch.dtype = torch.float32,
         chunk_size: int = 262_144,
+        mc_electrons: int = 200_000,
     ) -> MasterPattern:
         """Compute the master pattern on the Lambert grid.
 
@@ -141,15 +142,30 @@ class MasterPatternSimulator:
             Floating point type for the direction batch (FP32 recommended).
         chunk_size
             Number of beam directions per batch, bounding peak memory.
+        mc_electrons
+            Electron count for the native Monte Carlo depth profile built when
+            the backend needs one and no ``monte_carlo`` was supplied. Ignored if
+            a depth profile is provided or the backend does not use one.
         """
         device = torch.device(device) if device is not None else torch.device("cpu")
         sf = self.structure_factors()
         backend = resolve_backend(self.backend)
+
+        # depth-integrating backends need a Monte Carlo exit-depth profile; when
+        # the user supplied none, run the native (EMsoft-free) MC at the
+        # experimental tilt so a plain compute() stays standalone and accurate.
+        monte_carlo = self.monte_carlo
+        if monte_carlo is None and backend.uses_depth_profile:
+            monte_carlo = DepthDistribution.from_simulation(
+                self.crystal, self.energy_kev,
+                tilt_deg=self.microscope.sample_tilt,
+                n_electrons=mc_electrons, device=device, seed=0,
+            )
         backend.prepare(
             SimulationInputs(
                 sf=sf,
                 bethe=self.bethe,
-                monte_carlo=self.monte_carlo,
+                monte_carlo=monte_carlo,
                 device=device,
                 dtype=dtype,
             )

@@ -162,7 +162,7 @@ constructor. Tests in `tests/test_montecarlo_sim.py`.
 | M-MC.4 | validation vs EMsoft `accum_z` (Si, Ni) + yield sanity | M — **done** |
 | M-MC.5 | differentiable soft mode (reparam draws, soft gates, kernel binning) | L |
 | M-MC.6 | gradient validation (autograd vs CRN finite diff) + `τ`-annealing study | M |
-| M-MC.7 | wire in as the default depth source; docs; roadmap update | S |
+| M-MC.7 | wire in as the default depth source; docs; roadmap update | S — **done** |
 
 Sequencing: **M-MC.3 (hard mode) first** — it pins physics correctness against
 EMsoft with no differentiability confound — then layer the soft mode (M-MC.5)
