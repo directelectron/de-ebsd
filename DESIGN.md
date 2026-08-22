@@ -195,11 +195,12 @@ gridding, chunking, and assembly; backends own physics.
   dynamical-matrix build (weak folding), the propagation, and the `S_gh`
   reduction, bucketed by strong-beam count so each batch is a uniform
   `[B, S, S]`. Reproduces the reference to ~1e-13 (fp64) / ~1e-4 (fp32).
-  Measured: a full npx-500 Si master (~2e6 directions) in ~50 s at
-  **r = 1.0000** vs EMsoft on a Pascal TITAN X -- the run that makes a
-  native-resolution parity check practical (the eig reference would need ~1e6
-  eigendecompositions). A further PRISM-style coarse-grid interpolation of the
-  scattering matrix (M5) remains an optional accuracy/speed knob.
+  Measured (Pascal TITAN X, npx-500 Si, ~2e6 directions): **~10 s** in fp32 /
+  ~16 s in fp64 at **r = 1.0000** vs EMsoft, with the point-group fold (M3)
+  cutting it from ~181 s -- the run that makes a native-resolution parity check
+  practical (the eig reference would need ~1e6 eigendecompositions). A further
+  PRISM-style coarse-grid interpolation of the scattering matrix (M5) remains an
+  optional accuracy/speed knob.
 - Symmetry reduction [M3]: sample only the fundamental sector
   (EMsoft `SamplingType` tables) and replicate -- an order-of-magnitude
   saving for high-symmetry crystals, orthogonal to the backend choice.
@@ -269,7 +270,7 @@ absent reflections to strong beams; excluding them (`status[forbidden] =
 IGNORED`) makes the strong-beam map pixel-exact against EMsoft. At matched
 resolution torchebsd equals EMsoft's own master to r = 1.00000; a full native
 npx-500 Si master via `bloch_prism` scores **r = 1.0000** against `Si_MC.h5`
-in ~50 s on a Pascal TITAN X (numbers from the maintainer's GPU, not
+in ~10 s (fp32) on a Pascal TITAN X (numbers from the maintainer's GPU, not
 reproduced in CI). The acceptance gate (r >= 0.99 on both references) is
 **met for Si (r = 1.0000)**; **Ni reaches r = 0.93** with its own Monte Carlo
 depth profile and remains below the bar -- an open item, tracked to reference

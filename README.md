@@ -105,6 +105,10 @@ the gate and an open item (see DESIGN.md). The kinematical placeholder
 (`--backend kinematical`) scores Ni 0.64 / Si 0.47 -- band positions align
 (frame and Lambert conventions correct) but band profiles do not.
 
+That npx-500 Si master (~2 million directions) computes in **~10 s** (fp32) /
+~16 s (fp64) on a Pascal TITAN X with `bloch_prism`, or ~181 s with the
+point-group fold disabled -- an ~11x symmetry speedup at bit-identical output.
+
 ## Development
 
 ```
