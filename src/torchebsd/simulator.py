@@ -176,7 +176,8 @@ class MasterPatternSimulator:
         grid = sample_incident_directions(self.npx, device=device, dtype=dtype)
         directions = grid.flat()
         if symmetry:
-            reps, inverse = reduce_to_fundamental_sector(directions, self.crystal.space_group)
+            reps, inverse = reduce_to_fundamental_sector(
+                directions, self.crystal.space_group, cache_key=self.npx)
         else:
             reps, inverse = directions, None
         n = 2 * self.npx + 1

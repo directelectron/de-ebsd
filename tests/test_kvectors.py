@@ -40,3 +40,17 @@ def test_reduce_to_fundamental_sector_triclinic_barely_folds():
     d = sample_incident_directions(12, dtype=torch.float64).flat()
     reps, _ = reduce_to_fundamental_sector(d, 1)
     assert reps.shape[0] > 0.85 * d.shape[0]  # ~no fold (only shared equator points)
+
+
+def test_reduce_to_fundamental_sector_cache():
+    """cache_key memoizes the fold; cached and freshly-computed results agree."""
+    from torchebsd.kvectors import _FZ_CACHE
+
+    _FZ_CACHE.pop((22, 227), None)
+    d = sample_incident_directions(22, dtype=torch.float64).flat()
+    reps1, inv1 = reduce_to_fundamental_sector(d, 227, cache_key=22)
+    assert (22, 227) in _FZ_CACHE
+    reps2, inv2 = reduce_to_fundamental_sector(d, 227, cache_key=22)  # cache hit
+    assert torch.equal(reps1, reps2) and torch.equal(inv1, inv2)
+    reps3, inv3 = reduce_to_fundamental_sector(d, 227)  # uncached recompute
+    assert torch.equal(inv1, inv3) and torch.allclose(reps1, reps3)

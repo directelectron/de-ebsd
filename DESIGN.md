@@ -322,7 +322,10 @@ refine / save / project, and headless display + widget smoke tests.
   `reduce_to_fundamental_sector` folds the grid onto the point-group fundamental
   sector via orix (`in_fundamental_sector`); symmetry-equivalent grid points
   reduce to a bit-identical representative, so the fold is exact (~16x fewer
-  evaluations for cubic) and matches the fully-sampled master bit-for-bit.
+  evaluations for cubic) and matches the fully-sampled master bit-for-bit. The
+  dedup runs on-device (integer hash, not a CPU lexsort) and the whole fold is
+  cached per `(npx, point group)`, so it is free across energy bins, `refine`,
+  and reruns (npx-500 compute ~5 s cache-warm vs ~10 s before).
   Energy loop: `compute(energy_resolved=True)` produces one Lambert map per MC
   energy bin (structure factors and depth profile per energy) -> an
   `(nE, 2, n, n)` master; the top bin is bit-identical to the single-energy
