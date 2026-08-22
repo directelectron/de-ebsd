@@ -82,3 +82,40 @@ def test_prism_complex64_matches_reference(si_sf):
     assert ip.dtype == torch.float32
     denom = io.abs().max().clamp_min(1e-30)
     assert ((ip.double() - io).abs().max() / denom).item() < 1e-3
+
+
+def test_bloch_solve_is_differentiable(si_sf):
+    """Autograd flows through the prism Bloch solve to the structure factors.
+
+    The production backend is torch-native (matrix_exp + a depth recurrence), so
+    gradients propagate through the non-Hermitian complex Bloch solve, the
+    weak-beam folding, and the Sgh reduction back to U_g -- the differentiability
+    the project is built for. Validated against complex finite differences.
+    """
+    prism = resolve_backend("bloch_prism")
+    prism.prepare(SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
+                                   device=torch.device("cpu"), dtype=torch.float64))
+    u0 = prism.u_lut.detach().clone()
+    prism.u_lut = u0.clone().requires_grad_(True)
+
+    d = _dirs(4, seed=0)
+    intensity = prism.intensities(d)
+    assert intensity.requires_grad
+    intensity.sum().backward()
+    grad = prism.u_lut.grad
+    assert grad is not None and torch.isfinite(grad).all() and bool((grad.abs() > 0).any())
+
+    # complex finite-difference check on the most influential U_g entry
+    idx = np.unravel_index(int(grad.abs().flatten().argmax()), grad.shape)
+
+    def total(pert):
+        prism.u_lut = u0.clone()
+        prism.u_lut[idx] = prism.u_lut[idx] + pert
+        return float(prism.intensities(d).sum())
+
+    eps = 1e-4
+    g_re_fd = (total(eps) - total(-eps)) / (2 * eps)
+    g_im_fd = (total(1j * eps) - total(-1j * eps)) / (2 * eps)
+    g_auto = complex(grad[idx])
+    assert abs(g_auto.real - g_re_fd) < 1e-3
+    assert abs(g_auto.imag - g_im_fd) < 1e-3

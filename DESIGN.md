@@ -325,9 +325,17 @@ refine / save / project, and headless display + widget smoke tests.
   path, and Si bins correlate ~0.93 with `Si_MC.h5`'s `mLPNH` at coarse npx
   (the top bin reaches r = 1.0 at native resolution, M2). Remaining (optional):
   the hexagonal Lambert grid for trigonal/hexagonal systems.
-- **M4 -- differentiability.** Torch structure factors (lattice, DW
-  gradients); autograd through the Bloch solve; FP32 vs FP64 accuracy
-  audit and dtype policy.
+- **M4 -- differentiability [Bloch solve done].** Autograd through the Bloch
+  solve is proven: the `bloch_prism` intensity path is torch-native
+  (`matrix_exp` + depth recurrence + `Sgh`), so with a `requires_grad` `U_g`
+  LUT gradients flow through the non-Hermitian complex solve back to the
+  structure factors and match complex finite differences. Remaining: **torch
+  structure factors** -- porting the WK scattering + Debye-Waller + phase to
+  torch so `U_g` (and thus the master pattern) is differentiable w.r.t. crystal
+  parameters (lattice, DW, positions); then the FP32/FP64 accuracy audit and
+  dtype policy. The hard part (differentiating the eigenvalue-free Bloch solve)
+  is done; the remainder is a differentiable re-expression of the structure
+  factor, whose values are already the backend's input.
 - **M5 -- scattering-matrix backend [core done as `bloch_prism`].** The exact
   per-direction scattering matrix (`matrix_exp`) is implemented and is the
   production backend. Remaining optional extension: PRISM-style coarse-grid

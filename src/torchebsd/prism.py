@@ -38,6 +38,12 @@ class BlochPrismBackend(BlochWaveBackend):
 
     ``cdtype`` selects the working precision: ``torch.complex128`` (default,
     exact against the reference) or ``torch.complex64`` (faster, ~1e-4).
+
+    The whole intensity path is torch (``matrix_exp`` + a depth recurrence), so
+    it is autograd-differentiable: with a ``requires_grad`` structure-factor LUT
+    (``u_lut``) gradients flow through the Bloch solve back to ``U_g`` (matching
+    finite differences; M4). Connecting ``U_g`` to crystal parameters needs torch
+    structure factors -- the remaining M4 piece.
     """
 
     name = "bloch_prism"
