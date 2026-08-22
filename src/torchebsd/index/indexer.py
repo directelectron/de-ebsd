@@ -326,3 +326,129 @@ class SphericalIndexer:
         # read the orientation directly off the SOFT grid (the sample orientation R)
         rotations = grid_to_rotation(self.bandwidth, j, k, p)
         return rotations, quality.detach()
+
+    def index_scan(
+        self,
+        patterns,
+        shape=None,
+        step=1.0,
+        phase=None,
+        batch_size=None,
+        normalize=True,
+    ):
+        """Index a whole scan and assemble the result into an orix ``CrystalMap``.
+
+        Wraps :meth:`index` over an entire EBSD scan: it processes the patterns in
+        mini-batches (to bound memory -- see below), concatenates the per-batch
+        orientations and quality, and hands them to
+        :func:`torchebsd.index.io.to_crystal_map`, which lays them out on the scan
+        grid as a single-phase :class:`~orix.crystal_map.CrystalMap`.
+
+        Parameters
+        ----------
+        patterns
+            The scan patterns, as a numpy array or torch tensor, in either layout:
+
+            * ``(rows, cols, H, W)`` -- the scan grid is read off directly and
+              ``shape`` is inferred (any explicit ``shape`` must then match);
+            * ``(N, H, W)`` -- a flat, row-major stack, in which case ``shape``
+              **must** be given so the ``N = rows * cols`` points can be reshaped
+              onto the grid.
+
+            Plain arrays are accepted (no kikuchipy needed -- a kikuchipy signal's
+            ``.data`` reshaped to the scan passes straight in). ``H = detector.nrows``,
+            ``W = detector.ncols``.
+        shape
+            ``(rows, cols)`` of the scan. Required for ``(N, H, W)`` input; optional
+            (and cross-checked) for ``(rows, cols, H, W)`` input.
+        step
+            Scan step size (same for both axes), written onto the map's ``x``/``y``.
+        phase
+            The map's crystal symmetry, as an :class:`orix.crystal_map.Phase` or a
+            torchebsd :class:`~torchebsd.sim.Crystal` (converted via
+            :func:`torchebsd.index.io.phase_from_crystal`). If ``None``, it is
+            derived from the master's metadata (``master.metadata["crystal"]`` if a
+            :class:`~torchebsd.sim.Crystal` is carried there); if neither is
+            available a clear error tells the caller to pass ``phase``.
+        batch_size
+            Number of patterns indexed per mini-batch (default ``64``). The SO(3)
+            correlation surface is ``(batch_size, N, N, N)`` with ``N = 2L + 2``,
+            which at production bandwidth dominates memory, so this bounds the peak
+            working set at the cost of a Python-level loop over the scan. The result
+            is **identical** to a single batch (the argmax per pattern is
+            independent); it only trades memory for iterations.
+        normalize
+            Passed through to :meth:`index` (default ``True``, the locally-normalized
+            masked cross-correlation).
+
+        Returns
+        -------
+        orix.crystal_map.CrystalMap
+            One orientation + ``prop["quality"]`` per scan point, single phase
+            (``phase_id`` all zero), on the ``(rows, cols)`` grid.
+        """
+        import numpy as np
+        from orix.quaternion import Rotation
+
+        from torchebsd.index.io import phase_from_crystal, to_crystal_map
+
+        patt = torch.as_tensor(patterns, device=self.device, dtype=self.dtype)
+        if patt.ndim == 4:  # (rows, cols, H, W)
+            rows, cols = int(patt.shape[0]), int(patt.shape[1])
+            if shape is not None and (int(shape[0]), int(shape[1])) != (rows, cols):
+                raise ValueError(
+                    f"shape {tuple(shape)} does not match the (rows, cols, H, W) "
+                    f"pattern grid {(rows, cols)}"
+                )
+            patt = patt.reshape(rows * cols, patt.shape[2], patt.shape[3])
+        elif patt.ndim == 3:  # (N, H, W) -- shape required
+            if shape is None:
+                raise ValueError(
+                    "shape=(rows, cols) is required for (N, H, W) patterns "
+                    "(pass (rows, cols, H, W) to infer it instead)"
+                )
+            rows, cols = int(shape[0]), int(shape[1])
+            if rows * cols != patt.shape[0]:
+                raise ValueError(
+                    f"shape {(rows, cols)} implies {rows * cols} patterns but got "
+                    f"{patt.shape[0]}"
+                )
+        else:
+            raise ValueError(
+                "patterns must be (rows, cols, H, W) or (N, H, W), got shape "
+                f"{tuple(patt.shape)}"
+            )
+
+        n = rows * cols
+        bs = int(batch_size) if batch_size is not None else 64
+        if bs < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
+        # index in mini-batches to bound the (bs, N, N, N) SO(3) surface memory;
+        # concatenate the per-batch orix Rotations and quality back to length n.
+        rot_chunks = []
+        qual_chunks = []
+        for start in range(0, n, bs):
+            chunk = patt[start : start + bs]
+            rot_c, qual_c = self.index(chunk, normalize=normalize)
+            rot_chunks.append(np.asarray(rot_c.data))
+            qual_chunks.append(qual_c)
+        rotations = Rotation(np.concatenate(rot_chunks, axis=0))
+        quality = torch.cat(qual_chunks)
+
+        # resolve the phase: explicit arg (Phase or Crystal) wins; else derive from
+        # the master's metadata; else a clear error.
+        if phase is None:
+            crystal = None
+            meta = getattr(self.master, "metadata", None)
+            if isinstance(meta, dict):
+                crystal = meta.get("crystal")
+            if crystal is None:
+                raise ValueError(
+                    "no phase given and master.metadata has no 'crystal' to derive "
+                    "one from; pass phase=<orix Phase or torchebsd Crystal> to "
+                    "index_scan (the Phase gives the CrystalMap its crystal symmetry)"
+                )
+            phase = phase_from_crystal(crystal)
+
+        return to_crystal_map(rotations, quality, (rows, cols), phase, step=step)

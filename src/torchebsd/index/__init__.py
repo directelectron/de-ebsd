@@ -12,13 +12,18 @@ scaffolded -- implementations land per milestone.
 
 from __future__ import annotations
 
-__all__ = ["SphericalIndexer"]
+__all__ = ["SphericalIndexer", "phase_from_crystal", "to_crystal_map"]
 
 
 def __getattr__(name: str):
     # lazy so ``import torchebsd.index`` stays light until the engine is built
+    # (and so orix/diffpy are only imported when the orix bridges are used)
     if name == "SphericalIndexer":
         from torchebsd.index.indexer import SphericalIndexer
 
         return SphericalIndexer
+    if name in ("phase_from_crystal", "to_crystal_map"):
+        from torchebsd.index import io
+
+        return getattr(io, name)
     raise AttributeError(f"module 'torchebsd.index' has no attribute {name!r}")
