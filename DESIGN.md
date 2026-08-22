@@ -271,11 +271,14 @@ IGNORED`) makes the strong-beam map pixel-exact against EMsoft. At matched
 resolution torchebsd equals EMsoft's own master to r = 1.00000; a full native
 npx-500 Si master via `bloch_prism` scores **r = 1.0000** against `Si_MC.h5`
 in ~10 s (fp32) on a Pascal TITAN X (numbers from the maintainer's GPU, not
-reproduced in CI). The acceptance gate (r >= 0.99 on both references) is
-**met for Si (r = 1.0000)**; **Ni reaches r = 0.93** with its own Monte Carlo
-depth profile and remains below the bar -- an open item, tracked to reference
-provenance / settings rather than the diffraction physics (Si is pixel-exact),
-and not yet closed. The kinematical placeholder scores Ni 0.64 / Si 0.47 with
+reproduced in CI). The acceptance gate (r >= 0.99 on both references) is met:
+**Si r = 1.0000**, and **Ni r = 1.00000** against a fresh, matched-settings
+EMsoft master. The old "Ni 0.93" was a settings artifact (Bethe defaults 8/50/100
+vs EMsoft 4/8/50, plus the kikuchipy reference's unknown provenance), not the
+physics -- confirmed by generating an EMsoft Ni master with matched Bethe/dmin/
+depth and correlating to 1.00000. See [BENCHMARKS.md](BENCHMARKS.md) for the full
+cross-code audit (parity, speed, crystal-system sweep). The kinematical
+placeholder scores Ni 0.64 / Si 0.47 with
 identical north/south values -- band positions align, so the crystal frame,
 Lambert layout, and hemisphere conventions were right.
 

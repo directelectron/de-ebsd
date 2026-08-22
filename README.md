@@ -100,8 +100,9 @@ needs a local EMsoft `Si_MC.h5` reference run (not redistributed here) -- point
 `--mc` or `TORCHEBSD_SI_MC` at your copy.
 
 Dynamical backend results: **Si r = 1.0000** at native npx-500 against
-`Si_MC.h5` (meets the r >= 0.99 acceptance gate); **Ni r = 0.93**, still below
-the gate and an open item (see DESIGN.md). The kinematical placeholder
+`Si_MC.h5`, and **Ni r = 1.00000** against a fresh matched-settings EMsoft master
+(the "Ni 0.93" was a Bethe-default / reference-provenance artifact, not physics --
+see [BENCHMARKS.md](BENCHMARKS.md)). The kinematical placeholder
 (`--backend kinematical`) scores Ni 0.64 / Si 0.47 -- band positions align
 (frame and Lambert conventions correct) but band profiles do not.
 
