@@ -333,3 +333,39 @@ def test_cuda_path_matches_cpu(master, detector):
     refined, score = indexer.refine(pattern, rotations=coarse, n_iters=100)
     assert score.device.type == "cuda"
     assert _dis(r_true[0], refined[0]) < 0.5
+
+
+# --------------------------------------------------------------------------- #
+# A4: refine_orientation honors an explicit device
+# --------------------------------------------------------------------------- #
+def test_refine_honors_device_cpu(master, detector, indexer):
+    """``refine_orientation(device='cpu')`` runs on CPU and returns a CPU score."""
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:1]))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse, _ = indexer.index(patterns)
+
+    refined, score = refine_orientation(
+        patterns, master, detector, coarse, n_iters=100, device="cpu"
+    )
+    assert score.device == torch.device("cpu")
+    assert _dis(r_true[0], refined[0]) < 0.5
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_refine_device_arg_is_honored_cuda(master, detector):
+    """A CPU master refined with ``device='cuda'`` runs on CUDA (the score lands there).
+
+    The master, patterns and seeds are moved to the requested device -- the arg wins
+    over ``master.data.device`` (which is CPU here).
+    """
+    assert master.data.device.type == "cpu"
+    idx = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
+    r_true = Rotation.from_euler(np.deg2rad([[123.0, 47.0, 205.0]]))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse, _ = idx.index(patterns)
+
+    refined, score = refine_orientation(
+        patterns, master, detector, coarse, n_iters=100, device="cuda"
+    )
+    assert score.device.type == "cuda"
+    assert _dis(r_true[0], refined[0]) < 0.5

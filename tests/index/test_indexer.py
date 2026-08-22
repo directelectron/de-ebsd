@@ -40,6 +40,8 @@ from torchebsd import EBSDDetector, MasterPattern
 from torchebsd.index.backproject import pattern_to_sphere
 from torchebsd.index.correlation import so3_cross_correlation
 from torchebsd.index.indexer import SphericalIndexer
+from torchebsd.index.wigner import grid_to_rotation
+from torchebsd.sim import Crystal
 from torchebsd.sim.lambert import master_pattern_grid
 
 BANDWIDTH = 16
@@ -479,3 +481,129 @@ def test_band_master_roundtrip_normalized(master, detector):
     assert torch.isfinite(q_n).all()
     assert float(q_n.min()) > 0.0
     assert float(q_n.max()) < 1.3
+
+
+# --------------------------------------------------------------------------- #
+# A1: return_surface -- expose the arg-maxed SO(3) score surface
+# --------------------------------------------------------------------------- #
+def test_return_surface_matches_argmax_and_feeds_show_correlation(master, detector):
+    """``index(return_surface=True)`` returns the arg-maxed SO(3) surface as element 3.
+
+    The per-pattern argmax of the surface must map (via ``grid_to_rotation``) to the
+    exact ``Rotation`` ``index`` returns, its peak value equals ``quality``, and the
+    surface feeds :func:`show_correlation` directly.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)  # (4, H, W)
+    n = 2 * BANDWIDTH + 2
+
+    indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
+    # default is still a 2-tuple
+    assert len(indexer.index(patterns)) == 2
+
+    out = indexer.index(patterns, return_surface=True)
+    assert len(out) == 3
+    rotations, quality, surface = out
+    assert tuple(surface.shape) == (r_true.size, n, n, n)
+
+    for i in range(r_true.size):
+        # the surface's peak value is exactly the returned quality
+        assert float(surface[i].max()) == pytest.approx(float(quality[i]), rel=1e-9)
+        # and its argmax cell maps to the exact returned rotation
+        j, k, p = (int(x) for x in torch.unravel_index(torch.argmax(surface[i]), (n, n, n)))
+        r_cell = grid_to_rotation(BANDWIDTH, j, k, p)
+        assert _disorientation_deg(rotations[i], r_cell) < 1e-9
+
+    # normalize=False returns the raw X surface as the third element
+    _, q_u, surface_u = indexer.index(patterns, normalize=False, return_surface=True)
+    assert tuple(surface_u.shape) == (r_true.size, n, n, n)
+    assert float(surface_u[0].max()) == pytest.approx(float(q_u[0]), rel=1e-9)
+
+    # the surface feeds show_correlation directly (skip cleanly without anyplotlib)
+    pytest.importorskip("anyplotlib")
+    from torchebsd.index import show_correlation
+
+    fig = show_correlation(surface)  # a (Np, N, N, N) stack -> first pattern shown
+    j0, k0, p0 = (int(x) for x in torch.unravel_index(torch.argmax(surface[0]), (n, n, n)))
+    assert fig.peak_index == (j0, k0, p0)
+    assert fig.to_html()
+
+
+# --------------------------------------------------------------------------- #
+# A2: the O(L^4) Wigner-d block is cached on the indexer and reused
+# --------------------------------------------------------------------------- #
+def test_wigner_d_cache_shape_and_identical_result(spot_master, detector_partial):
+    """The Wigner-d block is precomputed once, has the right shape, and is reused.
+
+    The indexed result must be identical whether the cache path is taken (default) or
+    forced off (``wigner_d_cached=None`` recomputes), and ``index_scan`` must not
+    rebuild the cached block across chunks.
+    """
+    n = 2 * BW_SPOT + 2
+    indexer = SphericalIndexer(spot_master, detector_partial, bandwidth=BW_SPOT, device="cpu")
+    assert tuple(indexer._wig_d.shape) == (n, BW_SPOT + 1, 2 * BW_SPOT + 1, 2 * BW_SPOT + 1)
+
+    r_true = Rotation.from_euler(np.deg2rad(_SPOT_EULER_DEG[:3]))
+    patterns = spot_master.project(detector_partial, r_true, rescale=True)
+
+    rot_c, q_c, surf_c = indexer.index(patterns, return_surface=True)
+
+    # force the no-cache path (recompute wigner_d every call) -- must be byte-identical
+    cached = indexer._wig_d
+    indexer._wig_d = None
+    try:
+        rot_n, q_n, surf_n = indexer.index(patterns, return_surface=True)
+    finally:
+        indexer._wig_d = cached
+    assert torch.equal(surf_c, surf_n)
+    assert torch.equal(q_c, q_n)
+    assert np.array_equal(rot_c.data, rot_n.data)
+
+    # index_scan reuses the SAME cached tensor across its mini-batches (not rebuilt)
+    crystal = Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
+    )
+    wig_before = indexer._wig_d
+    indexer.index_scan(patterns, shape=(1, 3), phase=crystal, batch_size=1)
+    assert indexer._wig_d is wig_before
+
+
+# --------------------------------------------------------------------------- #
+# A5: energy_kev selects which master energy bin a_lm / a2_lm are built from
+# --------------------------------------------------------------------------- #
+def test_energy_kev_selects_master_bin(detector):
+    """``energy_kev`` picks the master energy bin used to precompute a_lm and a2_lm."""
+    npx = 80
+    north = master_pattern_grid(npx, dtype=torch.float64)
+    south = north.clone()
+    south[..., 2] = -south[..., 2]
+    g = torch.Generator().manual_seed(11)
+    poles = torch.randn(6, 3, generator=g, dtype=torch.float64)
+    poles = poles / poles.norm(dim=-1, keepdim=True)
+    amps0 = 0.5 + torch.rand(6, generator=g, dtype=torch.float64)
+    amps1 = 2.0 + torch.rand(6, generator=g, dtype=torch.float64)  # markedly different bin
+    bin0 = torch.stack(
+        [_band_field(north, poles, amps0, 0.11), _band_field(south, poles, amps0, 0.11)], dim=0
+    )
+    bin1 = torch.stack(
+        [_band_field(north, poles, amps1, 0.11), _band_field(south, poles, amps1, 0.11)], dim=0
+    )
+    data = torch.stack([bin0, bin1], dim=0)  # (2 energy, 2 hemi, n, n)
+    multi = MasterPattern(data=data, energies_kev=np.array([10.0, 20.0]))
+
+    idx_default = SphericalIndexer(multi, detector, bandwidth=BANDWIDTH, device="cpu")
+    idx_low = SphericalIndexer(
+        multi, detector, bandwidth=BANDWIDTH, device="cpu", energy_kev=10.0
+    )
+    assert idx_default.energy_kev is None
+    assert idx_low.energy_kev == 10.0
+
+    # default samples the highest bin (20 keV = bin 1); energy_kev=10 samples bin 0
+    assert not torch.allclose(idx_default.a_lm, idx_low.a_lm)
+    assert not torch.allclose(idx_default.a2_lm, idx_low.a2_lm)
+
+    # the low-energy a_lm equals a plan built on a master that holds *only* bin 0
+    only_bin0 = MasterPattern(data=bin0[None], energies_kev=np.array([10.0]))
+    idx_bin0 = SphericalIndexer(only_bin0, detector, bandwidth=BANDWIDTH, device="cpu")
+    assert torch.allclose(idx_low.a_lm, idx_bin0.a_lm)
+    assert torch.allclose(idx_low.a2_lm, idx_bin0.a2_lm)

@@ -249,11 +249,28 @@ class SphericalHarmonicTransform:
     and a per-order matmul over theta. Both directions are batched over arbitrary
     leading dimensions and are autograd-differentiable in the samples/coefficients.
 
-    Attributes:
-        bandwidth: the band limit ``L``.
-        theta, phi: 1-D quadrature nodes (``(L + 1,)`` and ``(2 L + 2,)``).
-        weights: ``(L + 1, 2 L + 2)`` quadrature weights.
-        n_coeff: number of packed coefficients ``(L + 1) ** 2``.
+    Parameters
+    ----------
+    bandwidth : int
+        The band limit ``L``. Sets the quadrature grid (``N_theta = L + 1``,
+        ``N_phi = 2 L + 2``) and the packed coefficient count ``(L + 1) ** 2``.
+    device : torch.device or str, optional
+        Device the grid and cached design matrices are built on (default CPU).
+    dtype : torch.dtype, optional
+        Real floating dtype of the transform; must be ``torch.float32`` or
+        ``torch.float64`` (default ``torch.float64``). The complex coefficient dtype
+        is the matching ``complex64`` / ``complex128``.
+
+    Attributes
+    ----------
+    bandwidth : int
+        The band limit ``L``.
+    theta, phi : torch.Tensor
+        1-D quadrature nodes (``(L + 1,)`` and ``(2 L + 2,)``).
+    weights : torch.Tensor
+        ``(L + 1, 2 L + 2)`` quadrature weights.
+    n_coeff : int
+        Number of packed coefficients ``(L + 1) ** 2``.
     """
 
     def __init__(

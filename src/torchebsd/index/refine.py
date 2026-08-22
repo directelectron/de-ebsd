@@ -141,19 +141,20 @@ def _backproject(patt, detector, dirs, pc, per_pattern):
 
 
 def refine_orientation(
-    pattern,
+    patterns,
     master,
     detector,
-    orientation,
+    rotations,
     pc=None,
     refine_pc=False,
     n_iters=100,
     lr=0.05,
     pc_lr=None,
     directions=None,
+    device=None,
     return_history=False,
 ):
-    """Refine ``orientation`` (and optionally the pattern center) by autograd.
+    """Refine ``rotations`` (and optionally the pattern center) by autograd.
 
     Sharpens a coarse seed orientation to sub-grid-cell accuracy by maximizing a
     spherical masked normalized cross-correlation between the back-projected
@@ -165,7 +166,7 @@ def refine_orientation(
 
     Parameters
     ----------
-    pattern
+    patterns
         A single detector image ``(H, W)`` or a stack ``(Np, H, W)`` (numpy array or
         torch tensor; ``H = detector.nrows``, ``W = detector.ncols``). No kikuchipy
         needed -- a kikuchipy signal's ``.data`` passes straight in.
@@ -175,7 +176,7 @@ def refine_orientation(
     detector
         The :class:`torchebsd.sim.detector.EBSDDetector` geometry; its pixel -> direction
         map is inverted (differentiably in the pattern center) to build ``E(n)``.
-    orientation
+    rotations
         The seed :class:`orix.quaternion.Rotation` (length ``Np``, or length 1 / scalar
         for a single pattern) -- typically the coarse ``index`` output.
     pc
@@ -199,8 +200,14 @@ def refine_orientation(
     directions
         Sphere directions ``(M, 3)`` over which the NCC is evaluated (the FOV is masked
         out of these). ``None`` (default) uses a uniform Fibonacci-sphere set; the
-        :class:`~torchebsd.index.indexer.SphericalIndexer.refine` convenience passes its
+        :meth:`~torchebsd.index.indexer.SphericalIndexer.refine` convenience passes its
         SHT quadrature grid so the refinement and the coarse index share one grid.
+    device
+        Torch device to run the optimization on. ``None`` (default) uses
+        ``master.data.device``; when given, the master, patterns and seeds are moved
+        there (:meth:`~torchebsd.index.indexer.SphericalIndexer.refine` passes the
+        indexer's own device). The result ``Rotation`` is device-independent; the
+        returned ``score`` (and ``pc``) live on this device.
     return_history
         If ``True``, also return the per-iteration NCC trajectory (see Returns).
 
@@ -214,7 +221,11 @@ def refine_orientation(
     score : torch.Tensor
         The final NCC of each pattern, length ``Np`` (detached), a
         correlation-coefficient-like number in ``[-1, 1]`` -- refinement quality, ``>=``
-        the coarse score. Always the second element.
+        the coarse score. Always the second element. This is the same family of
+        confidence metric as :meth:`~torchebsd.index.indexer.SphericalIndexer.index`'s
+        ``quality``, and is what
+        :meth:`~torchebsd.index.indexer.SphericalIndexer.index_scan` with
+        ``refine=True`` stores as ``prop["quality"]`` on the returned ``CrystalMap``.
     pc : torch.Tensor
         *Only when* ``refine_pc``: the refined pattern center (detached), same shape as
         the input ``pc``. Third element.
@@ -222,23 +233,27 @@ def refine_orientation(
         *Only when* ``return_history``: the NCC at every iteration, shape
         ``(n_iters, Np)`` (``history[0]`` is the seed's score at ``w = 0``). Last element.
     """
-    device = master.data.device
+    device = master.data.device if device is None else torch.device(device)
     dtype = master.data.dtype
+    # honor an explicit device: move the master there so master.sample and the
+    # back-projection run on it (master.data.device drives sampling).
+    if master.data.device != device:
+        master = master.to(device)
 
-    patt = torch.as_tensor(pattern, device=device, dtype=dtype)
+    patt = torch.as_tensor(patterns, device=device, dtype=dtype)
     single = patt.ndim == 2
     if single:
         patt = patt[None]
     if patt.ndim != 3:
-        raise ValueError(f"pattern must be (H, W) or (Np, H, W), got shape {tuple(patt.shape)}")
+        raise ValueError(f"patterns must be (H, W) or (Np, H, W), got shape {tuple(patt.shape)}")
     n_p = patt.shape[0]
 
     # seed matrix R0 = quaternion_to_matrix(seed) -- the detached anchor, exactly the
     # matrix MasterPattern.project builds from a quaternion.
-    q0 = torch.as_tensor(np.asarray(orientation.data), device=device, dtype=dtype).reshape(-1, 4)
+    q0 = torch.as_tensor(np.asarray(rotations.data), device=device, dtype=dtype).reshape(-1, 4)
     if q0.shape[0] != n_p:
         raise ValueError(
-            f"orientation length {q0.shape[0]} != number of patterns {n_p}"
+            f"rotations length {q0.shape[0]} != number of patterns {n_p}"
         )
     r0_mat = quaternion_to_matrix(q0).detach()  # (Np, 3, 3)
 

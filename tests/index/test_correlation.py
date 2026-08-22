@@ -195,3 +195,27 @@ def test_shape_validation():
         so3_cross_correlation(good, torch.zeros(n_coefficients(L) - 1), L)
     with pytest.raises(ValueError):
         so3_cross_correlation(torch.zeros(3, dtype=torch.complex128), good, L)
+
+
+def test_wigner_d_cache_is_byte_identical():
+    """Passing a precomputed ``wigner_d`` block is byte-identical to recomputing it.
+
+    The cache lets :class:`SphericalIndexer` skip rebuilding the O(L^4) Wigner-d block
+    per mini-batch; the correlation must be exactly the same either way.
+    """
+    from torchebsd.index.wigner import so3_grid, wigner_d
+
+    L = 6
+    n = 2 * L + 2
+    torch.manual_seed(7)
+    a = torch.randn(n_coefficients(L), dtype=torch.complex128)
+    b = torch.randn(3, n_coefficients(L), dtype=torch.complex128)
+
+    # build the cache exactly as the function would internally (same beta grid + dtype)
+    _, beta, _ = so3_grid(L, dtype=torch.float64)
+    d = wigner_d(L, beta)
+    assert tuple(d.shape) == (n, L + 1, 2 * L + 1, 2 * L + 1)
+
+    c_plain = so3_cross_correlation(a, b, L)
+    c_cached = so3_cross_correlation(a, b, L, wigner_d_cached=d)
+    assert torch.equal(c_plain, c_cached)  # byte-identical, not merely close

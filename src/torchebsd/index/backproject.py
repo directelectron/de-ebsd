@@ -16,13 +16,13 @@ looks along ``n``. The crystal orientation is exactly what indexing solves for, 
 it is *not* folded in here; back-projecting ``master.project(detector, R)`` recovers
 the master rotated by ``R`` over the field of view.
 
-Geometry (the inverse of ``torchebsd.sim``'s own ``EBSDDetector`` pixel -> direction
-map, so torchebsd stays self-contained -- no kikuchipy dependency). The detector's
-``direction_cosines`` builds, for pixel (row, col), the gnomonic point
+**Geometry.** This is the inverse of ``torchebsd.sim``'s own ``EBSDDetector`` pixel ->
+direction map, so torchebsd stays self-contained -- no kikuchipy dependency. The
+detector's ``direction_cosines`` builds, for pixel (row, col), the gnomonic point
 ``(x, y) = (gn_x, gn_y)``, forms the detector-frame ray ``(gn_x, gn_y, 1) * pcz``,
 and rotates it into the sample frame with the orthonormal sample->detector matrix
-``Om`` (rows = detector basis ``X_d, Y_d, Z_d`` in sample coordinates); the unit of
-that ray is the direction cosine. We invert it:
+``Om`` (rows = detector basis ``X_d, Y_d, Z_d`` in sample coordinates); the unit vector
+of that ray is the direction cosine. We invert it:
 
 1. project a unit sphere direction ``n`` onto the detector basis,
    ``(d_x, d_y, d_z) = (n . X_d, n . Y_d, n . Z_d) = n @ Om.T`` (``Om`` orthonormal,

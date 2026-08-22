@@ -1,6 +1,6 @@
 """EBSD detector geometry and direction cosines.
 
-The :class:`EBSDDetector` describes the pixel grid, the projection center
+The :class:`EBSDDetector` describes the pixel grid, the pattern center
 (Bruker convention), and the tilt geometry, and produces the unit direction
 vector of every pixel in the sample reference frame. The math is a torch port
 of kikuchipy's ``EBSDDetector`` (gnomonic bounds from the Britton et al. 2016
@@ -47,14 +47,14 @@ def _sample_to_detector_matrix(
 
 @dataclass(frozen=True)
 class EBSDDetector:
-    """An EBSD detector with a fixed projection center.
+    """An EBSD detector with a fixed pattern center.
 
     Parameters
     ----------
     shape
         (n_rows, n_cols) in pixels.
     pc
-        Projection center (PCx, PCy, PCz) in the Bruker convention.
+        Pattern center (PCx, PCy, PCz) in the Bruker convention.
     sample_tilt
         Sample tilt in degrees (usually set from ``Microscope.sample_tilt``).
     tilt

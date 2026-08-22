@@ -188,7 +188,7 @@ def so3_grid(
 
 
 def n_orientations(bandwidth: int) -> int:
-    """Number of SOFT grid orientations ``(2L + 2) ** 3`` for bandwidth ``L``."""
+    """Number of SOFT grid points ``(2L + 2) ** 3`` for bandwidth ``L``."""
     return (2 * bandwidth + 2) ** 3
 
 

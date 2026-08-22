@@ -115,6 +115,16 @@ def test_master_metadata_provenance(synthetic_file):
     assert m.metadata["source"] == path
     assert m.metadata["dmin"] == pytest.approx(DMIN)
     assert m.metadata["bethe"] == pytest.approx(tuple(BETHE))
+    # all energy bins are loaded; energy selection now lives on the indexer
+    # (SphericalIndexer(energy_kev=...)), so the loader records no requested energy.
+    assert "requested_energy_kev" not in m.metadata
+
+
+def test_master_from_emsoft_rejects_energy_kev(synthetic_file):
+    """The dead ``energy_kev`` loader knob is gone (energy selection is on the indexer)."""
+    path, _, _ = synthetic_file
+    with pytest.raises(TypeError):
+        master_from_emsoft(path, energy_kev=15.0)
 
 
 def test_master_collapses_3d_master(tmp_path):

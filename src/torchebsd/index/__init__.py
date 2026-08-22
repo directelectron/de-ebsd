@@ -1,13 +1,17 @@
 """torchebsd.index -- GPU-accelerated, differentiable spherical indexing for EBSD.
 
-The matching counterpart to :mod:`torchebsd.sim`'s master-pattern *generation*:
-back-project an experimental pattern to the sphere, cross-correlate it against the
-(differentiable) master pattern over all of SO(3) via spherical harmonics and the
-Wigner-D transform, read off the orientation, and emit orix objects for kikuchipy.
+The matching counterpart to :mod:`torchebsd.sim`'s master-pattern *generation*. Like
+dictionary / template indexing it recovers each pattern's orientation by matching it
+against the master pattern -- but instead of brute-force scanning a precomputed
+dictionary of simulated patterns, it back-projects the experimental pattern to the
+sphere, cross-correlates it against the (differentiable) master pattern over all of
+SO(3) via spherical harmonics and the Wigner-D transform, reads off the orientation,
+and emits orix objects for kikuchipy.
 
 Modelled on EMSphInx (Lenthe, Singh & De Graef, 2019); see ``INDEXING_DESIGN.md``
-for the method, project structure, and milestones (I1-I8). This package is
-scaffolded -- implementations land per milestone.
+for the method, project structure, and milestones (I1-I8). The I1-I8 pipeline is
+implemented; multi-candidate peak detection (:mod:`torchebsd.index.peaks`) is the one
+piece still outstanding.
 """
 
 from __future__ import annotations

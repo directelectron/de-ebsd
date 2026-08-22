@@ -233,6 +233,30 @@ def test_index_scan_batch_chunking_matches_single_batch(master, detector, scan_p
     assert np.array_equal(xmap_full.prop["quality"], xmap_chunk.prop["quality"])
 
 
+def test_index_scan_accepts_cpu_numpy_array(master, detector, scan_patterns):
+    """A plain CPU numpy scan indexes correctly with ``device='cpu'``.
+
+    ``index_scan`` moves each mini-batch to ``self.device`` inside the loop rather than
+    the whole stack up front (so a huge scan never lands wholesale in device memory);
+    the logic is device-agnostic, so a CPU numpy array indexes identically to a tensor.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_SCAN_EULER_DEG))
+    indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
+
+    patterns_np = scan_patterns.cpu().numpy()  # plain CPU numpy array, not a tensor
+    assert isinstance(patterns_np, np.ndarray)
+
+    xmap = indexer.index_scan(patterns_np, shape=_SCAN_SHAPE, batch_size=5)
+    assert isinstance(xmap, CrystalMap)
+    assert xmap.shape == _SCAN_SHAPE
+    dis = [_disorientation_deg(r_true[i], xmap.rotations[i]) for i in range(r_true.size)]
+    assert max(dis) < TOL_DEG
+
+    # identical to indexing the torch stack (device-agnostic per-chunk move)
+    xmap_t = indexer.index_scan(scan_patterns, shape=_SCAN_SHAPE, batch_size=5)
+    assert np.array_equal(xmap.rotations.data, xmap_t.rotations.data)
+
+
 def test_index_scan_explicit_phase_paths(master, detector, scan_patterns, crystal):
     """Explicit ``phase`` accepts both an orix Phase and a torchebsd Crystal."""
     indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")

@@ -218,7 +218,9 @@ def show_correlation(correlation):
     correlation
         The correlation grid, shape ``(N, N, N)`` for a single pattern, or a
         stack ``(Np, N, N, N)`` whose **first** pattern is shown (numpy array or
-        torch tensor).
+        torch tensor). Obtain it from
+        :meth:`~torchebsd.index.indexer.SphericalIndexer.index` with
+        ``return_surface=True`` (the third returned element).
 
     Returns
     -------
@@ -248,8 +250,8 @@ def show_correlation(correlation):
         f"SO(3) correlation (max over beta)  |  peak {peak:.4g} "
         f"at (a, b, g) = ({a_idx}, {b_idx}, {g_idx})",
     )
-    ax_setter(panel, "set_xlabel", "gamma index")
-    ax_setter(panel, "set_ylabel", "alpha index")
+    _ax_setter(panel, "set_xlabel", "gamma index")
+    _ax_setter(panel, "set_ylabel", "alpha index")
     # mark the peak: heatmap x is the gamma index, y is the alpha index
     try:
         panel.add_points([(g_idx, a_idx)], color="#4fc3f7", sizes=14, alpha=0.9)
@@ -261,7 +263,7 @@ def show_correlation(correlation):
     return fig
 
 
-def ax_setter(panel, method: str, value: str) -> None:
+def _ax_setter(panel, method: str, value: str) -> None:
     """Call an optional axis-label setter on a panel, ignoring absence (best-effort)."""
     setter = getattr(panel, method, None)
     if callable(setter):
@@ -316,7 +318,7 @@ def show_refinement(history):
         plot.add_line(
             hist.mean(axis=1), x_axis=iters, color="#ff7043", linewidth=2.5, label="mean"
         )
-    ax_setter(plot, "set_title", "Refinement convergence")
-    ax_setter(plot, "set_xlabel", "iteration")
-    ax_setter(plot, "set_ylabel", "NCC")
+    _ax_setter(plot, "set_title", "Refinement convergence")
+    _ax_setter(plot, "set_xlabel", "iteration")
+    _ax_setter(plot, "set_ylabel", "NCC")
     return fig

@@ -1,6 +1,11 @@
 # Spherical Indexing (`torchebsd.index`) — plan & project structure
 
-**Status:** planning. **Goal:** a fast, GPU-accelerated, *differentiable* spherical
+**Status:** implemented — the I1–I8 pipeline is complete (SHT, SO(3)
+cross-correlation, back-projection, single-pattern + scan indexing, gradient
+refinement, visualization, and orix-native I/O). The one remaining placeholder is
+`index.peaks` — multi-candidate SO(3) peak detection (future work; single-orientation
+indexing uses the argmax in `index` plus gradient refinement). **Goal:** a fast,
+GPU-accelerated, *differentiable* spherical
 indexing engine for EBSD — the matching counterpart to `torchebsd.sim`'s
 differentiable master-pattern *generation* — modelled on **EMSphInx** (Lenthe,
 Singh & De Graef, *Ultramicroscopy* 2019), implemented in PyTorch, that emits
@@ -84,7 +89,8 @@ torchebsd master M(n) ───────┘
   2. back-project each pattern to the sphere  E(n)           [index.backproject]
   3. forward SHT:  M -> a_lm (once) ;  E -> b_lm (batched)    [index.harmonics]
   4. SO(3) cross-correlation via Wigner-D FFT  ->  C(g)       [index.wigner + index.correlation]
-  5. peak on SO(3)  ->  candidate orientation(s)              [index.peaks]
+  5. peak on SO(3): argmax -> best orientation               [index.indexer]
+     (multi-candidate peak extraction is future work          [index.peaks])
   6. refine (sub-pixel SO(3); gradient on the forward model) [index.refine]
   7. assemble orix Rotation per pixel -> CrystalMap          [index.io]
 ```

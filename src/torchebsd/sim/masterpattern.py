@@ -121,7 +121,7 @@ class MasterPattern:
         Parameters
         ----------
         detector
-            The detector geometry (fixed projection center).
+            The detector geometry (fixed pattern center).
         orientation
             Crystal orientation(s): an ``orix.quaternion.Rotation`` or a
             tensor/array of unit quaternions (N, 4) in (a, b, c, d) order.

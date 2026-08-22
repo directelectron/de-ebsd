@@ -66,18 +66,34 @@ def so3_cross_correlation(
     master_coeffs: torch.Tensor,
     pattern_coeffs: torch.Tensor,
     bandwidth: int,
+    wigner_d_cached: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Cross-correlation of two harmonic spectra over all of SO(3), via SOFT.
 
-    Args:
-        master_coeffs: master spectrum ``a_lm``, shape ``(..., (L+1)**2)`` (packed
-            ``c = l*l + l + m``, the :mod:`.harmonics` convention). May carry leading
-            batch dims that broadcast against ``pattern_coeffs``.
-        pattern_coeffs: pattern spectrum ``b_lm``, shape ``(..., (L+1)**2)``. The
-            leading dims are the batch of patterns (many indexed at once).
-        bandwidth: the band limit ``L``; both spectra must have ``(L+1)**2`` slots.
+    Parameters
+    ----------
+    master_coeffs : torch.Tensor
+        Master spectrum ``a_lm``, shape ``(..., (L+1)**2)`` (packed
+        ``c = l*l + l + m``, the :mod:`.harmonics` convention). May carry leading
+        batch dims that broadcast against ``pattern_coeffs``.
+    pattern_coeffs : torch.Tensor
+        Pattern spectrum ``b_lm``, shape ``(..., (L+1)**2)``. The leading dims are
+        the batch of patterns (many indexed at once).
+    bandwidth : int
+        The band limit ``L``; both spectra must have ``(L+1)**2`` slots.
+    wigner_d_cached : torch.Tensor, optional
+        A precomputed Wigner-d block ``wigner_d(L, beta)`` for this bandwidth's SOFT
+        ``beta`` grid, shape ``(N, L+1, 2L+1, 2L+1)`` with ``N = 2L + 2`` (see
+        :func:`torchebsd.index.wigner.wigner_d`). This ``O(L^4)`` block is otherwise
+        rebuilt on every call; pass it to reuse one block across a mini-batched scan
+        (:class:`~torchebsd.index.indexer.SphericalIndexer` caches it in
+        ``__init__``). The result is byte-identical to omitting it, provided the
+        cached block matches this bandwidth's ``beta`` grid and the real dtype used
+        here (``float64`` for complex128 spectra, else ``float32``).
 
-    Returns:
+    Returns
+    -------
+    torch.Tensor
         Real tensor ``C`` of shape ``(*batch, N, N, N)`` with ``N = 2L + 2``, sampled
         on the :func:`.so3_grid` ``(alpha, beta, gamma)`` grid (axes in that order),
         where ``batch`` is the broadcast of the two inputs' leading dims. ``argmax``
@@ -107,7 +123,10 @@ def so3_cross_correlation(
     n = 2 * L + 2
     real_dtype = torch.float64 if cdtype == torch.complex128 else torch.float32
     alpha, beta, gamma = so3_grid(L, device=a.device, dtype=real_dtype)
-    d = wigner_d(L, beta).to(cdtype)  # (N, L+1, 2L+1, 2L+1)
+    if wigner_d_cached is not None:
+        d = wigner_d_cached.to(cdtype)  # reuse the precomputed O(L^4) block
+    else:
+        d = wigner_d(L, beta).to(cdtype)  # (N, L+1, 2L+1, 2L+1)
 
     # Wigner-d contraction over beta: S_{k, m, m'} = sum_l f_{l, m, m'} d^l_{m m'}(beta_k)
     s = torch.einsum("...lmn,klmn->...kmn", f, d)  # (..., N, 2L+1, 2L+1)

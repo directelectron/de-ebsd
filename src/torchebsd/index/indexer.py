@@ -40,9 +40,10 @@ spurious orientation that merely places a bright master region inside the FOV (I
 measured, on a bright-spot master, a true-cell score below a far-off spurious peak).
 The robustness fix I4 deferred -- a ``g``-dependent, EMSphInx-style normalization -- is
 now applied **by default** (``normalize=True``). The score becomes the spherical
-zero-mean masked normalized cross-correlation
+zero-mean masked normalized cross-correlation -- written ``rho(g)`` here, to avoid
+colliding with the Euler angle ``gamma`` of ``g = (alpha, beta, gamma)`` --
 
-    gamma(g) = X(g) / [ sqrt(P) * sqrt(S2(g) - S1(g)^2 / A_W) ],
+    rho(g) = X(g) / [ sqrt(P) * sqrt(S2(g) - S1(g)^2 / A_W) ],
 
 a correlation-coefficient-like number (roughly in ``[-1, 1]``). Here ``W(n)`` is the
 detector's fixed FOV indicator (``1`` inside, ``0`` outside), ``M_g(n) = M(g^-1 n)``,
@@ -61,12 +62,12 @@ argmax; both are the spherical quadrature integral of a field, ``sqrt(4 pi) Re(f
 
 The three terms are the **same** :func:`so3_cross_correlation` evaluated three ways on
 one SO(3) grid (same ``(alpha, beta, gamma)`` axis order), so they are aligned
-elementwise and ``gamma`` is a straightforward elementwise combination followed by the
+elementwise and ``rho`` is a straightforward elementwise combination followed by the
 *identical* argmax + :func:`grid_to_rotation` chain -- normalization does **not** touch
 the rotation convention. ``w_lm``, ``S1``, ``S2``, ``A_W`` and the whole denominator
 field depend only on the (fixed) detector geometry and the master, so they are computed
 **once** and cached on the indexer, shared across every pattern in a batch; the only
-per-pattern extra cost is forming ``gamma`` from ``X`` and ``P``.
+per-pattern extra cost is forming ``rho`` from ``X`` and ``P``.
 
 ``normalize=False`` keeps the honest **unnormalized** baseline ``X(g)``: sufficient for
 near-uniform-norm masters (dense Kikuchi bands) but biased for masters with localized
@@ -86,7 +87,7 @@ import torch
 from torchebsd.index.backproject import pattern_to_sphere
 from torchebsd.index.correlation import so3_cross_correlation
 from torchebsd.index.harmonics import SphericalHarmonicTransform
-from torchebsd.index.wigner import grid_to_rotation
+from torchebsd.index.wigner import grid_to_rotation, so3_grid, wigner_d
 
 
 class SphericalIndexer:
@@ -118,6 +119,12 @@ class SphericalIndexer:
         plan is pinned to this device and to the master's real dtype (the plan
         otherwise defaults to CPU/float64 and does not auto-move to the sample
         device).
+    energy_kev
+        Energy bin (keV) at which the master is sampled when precomputing ``a_lm``
+        and ``a2_lm``: the nearest bin to ``energy_kev`` is used (see
+        :meth:`torchebsd.sim.MasterPattern.sample`), so a multi-energy master can be
+        indexed at a chosen bin. ``None`` (default) selects the highest bin, the
+        unchanged behavior.
 
     Attributes
     ----------
@@ -146,10 +153,13 @@ class SphericalIndexer:
     refinement), this cache would have to be invalidated.
     """
 
-    def __init__(self, master, detector, bandwidth=53, device=None):
+    def __init__(self, master, detector, bandwidth=53, device=None, energy_kev=None):
         self.master = master
         self.detector = detector
         self.bandwidth = int(bandwidth)
+        # energy bin to sample the master at (None = highest, MasterPattern's default).
+        # Selected here, once, for both a_lm and a2_lm below.
+        self.energy_kev = energy_kev
 
         # device: explicit arg > master.device > cpu
         if device is not None:
@@ -181,7 +191,9 @@ class SphericalIndexer:
         # master spectrum, precomputed once: sample the continuous master on the
         # plan's directions and forward-transform. master.sample runs on the master's
         # own device; move the samples onto the plan's device/dtype before forward.
-        m_samples = master.sample(self._dirs)  # (M,), on master.device
+        # sample at the chosen energy bin (self.energy_kev, None = highest); the same
+        # samples feed both a_lm and a2_lm, so a single sample call selects the bin.
+        m_samples = master.sample(self._dirs, energy_kev=self.energy_kev)  # (M,), master.device
         m_samples = m_samples.to(device=self.device, dtype=self.dtype)
         grid_shape = (self.sht.n_theta, self.sht.n_phi)
         self.a_lm = self.sht.forward(m_samples.reshape(grid_shape))  # ((L+1)**2,) complex
@@ -191,6 +203,15 @@ class SphericalIndexer:
 
         # flat quadrature weights (M,), used for the g-independent FOV integrals A_W, P
         self._weights_flat = self.sht.weights.reshape(-1)
+
+        # Precompute the O(L^4) Wigner-d block once. so3_cross_correlation otherwise
+        # rebuilds wigner_d(L, beta) on every call, so a mini-batched scan would pay
+        # for it per chunk; every correlation in index / index_scan / the normalizer
+        # reuses this cached block (byte-identical). It depends only on the bandwidth's
+        # SOFT beta grid and is built on the plan's device and real dtype to match the
+        # grid so3_cross_correlation forms internally.
+        _, beta_grid, _ = so3_grid(self.bandwidth, device=self.device, dtype=self.dtype)
+        self._wig_d = wigner_d(self.bandwidth, beta_grid)  # (N, L+1, 2L+1, 2L+1)
         # geometry-derived normalizer, cached lazily on the first normalize=True call
         # (depends only on the master and the fixed detector pc -- see class Notes).
         self._w_lm = None  # FOV mask spectrum
@@ -222,8 +243,12 @@ class SphericalIndexer:
         w_lm = self.sht.forward(w.reshape(self.sht.n_theta, self.sht.n_phi))
         # S1, S2: the same so3_cross_correlation as X, against w_lm (master mean and
         # second moment over the rotated FOV). Aligned elementwise with X.
-        s1 = so3_cross_correlation(self.a_lm, w_lm, self.bandwidth)  # (N, N, N)
-        s2 = so3_cross_correlation(self.a2_lm, w_lm, self.bandwidth)  # (N, N, N)
+        s1 = so3_cross_correlation(
+            self.a_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
+        )  # (N, N, N)
+        s2 = so3_cross_correlation(
+            self.a2_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
+        )  # (N, N, N)
         # A_W = int W dn = sqrt(4 pi) Re(w_00): the FOV spherical area (a scalar).
         a_w = math.sqrt(4.0 * math.pi) * w_lm[0].real
         denom = (s2 - s1**2 / a_w.clamp_min(self._eps)).clamp_min(self._eps).sqrt()
@@ -232,7 +257,7 @@ class SphericalIndexer:
         self._denom_geo = denom
         return denom
 
-    def index(self, patterns, normalize=True):
+    def index(self, patterns, normalize=True, return_surface=False):
         """Index one pattern or a stack, returning orix orientations and quality.
 
         Parameters
@@ -244,13 +269,18 @@ class SphericalIndexer:
             a kikuchipy signal's ``.data`` can be passed straight in.
         normalize
             When ``True`` (default) the score is the **locally-normalized (masked)
-            cross-correlation** ``gamma(g)`` (see the module docstring): the raw masked
+            cross-correlation** ``rho(g)`` (see the module docstring): the raw masked
             cross term ``X(g)`` divided by the master's local FOV norm, which removes
             the bias toward orientations that place bright master regions in the field
             of view. When ``False`` the score is the raw **unnormalized** masked
             cross-correlation ``X(g)`` -- the honest I4 baseline, unbiased only for
             near-uniform-norm masters. Both share the identical argmax + rotation
             convention chain; only the per-pattern scaling of the surface differs.
+        return_surface
+            When ``True``, additionally return the full SO(3) score surface that was
+            arg-maxed, as a **third** tuple element (the normalized ``rho`` when
+            ``normalize=True``, else the raw ``X``). Default ``False``. The surface
+            feeds :func:`torchebsd.index.display.show_correlation` directly.
 
         Returns
         -------
@@ -261,15 +291,20 @@ class SphericalIndexer:
             inverse/transpose -- see the module docstring).
         quality : torch.Tensor
             The peak score of each pattern, a length-``Np`` real tensor. For
-            ``normalize=True`` this is the peak of ``gamma`` -- a
+            ``normalize=True`` this is the peak of ``rho`` -- a
             correlation-coefficient-like number, roughly in ``[-1, 1]``, comparable
             across patterns and FOVs. For ``normalize=False`` it is the raw peak of
             ``X`` (arbitrary scale). Higher means a better match; use it as a
             per-pattern confidence metric.
+        surface : torch.Tensor
+            *Only when* ``return_surface``: the arg-maxed SO(3) score surface, shape
+            ``(Np, N, N, N)`` with ``N = 2L + 2``, on the ``(alpha, beta, gamma)``
+            grid (the normalized ``rho`` when ``normalize=True``, else the raw ``X``).
+            Detached. Third element, in the order ``(rotations, quality, surface)``.
 
         Notes
         -----
-        The scan-indexing milestone (I5) will wrap this into an orix
+        For a whole scan, :meth:`index_scan` wraps this into an orix
         :class:`~orix.crystal_map.CrystalMap` (one orientation + quality per scan
         point); here the raw ``Rotation`` and quality are returned so the
         single-pattern path stays dependency-light.
@@ -302,11 +337,13 @@ class SphericalIndexer:
         # cross-correlate over SO(3): the masked cross term X[np, alpha, beta, gamma].
         # This is exactly so3_cross_correlation's X(g); the S1/S2 terms of the
         # normalization reuse the same call against w_lm / a2_lm.
-        c = so3_cross_correlation(self.a_lm, b_lm, self.bandwidth)  # (Np, N, N, N)
+        c = so3_cross_correlation(
+            self.a_lm, b_lm, self.bandwidth, wigner_d_cached=self._wig_d
+        )  # (Np, N, N, N)
         n_grid = 2 * self.bandwidth + 2
 
         if normalize:
-            # locally-normalized (masked) correlation gamma = X / (sqrt(P) * denom_geo).
+            # locally-normalized (masked) correlation rho = X / (sqrt(P) * denom_geo).
             # denom_geo = sqrt(S2 - S1^2 / A_W) is geometry+master only (cached, shared
             # across the batch); P = int W E^2 dn is the per-pattern FOV energy, the
             # quadrature integral sqrt(4 pi) Re((E^2)_00) = sum_grid weights * E^2. Both
@@ -325,6 +362,8 @@ class SphericalIndexer:
 
         # read the orientation directly off the SOFT grid (the sample orientation R)
         rotations = grid_to_rotation(self.bandwidth, j, k, p)
+        if return_surface:
+            return rotations, quality.detach(), surface.detach()
         return rotations, quality.detach()
 
     def refine(
@@ -381,6 +420,7 @@ class SphericalIndexer:
             lr=lr,
             pc_lr=pc_lr,
             directions=self._dirs,
+            device=self.device,
             return_history=return_history,
         )
 
@@ -463,7 +503,11 @@ class SphericalIndexer:
 
         from torchebsd.index.io import phase_from_crystal, to_crystal_map
 
-        patt = torch.as_tensor(patterns, device=self.device, dtype=self.dtype)
+        # Keep the whole stack on its own device (typically CPU) for shape inference
+        # and reshaping (cheap, view-only); only each mini-batch is moved to
+        # self.device inside the loop below, so a 10^5-10^6-pattern scan never lands
+        # wholesale in GPU memory.
+        patt = torch.as_tensor(patterns, dtype=self.dtype)
         if patt.ndim == 4:  # (rows, cols, H, W)
             rows, cols = int(patt.shape[0]), int(patt.shape[1])
             if shape is not None and (int(shape[0]), int(shape[1])) != (rows, cols):
@@ -496,11 +540,12 @@ class SphericalIndexer:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
         # index in mini-batches to bound the (bs, N, N, N) SO(3) surface memory;
-        # concatenate the per-batch orix Rotations and quality back to length n.
+        # concatenate the per-batch orix Rotations and quality back to length n. Each
+        # chunk is moved to self.device here (not the whole stack up front).
         rot_chunks = []
         qual_chunks = []
         for start in range(0, n, bs):
-            chunk = patt[start : start + bs]
+            chunk = patt[start : start + bs].to(self.device)
             rot_c, qual_c = self.index(chunk, normalize=normalize)
             if refine:
                 # sharpen the coarse seeds; the refined NCC replaces quality

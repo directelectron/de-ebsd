@@ -6,15 +6,15 @@ arrays, so it never imports kikuchipy. The intended direction is that kikuchipy
 in and consume the orix ``Rotation`` / ``CrystalMap`` out. See
 ``INDEXING_DESIGN.md`` (milestones I5b + I8).
 
-This module holds the two orix bridges scan indexing needs (I5b):
+This module holds the two orix bridges scan indexing needs (I5b), plus one for
+real-data ingest (I8):
 
 * :func:`phase_from_crystal` -- turn a torchebsd :class:`~torchebsd.sim.Crystal`
   into an :class:`orix.crystal_map.Phase`, which is what gives a ``CrystalMap``
   its crystal symmetry (orix derives the point group from the space group);
 * :func:`to_crystal_map` -- assemble a flat orix ``Rotation`` + a per-point
   quality metric into an :class:`orix.crystal_map.CrystalMap` laid out on the
-  scan grid.
-
+  scan grid;
 * :func:`master_from_emsoft` -- load an EMsoft EBSD master-pattern HDF5 file into
   a torchebsd :class:`~torchebsd.sim.MasterPattern`, rebuilding the crystal into
   ``metadata["crystal"]`` so a loaded EMsoft master flows straight into
@@ -177,7 +177,7 @@ def _to_numpy(x) -> np.ndarray:
     return np.asarray(x)
 
 
-def master_from_emsoft(path, energy_kev=None, device=None):
+def master_from_emsoft(path, device=None):
     """Load an EMsoft EBSD master-pattern HDF5 file as a torchebsd ``MasterPattern``.
 
     This closes the real-data loop (milestone I8): an EMsoft master on disk flows
@@ -192,7 +192,8 @@ def master_from_emsoft(path, energy_kev=None, device=None):
       (one component per asymmetric-unit atom). The components are **summed over
       the site axis** (indexing only the first site is a known bug); an
       already-collapsed ``(n_energy, n, n)`` array is used as-is.
-    * ``EMData/EBSDmaster/EkeVs`` -- the energy list (keV); **all** bins are kept.
+    * ``EMData/EBSDmaster/EkeVs`` -- the energy list (keV); **all** bins are kept
+      (choose an indexing bin with ``SphericalIndexer(energy_kev=...)``).
     * ``NMLparameters/EBSDMasterNameList/dmin`` -- ``dmin`` (metadata, provenance).
     * ``EMData/EBSDmaster/BetheParameters`` -- ``(c1, c2, c3, sgdbdiff)`` (metadata).
     * ``CrystalData/{LatticeParameters, AtomData, Atomtypes, SpaceGroupNumber,
@@ -219,10 +220,6 @@ def master_from_emsoft(path, energy_kev=None, device=None):
     ----------
     path
         Path to the EMsoft master-pattern HDF5 file.
-    energy_kev
-        Currently informational only: **all** energy bins are loaded (the indexer
-        selects the energy at sample time, defaulting to the highest bin). When
-        given it is recorded in ``metadata["requested_energy_kev"]`` for provenance.
     device
         Optional torch device the returned ``MasterPattern`` is moved to.
 
@@ -237,8 +234,8 @@ def master_from_emsoft(path, energy_kev=None, device=None):
     Notes
     -----
     ``kikuchipy`` is never imported; ``h5py`` (an existing repo dependency used by
-    :meth:`MasterPattern.save`/:meth:`~MasterPattern.load`) is imported inside the
-    function.
+    :meth:`~torchebsd.sim.MasterPattern.save` /
+    :meth:`~torchebsd.sim.MasterPattern.load`) is imported inside the function.
     """
     import h5py
     import torch
@@ -265,8 +262,6 @@ def master_from_emsoft(path, energy_kev=None, device=None):
         "dmin": dmin,
         "bethe": tuple(float(x) for x in bethe) if bethe is not None else None,
     }
-    if energy_kev is not None:
-        metadata["requested_energy_kev"] = float(energy_kev)
 
     # Rebuild the crystal for phase auto-derivation, but never let a malformed or
     # partial CrystalData sink the load -- record the reason and return the master.
