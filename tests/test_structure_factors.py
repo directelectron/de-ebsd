@@ -2,10 +2,59 @@
 
 import numpy as np
 import pytest
+import torch
 
 from torchebsd import Crystal
 from torchebsd.constants import electron_wavelength_nm
-from torchebsd.structure_factors import compute_structure_factors
+from torchebsd.structure_factors import compute_structure_factors, differentiable_ucg_lut
+
+
+def _si():
+    return Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    )
+
+
+def test_differentiable_ucg_lut_matches_numpy():
+    cry = _si()
+    sf = compute_structure_factors(cry, 20.0, dmin=0.12)
+    lut = differentiable_ucg_lut(cry, 20.0, 0.12)
+    assert torch.allclose(lut.detach(), torch.as_tensor(sf.ucg_lut), atol=1e-12)
+
+
+def test_ucg_gradients_match_finite_difference():
+    """Autograd d(U_g)/d(positions, occupancy) matches finite differences."""
+    cry = _si()
+    base = [torch.as_tensor(np.asarray(p), dtype=torch.float64) for p in cry.positions]
+    rng = np.random.default_rng(0)
+    shape = differentiable_ucg_lut(cry, 20.0, 0.12).shape
+    weight = torch.as_tensor(rng.standard_normal(shape) + 1j * rng.standard_normal(shape))
+
+    def scalar_pos(shift):
+        pos = [b.clone() for b in base]
+        pos[0] = pos[0].clone()
+        pos[0][0, 0] = pos[0][0, 0] + shift
+        return (weight * differentiable_ucg_lut(cry, 20.0, 0.12, positions=pos)).real.sum()
+
+    s = torch.zeros((), dtype=torch.float64, requires_grad=True)
+    scalar_pos(s).backward()
+    eps = 1e-6
+    with torch.no_grad():
+        fp, fm = float(scalar_pos(torch.tensor(eps))), float(scalar_pos(torch.tensor(-eps)))
+    fd = (fp - fm) / (2 * eps)
+    assert abs(float(s.grad) - fd) / (abs(fd) + 1e-12) < 1e-5
+
+    def scalar_occ(shift):
+        occs = [torch.as_tensor(site.occupancy, dtype=torch.float64) for site in cry.sites]
+        occs[0] = occs[0] + shift
+        return (weight * differentiable_ucg_lut(cry, 20.0, 0.12, occupancies=occs)).real.sum()
+
+    o = torch.zeros((), dtype=torch.float64, requires_grad=True)
+    scalar_occ(o).backward()
+    with torch.no_grad():
+        op, om = float(scalar_occ(torch.tensor(1e-5))), float(scalar_occ(torch.tensor(-1e-5)))
+    fd_o = (op - om) / 2e-5
+    assert abs(float(o.grad) - fd_o) / (abs(fd_o) + 1e-12) < 1e-5
 
 # Complex U_g in nm^-2 dumped from EMsoft's ``EMqg`` utility (mod_diffraction
 # ``CalcUcg``, WK branch) for Si.xtal at 20 kV with B = 0.0045 nm^2. Real part is

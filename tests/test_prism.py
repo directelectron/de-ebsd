@@ -119,3 +119,36 @@ def test_bloch_solve_is_differentiable(si_sf):
     g_auto = complex(grad[idx])
     assert abs(g_auto.real - g_re_fd) < 1e-3
     assert abs(g_auto.imag - g_im_fd) < 1e-3
+
+
+def test_intensity_differentiable_wrt_positions(si_sf):
+    """End-to-end: atom positions -> torch structure factors -> prism Bloch solve
+    -> intensity, with the gradient matching finite differences.
+
+    This closes the differentiable chain from a crystal parameter to the master-
+    pattern intensity: torch U_g (differentiable_ucg_lut) feeds the torch backend.
+    """
+    from torchebsd.structure_factors import differentiable_ucg_lut
+
+    crystal = si_sf.crystal
+    prism = resolve_backend("bloch_prism")
+    prism.prepare(SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
+                                   device=torch.device("cpu"), dtype=torch.float64))
+    base = [torch.as_tensor(np.asarray(p), dtype=torch.float64) for p in crystal.positions]
+    d = _dirs(4, seed=1)
+
+    def total(shift):
+        pos = [b.clone() for b in base]
+        pos[0] = pos[0].clone()
+        pos[0][0, 0] = pos[0][0, 0] + shift
+        prism.u_lut = differentiable_ucg_lut(
+            crystal, si_sf.energy_kev, si_sf.dmin, positions=pos
+        ).to(torch.complex128)
+        return prism.intensities(d).sum()
+
+    s = torch.zeros((), dtype=torch.float64, requires_grad=True)
+    total(s).backward()
+    eps = 1e-5
+    with torch.no_grad():
+        g_fd = (float(total(torch.tensor(eps))) - float(total(torch.tensor(-eps)))) / (2 * eps)
+    assert abs(float(s.grad) - g_fd) / (abs(g_fd) + 1e-9) < 1e-2

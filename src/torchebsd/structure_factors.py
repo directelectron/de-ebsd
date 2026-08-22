@@ -29,7 +29,7 @@ from torchebsd.scattering import atomic_number, wk_scattering_factor
 if TYPE_CHECKING:
     from anyplotlib import Figure
 
-__all__ = ["StructureFactors", "compute_structure_factors"]
+__all__ = ["StructureFactors", "compute_structure_factors", "differentiable_ucg_lut"]
 
 
 @dataclass
@@ -236,3 +236,60 @@ def compute_structure_factors(
         d=1.0 / g_list,
         ucg=ucg[keep][order],
     )
+
+
+def differentiable_ucg_lut(
+    crystal: Crystal,
+    energy_kev: float,
+    dmin: float,
+    *,
+    positions: list[torch.Tensor] | None = None,
+    occupancies: list[torch.Tensor] | None = None,
+    absorption: bool = True,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype = torch.complex128,
+) -> torch.Tensor:
+    """Assemble the ``U_g`` lookup table in torch, differentiable in the crystal.
+
+    ``U_g = pre * sum_site occ_site * f_site(g) * sum_r exp(-2 pi i g.r)``. The
+    Weickenmeier-Kohl amplitudes ``f_site(g)`` (element, ``|g|``, energy,
+    Debye-Waller) are evaluated in numpy and held constant; the parameters that
+    *combine* them -- atom **positions** (the structure-factor phase) and site
+    **occupancies** -- are torch, so autograd flows to them. Feed the result to
+    a torch backend (``bloch_prism``) as its ``u_lut`` for end-to-end
+    ``d(intensity)/d(positions)``.
+
+    ``positions``/``occupancies`` default to the crystal's values (as leaves to
+    differentiate, pass ``requires_grad`` tensors). Making ``U_g`` differentiable
+    w.r.t. Debye-Waller or lattice needs the WK amplitude itself in torch -- a
+    further port; here the amplitude is a detached constant.
+    """
+    dev = torch.device(device) if device is not None else torch.device("cpu")
+    hmax = _hmax_for_dmin(crystal, dmin)
+    m = 2 * hmax
+    rng = np.arange(-m, m + 1)
+    h, k, ll = np.meshgrid(rng, rng, rng, indexing="ij")
+    hkl_box = np.stack([h, k, ll], axis=-1).reshape(-1, 3)
+    g_wk = crystal.g_length(hkl_box) * SWK
+    g_unique, inverse = np.unique(np.round(g_wk, 9), return_inverse=True)
+    pre = PREF_COEF / crystal.volume / (4.0 * C_PI) * PREG
+
+    hkl_t = torch.as_tensor(hkl_box, device=dev, dtype=torch.float64)
+    if positions is None:
+        positions = [torch.as_tensor(p, device=dev, dtype=torch.float64) for p in crystal.positions]
+    if occupancies is None:
+        occupancies = [torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64)
+                       for s in crystal.sites]
+
+    ucg = torch.zeros(len(hkl_box), device=dev, dtype=dtype)
+    for site, pos, occ in zip(crystal.sites, positions, occupancies, strict=True):
+        ul = float(np.sqrt(site.debye_waller * DWWK))
+        f = wk_scattering_factor(atomic_number(site.element), g_unique, ul, energy_kev,
+                                 absorption=absorption)[inverse]
+        f_t = torch.as_tensor(f, device=dev, dtype=dtype)  # detached WK amplitude
+        # structure-factor phase sum over the site's atoms (differentiable in pos)
+        phase = torch.exp(-2j * np.pi * (hkl_t @ pos.to(dev, torch.float64).T)).sum(dim=1)
+        ucg = ucg + pre * occ.to(dev, dtype) * f_t * phase
+
+    n = 4 * hmax + 1
+    return ucg.reshape(n, n, n)
