@@ -325,18 +325,19 @@ refine / save / project, and headless display + widget smoke tests.
   path, and Si bins correlate ~0.93 with `Si_MC.h5`'s `mLPNH` at coarse npx
   (the top bin reaches r = 1.0 at native resolution, M2). Remaining (optional):
   the hexagonal Lambert grid for trigonal/hexagonal systems.
-- **M4 -- differentiability [core done].** Autograd runs end to end from a
-  crystal parameter to intensity: the `bloch_prism` path is torch-native
-  (`matrix_exp` + depth recurrence + `Sgh`), so gradients flow through the
-  non-Hermitian complex solve back to `U_g`; and `differentiable_ucg_lut`
-  assembles `U_g = pre * sum_site occ * f_site(g) * sum_r exp(-2 pi i g.r)` in
-  torch so `U_g` (and thus the intensity) is differentiable w.r.t. atom
-  **positions** and **occupancies** -- forward bit-exact vs the numpy path,
-  gradients matching finite differences to ~1e-8, and `d(intensity)/d(position)`
-  through the full chain matching FD to ~1e-7. Remaining: **Debye-Waller and
-  lattice** gradients need the WK scattering *amplitude* itself in torch (the
-  exponential-integral absorptive integrals `RI1`/`RI2`, currently a detached
-  constant); then the FP32/FP64 accuracy audit and dtype policy.
+- **M4 -- differentiability [done].** Autograd runs end to end from a crystal
+  parameter to intensity: the `bloch_prism` path is torch-native (`matrix_exp` +
+  depth recurrence + `Sgh`), so gradients flow through the non-Hermitian complex
+  solve back to `U_g`; `differentiable_ucg_lut` assembles
+  `U_g = pre * sum_site occ * f_site(g) * sum_r exp(-2 pi i g.r)` in torch; and
+  `scattering_torch.wk_scattering_factor_torch` ports the full WK amplitude
+  (elastic `WEKO`, phonon/core absorption via the exponential-integral integrals
+  `RI1`/`RI2`) to torch. So `U_g`, and thus the master pattern, is differentiable
+  w.r.t. atom **positions**, **occupancies**, and the **Debye-Waller** factor --
+  every stage forward bit-exact vs the numpy path (amplitude to ~1e-8) and every
+  gradient matching finite differences (`d(intensity)/dB` to ~1e-5). Remaining
+  (optional): **lattice** gradients, which additionally need the metric/`g`
+  differentiable in torch; and an FP32/FP64 accuracy audit + dtype policy.
 - **M5 -- scattering-matrix backend [core done as `bloch_prism`].** The exact
   per-direction scattering matrix (`matrix_exp`) is implemented and is the
   production backend. Remaining optional extension: PRISM-style coarse-grid

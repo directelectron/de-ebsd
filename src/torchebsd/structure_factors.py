@@ -25,6 +25,7 @@ import torch
 from torchebsd.constants import C_PI, DWWK, PREF_COEF, PREG, SWK, electron_wavelength_nm
 from torchebsd.crystal import Crystal
 from torchebsd.scattering import atomic_number, wk_scattering_factor
+from torchebsd.scattering_torch import wk_scattering_factor_torch
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
@@ -245,24 +246,28 @@ def differentiable_ucg_lut(
     *,
     positions: list[torch.Tensor] | None = None,
     occupancies: list[torch.Tensor] | None = None,
+    debye_waller: list[torch.Tensor] | None = None,
     absorption: bool = True,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.complex128,
 ) -> torch.Tensor:
     """Assemble the ``U_g`` lookup table in torch, differentiable in the crystal.
 
-    ``U_g = pre * sum_site occ_site * f_site(g) * sum_r exp(-2 pi i g.r)``. The
-    Weickenmeier-Kohl amplitudes ``f_site(g)`` (element, ``|g|``, energy,
-    Debye-Waller) are evaluated in numpy and held constant; the parameters that
-    *combine* them -- atom **positions** (the structure-factor phase) and site
-    **occupancies** -- are torch, so autograd flows to them. Feed the result to
-    a torch backend (``bloch_prism``) as its ``u_lut`` for end-to-end
-    ``d(intensity)/d(positions)``.
+    ``U_g = pre * sum_site occ_site * f_site(g) * sum_r exp(-2 pi i g.r)``. All
+    three parameter groups are differentiable when passed as ``requires_grad``
+    tensors:
 
-    ``positions``/``occupancies`` default to the crystal's values (as leaves to
-    differentiate, pass ``requires_grad`` tensors). Making ``U_g`` differentiable
-    w.r.t. Debye-Waller or lattice needs the WK amplitude itself in torch -- a
-    further port; here the amplitude is a detached constant.
+    - **positions** -- the structure-factor phase ``sum_r exp(-2 pi i g.r)``;
+    - **occupancies** -- the linear per-site weight;
+    - **debye_waller** (``B`` in nm^2, one per site) -- feeds the torch WK
+      amplitude (:func:`torchebsd.scattering_torch.wk_scattering_factor_torch`),
+      so ``U_g`` differentiates w.r.t. the thermal factor.
+
+    When ``debye_waller`` is None the amplitudes are evaluated in numpy and held
+    constant (positions/occupancy gradients only). Feed the result to a torch
+    backend (``bloch_prism``) as its ``u_lut`` for end-to-end
+    ``d(intensity)/d(crystal parameter)``. Lattice gradients (through ``g``)
+    remain a further step.
     """
     dev = torch.device(device) if device is not None else torch.device("cpu")
     hmax = _hmax_for_dmin(crystal, dmin)
@@ -275,18 +280,27 @@ def differentiable_ucg_lut(
     pre = PREF_COEF / crystal.volume / (4.0 * C_PI) * PREG
 
     hkl_t = torch.as_tensor(hkl_box, device=dev, dtype=torch.float64)
+    inverse_t = torch.as_tensor(inverse, device=dev)
+    g_unique_t = torch.as_tensor(g_unique, device=dev, dtype=torch.float64)
     if positions is None:
         positions = [torch.as_tensor(p, device=dev, dtype=torch.float64) for p in crystal.positions]
     if occupancies is None:
         occupancies = [torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64)
                        for s in crystal.sites]
+    dw = debye_waller if debye_waller is not None else [None] * len(crystal.sites)
 
     ucg = torch.zeros(len(hkl_box), device=dev, dtype=dtype)
-    for site, pos, occ in zip(crystal.sites, positions, occupancies, strict=True):
-        ul = float(np.sqrt(site.debye_waller * DWWK))
-        f = wk_scattering_factor(atomic_number(site.element), g_unique, ul, energy_kev,
-                                 absorption=absorption)[inverse]
-        f_t = torch.as_tensor(f, device=dev, dtype=dtype)  # detached WK amplitude
+    for site, pos, occ, b in zip(crystal.sites, positions, occupancies, dw, strict=True):
+        z = atomic_number(site.element)
+        if b is None:  # detached WK amplitude (numpy)
+            ul = float(np.sqrt(site.debye_waller * DWWK))
+            f = wk_scattering_factor(z, g_unique, ul, energy_kev, absorption=absorption)
+            f_t = torch.as_tensor(f, device=dev, dtype=dtype)[inverse_t]
+        else:  # torch WK amplitude, differentiable in the Debye-Waller factor
+            ul = torch.sqrt(b.to(dev, torch.float64) * DWWK)
+            f_unique = wk_scattering_factor_torch(
+                z, g_unique_t, ul, energy_kev, absorption=absorption)
+            f_t = f_unique.to(dtype)[inverse_t]
         # structure-factor phase sum over the site's atoms (differentiable in pos)
         phase = torch.exp(-2j * np.pi * (hkl_t @ pos.to(dev, torch.float64).T)).sum(dim=1)
         ucg = ucg + pre * occ.to(dev, dtype) * f_t * phase

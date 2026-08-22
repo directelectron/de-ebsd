@@ -152,3 +152,31 @@ def test_intensity_differentiable_wrt_positions(si_sf):
     with torch.no_grad():
         g_fd = (float(total(torch.tensor(eps))) - float(total(torch.tensor(-eps)))) / (2 * eps)
     assert abs(float(s.grad) - g_fd) / (abs(g_fd) + 1e-9) < 1e-2
+
+
+def test_intensity_differentiable_wrt_debye_waller(si_sf):
+    """End-to-end d(intensity)/d(Debye-Waller) through the torch WK amplitude,
+    the structure factors, and the prism Bloch solve, matching finite diffs."""
+    from torchebsd.structure_factors import differentiable_ucg_lut
+
+    crystal = si_sf.crystal
+    prism = resolve_backend("bloch_prism")
+    prism.prepare(SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
+                                   device=torch.device("cpu"), dtype=torch.float64))
+    d = _dirs(4, seed=2)
+    b0 = float(crystal.sites[0].debye_waller)
+
+    def total(bval):
+        prism.u_lut = differentiable_ucg_lut(
+            crystal, si_sf.energy_kev, si_sf.dmin, debye_waller=[bval]
+        ).to(torch.complex128)
+        return prism.intensities(d).sum()
+
+    b = torch.tensor(b0, dtype=torch.float64, requires_grad=True)
+    total(b).backward()
+    assert torch.isfinite(b.grad)
+    eps = 1e-6
+    with torch.no_grad():
+        fp, fm = float(total(torch.tensor(b0 + eps))), float(total(torch.tensor(b0 - eps)))
+    g_fd = (fp - fm) / (2 * eps)
+    assert abs(float(b.grad) - g_fd) / (abs(g_fd) + 1e-9) < 1e-3
