@@ -22,6 +22,9 @@ __all__ = [
     "master_from_emsoft",
     "phase_from_crystal",
     "refine_orientation",
+    "remove_background",
+    "remove_dynamic_background",
+    "remove_static_background",
     "show_correlation",
     "show_map",
     "show_match",
@@ -30,6 +33,11 @@ __all__ = [
 ]
 
 _DISPLAY_FUNCS = ("show_correlation", "show_map", "show_match", "show_refinement")
+_PREPROCESS_FUNCS = (
+    "remove_background",
+    "remove_dynamic_background",
+    "remove_static_background",
+)
 
 
 def __getattr__(name: str):
@@ -55,4 +63,8 @@ def __getattr__(name: str):
         from torchebsd.index import display
 
         return getattr(display, name)
+    if name in _PREPROCESS_FUNCS:
+        from torchebsd.index import preprocess
+
+        return getattr(preprocess, name)
     raise AttributeError(f"module 'torchebsd.index' has no attribute {name!r}")
