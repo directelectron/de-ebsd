@@ -359,7 +359,7 @@ class DictionaryIndexer:
         phase=None,
         batch_size=None,
         refine=False,
-        refine_iters=100,
+        refine_iters=60,
     ):
         """Index a whole scan and assemble the result into an orix ``CrystalMap``.
 

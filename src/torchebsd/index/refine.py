@@ -50,9 +50,13 @@ a contrast-invariant correlation coefficient in ``[-1, 1]``, differentiable in b
 ``w`` and (via ``E``) the pattern center. It is *maximized* (loss ``-NCC``) with Adam;
 the per-pattern NCCs are summed into one scalar loss, so a whole stack refines in
 parallel with fully independent per-pattern gradients (the pattern center is the one
-optionally-shared parameter). ~100 Adam steps at ``lr = 0.02`` take a coarse seed a few
-degrees off down to well under half a degree; the pattern center is refined with a
-smaller step (``pc_lr``, default ``lr / 5``) since its natural scale is finer.
+optionally-shared parameter). The NCC is evaluated over the detector's **in-FOV** pixel
+directions by default (:func:`_fov_directions`) rather than a whole-sphere set most of
+whose points fall outside the field of view and are masked to zero -- ~3x cheaper per
+iteration and more accurate, since every sample contributes. ~60 Adam steps at
+``lr = 0.02`` take a coarse seed a few degrees off down to well under a degree; the
+pattern center is refined with a smaller step (``pc_lr``, default ``lr / 5``) since its
+natural scale is finer.
 
 ``lr`` is the key stability knob. The objective's basin around the true orientation is
 sharp and deep for a clean, band-limited synthetic master but *shallow and noisy* for
@@ -129,6 +133,24 @@ def _fibonacci_directions(n: int, device, dtype) -> torch.Tensor:
     return torch.stack([r * torch.cos(phi), r * torch.sin(phi), z], dim=-1)
 
 
+def _fov_directions(detector, device, dtype, target: int = 1024) -> torch.Tensor:
+    """The detector's own pixel directions, subsampled to ~``target`` -- all in the FOV.
+
+    The refinement objective is a masked NCC *over the field of view*, so directions
+    outside it are pure waste: the master is sampled and gradient-tracked there every
+    iteration only to be zeroed by the mask. The detector's ``direction_cosines`` are
+    exactly the in-FOV sphere directions (one per pixel), so subsampling them gives a
+    grid where **every** point contributes. Measured to refine as accurately as a
+    whole-sphere Fibonacci set several times larger (of which only ~a third lands in the
+    FOV) -- and with a markedly better worst case, since the hard patterns are no longer
+    starved of support. This is the default direction set (the
+    :class:`~torchebsd.index.indexer.SphericalIndexer` still passes its own SHT grid).
+    """
+    pix = detector.direction_cosines(device=device, dtype=dtype).reshape(-1, 3)
+    step = max(1, pix.shape[0] // int(target))
+    return pix[::step][: int(target)].contiguous()
+
+
 def _backproject(patt, detector, dirs, pc, per_pattern):
     """Back-project ``patt`` (Np, H, W) onto ``dirs`` (M, 3), returning ``E`` and mask.
 
@@ -155,7 +177,7 @@ def refine_orientation(
     rotations,
     pc=None,
     refine_pc=False,
-    n_iters=100,
+    n_iters=60,
     lr=0.02,
     pc_lr=None,
     directions=None,
@@ -198,7 +220,9 @@ def refine_orientation(
         orientation (the I3 pattern-center gradient path). If ``False`` (default) it is
         held fixed and returned untouched.
     n_iters
-        Number of Adam iterations (default 100).
+        Number of Adam iterations (default 60). With the default in-FOV directions the
+        seed (a coarse index cell, a degree or two off) reaches sub-degree accuracy well
+        inside this budget; raise it for a tighter fit, lower it for more speed.
     lr
         Adam learning rate for the rotation-vector correction ``w`` (radians; default
         0.02). The key stability knob (see the module docstring): too large a step
@@ -211,9 +235,12 @@ def refine_orientation(
         so it takes smaller steps. Ignored when ``refine_pc`` is ``False``.
     directions
         Sphere directions ``(M, 3)`` over which the NCC is evaluated (the FOV is masked
-        out of these). ``None`` (default) uses a uniform Fibonacci-sphere set; the
+        out of these). ``None`` (default) uses the detector's own **in-FOV** pixel
+        directions (:func:`_fov_directions`), where every point contributes -- ~3x faster
+        and more accurate than a whole-sphere set of which most points fall outside the
+        FOV. Pass an explicit set to override (the
         :meth:`~torchebsd.index.indexer.SphericalIndexer.refine` convenience passes its
-        SHT quadrature grid so the refinement and the coarse index share one grid.
+        SHT quadrature grid so the SOFT refinement and coarse index share one grid).
     device
         Torch device to run the optimization on. ``None`` (default) uses
         ``master.data.device``; when given, the master, patterns and seeds are moved
@@ -277,7 +304,7 @@ def refine_orientation(
     r0_mat = quaternion_to_matrix(q0).detach()  # (Np, 3, 3)
 
     if directions is None:
-        dirs = _fibonacci_directions(2500, device, dtype)
+        dirs = _fov_directions(detector, device, dtype)
     else:
         dirs = torch.as_tensor(directions, device=device, dtype=dtype).reshape(-1, 3)
 
