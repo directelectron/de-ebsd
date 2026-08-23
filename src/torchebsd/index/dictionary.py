@@ -109,7 +109,11 @@ class DictionaryIndexer:
         Target average disorientation (degrees) of the fundamental-zone sampling
         (:func:`orix.sampling.get_sample_fundamental`). This is the coarse
         orientation resolution before refinement; smaller means a denser (larger)
-        dictionary. Default ``2.0``.
+        dictionary and a slower one-time build. Default ``3.0`` -- benchmarked to
+        refine to the same sub-degree accuracy as ``2.0`` (the coarse cell is just a
+        seed for the gradient refinement) at a ~3x cheaper build, while ``4.0`` starts
+        to drop some patterns into a wrong basin the refinement cannot escape. Go finer
+        only for phases where refinement is unreliable (strong pseudo-symmetry).
     device
         Torch device the dictionary is built and matched on (``"cuda"`` recommended --
         the fp16 matmul path is a tensor-core operation). Resolved as: explicit
@@ -153,7 +157,7 @@ class DictionaryIndexer:
         master,
         detector,
         point_group=None,
-        resolution=2.0,
+        resolution=3.0,
         device=None,
         dtype=torch.float16,
         energy_kev=None,
