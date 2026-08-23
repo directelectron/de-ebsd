@@ -328,6 +328,13 @@ class DictionaryIndexer:
         ``rotations`` is ``None`` the seeds are obtained by calling :meth:`index` first,
         so a single call goes from raw patterns straight to sharpened orientations.
 
+        **Defaults to the second-order Levenberg-Marquardt / Gauss-Newton refiner**
+        (``method="lm"``): the dictionary indexer *is* the fast coarse-then-refine
+        workflow, and LM reaches the same sub-degree accuracy in ~10 steps rather than
+        Adam's ~60 (~2.3x faster at equal accuracy). LM is orientation-only, so passing
+        ``refine_pc=True`` transparently falls back to Adam (which also refines the
+        pattern center). Pass ``method="adam"`` to force the first-order path.
+
         Parameters
         ----------
         patterns
@@ -337,9 +344,9 @@ class DictionaryIndexer:
             Seed orientations, an :class:`orix.quaternion.Rotation` of length ``Np``. If
             ``None`` (default), :meth:`index` is run on ``patterns`` to obtain them.
         **kw
-            Forwarded to :func:`~torchebsd.index.refine.refine_orientation` (``pc``,
-            ``refine_pc``, ``n_iters``, ``lr``, ``keep_best``, ...). ``device`` defaults
-            to this indexer's device.
+            Forwarded to :func:`~torchebsd.index.refine.refine_orientation` (``method``,
+            ``pc``, ``refine_pc``, ``n_iters``, ``lm_lambda``, ``keep_best``, ...).
+            ``method`` defaults to ``"lm"`` and ``device`` to this indexer's device.
 
         Returns
         -------
@@ -352,6 +359,7 @@ class DictionaryIndexer:
 
         if rotations is None:
             rotations, _ = self.index(patterns)
+        kw.setdefault("method", "lm")
         kw.setdefault("device", self.device)
         return refine_orientation(patterns, self.master, self.detector, rotations, **kw)
 
@@ -363,7 +371,7 @@ class DictionaryIndexer:
         phase=None,
         batch_size=None,
         refine=False,
-        refine_iters=60,
+        refine_iters=12,
     ):
         """Index a whole scan and assemble the result into an orix ``CrystalMap``.
 
@@ -402,11 +410,13 @@ class DictionaryIndexer:
             If ``True``, each mini-batch's coarse dictionary orientations are
             gradient-refined with :meth:`refine` before assembly, and
             ``prop["quality"]`` becomes the refined NCC. The fundamental-zone grid is
-            coarse, so refinement to sub-degree is the intended finish. Default
-            ``False``.
+            coarse, so refinement to sub-degree is the intended finish. Refinement uses
+            the second-order LM path (:meth:`refine`'s default). Default ``False``.
         refine_iters
-            Adam iterations for the per-batch refinement when ``refine`` is ``True``
-            (see :func:`~torchebsd.index.refine.refine_orientation`).
+            Levenberg-Marquardt steps for the per-batch refinement when ``refine`` is
+            ``True`` (default ``12``; :meth:`refine` defaults to ``method="lm"``, whose
+            second-order steps need far fewer than Adam -- see
+            :func:`~torchebsd.index.refine.refine_orientation`).
 
         Returns
         -------

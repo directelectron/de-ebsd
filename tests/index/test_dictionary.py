@@ -336,6 +336,30 @@ def test_index_scan_refine_improves_quality(indexer, master, detector, point_gro
     assert float(np.min(xmap.prop["quality"])) > 0.9
 
 
+def test_refine_defaults_to_lm(indexer, master, detector, point_group):
+    """``DictionaryIndexer.refine`` defaults to the second-order LM path.
+
+    The dictionary indexer is the fast coarse-then-refine workflow, so its ``refine``
+    (and ``index_scan(refine=True)``) default to ``method="lm"``. Verified behaviorally:
+    the default result is byte-identical to an explicit ``method="lm"`` run and differs
+    from ``method="adam"`` at the same step budget; and LM still sharpens to sub-degree.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=False)
+    coarse, _ = indexer.index(patterns)
+
+    default_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15)
+    lm_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15, method="lm")
+    adam_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15, method="adam")
+
+    # the default IS lm (identical), and is not the adam path
+    assert np.allclose(default_ref.data, lm_ref.data)
+    assert not np.allclose(default_ref.data, adam_ref.data)
+    # and the default (LM) refinement reaches sub-degree
+    dis = _disorientation_deg(default_ref, r_true, point_group)
+    assert float(dis.max()) < 1.0
+
+
 # --------------------------------------------------------------------------- #
 # 5. dtype: fp32 (CPU) and fp16 (CUDA-guarded)
 # --------------------------------------------------------------------------- #

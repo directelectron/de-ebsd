@@ -36,8 +36,16 @@ from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector, MasterPattern
 from torchebsd.index import refine_orientation
+from torchebsd.index.backproject import pattern_to_sphere
 from torchebsd.index.indexer import SphericalIndexer
+from torchebsd.index.refine import (
+    _fov_directions,
+    _lm_residual_jacobian,
+    _skew,
+    _standardize,
+)
 from torchebsd.sim.lambert import master_pattern_grid
+from torchebsd.sim.rotation import quaternion_to_matrix
 
 BANDWIDTH = 20
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)  # ~8.57 deg SOFT cell at L = 20
@@ -442,3 +450,212 @@ def test_keep_best_never_degrades_below_seed(master, detector, indexer):
     for i in range(r_true.size):
         if float(s_ungated[i]) < float(seed_score[i]) - 1e-3:
             assert _dis(coarse[i], gated[i]) < 1e-4
+
+
+# --------------------------------------------------------------------------- #
+# 7. second-order (Levenberg-Marquardt / Gauss-Newton) refinement, method="lm"
+# --------------------------------------------------------------------------- #
+def test_lm_analytic_jacobian_matches_finite_differences(master, detector):
+    """FD-check the analytic residual Jacobian on the smooth, band-limited master.
+
+    On a smooth master the bilinear ``grid_sample`` has no kinks, so the analytic
+    Jacobian (the crux of the LM path -- assembled from one reverse-mode ``grid_sample``
+    gradient) must match central finite differences tightly. The check is done in
+    float64 at a small deterministic offset off truth (a realistic seed). The median
+    elementwise relative error pins the math; a global scale-free error (max abs error
+    over the peak Jacobian magnitude, the prototype's own metric) bounds the worst case.
+    """
+    device, dtype = torch.device("cpu"), torch.float64
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)
+    n_p = r_true.size
+
+    dirs = _fov_directions(detector, device, dtype)
+    e, mask = pattern_to_sphere(patterns.to(dtype), detector, dirs)
+    assert bool((mask == 1).all())  # the LM all-in-FOV (all-ones-mask) assumption
+    e_c, e_s = _standardize(e)
+    e_hat = e_c / e_s
+
+    # evaluate the Jacobian at a seed ~2 deg off truth (a realistic coarse cell)
+    q0 = quaternion_to_matrix(torch.as_tensor(np.asarray(r_true.data), dtype=dtype))
+    rng = np.random.default_rng(3)
+    axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
+    axis = axis / axis.norm(dim=-1, keepdim=True)
+    r_eval = q0 @ torch.matrix_exp(_skew(math.radians(2.0) * axis))
+
+    _, j_r, _ = _lm_residual_jacobian(master, dirs, r_eval, e_hat, device, dtype)
+
+    def residual(r_mat):
+        m = master.sample(dirs @ r_mat.transpose(-1, -2))
+        c, s = _standardize(m)
+        return e_hat - c / s
+
+    eps = 1e-6
+    j_fd = torch.zeros_like(j_r)
+    for k in range(3):
+        d = torch.zeros(n_p, 3, dtype=dtype)
+        d[:, k] = eps
+        r_plus = residual(r_eval @ torch.matrix_exp(_skew(d)))
+        r_minus = residual(r_eval @ torch.matrix_exp(_skew(-d)))
+        j_fd[..., k] = (r_plus - r_minus) / (2 * eps)
+
+    rel = (j_r - j_fd).abs() / j_fd.abs().clamp_min(1e-9)
+    median_rel = float(rel.median())
+    max_rel = float(rel.max())
+    global_rel = float((j_r - j_fd).abs().max() / j_fd.abs().max().clamp_min(1e-9))
+    # median pins the math (essentially exact); the loose max/global bounds the worst
+    # case (a few ill-conditioned near-kink points, tiny in absolute terms).
+    assert median_rel < 1e-2, f"median rel err {median_rel:.2e}"
+    assert global_rel < 1e-2, f"global rel err {global_rel:.2e}"
+    assert max_rel < 0.1, f"max rel err {max_rel:.2e}"
+
+
+def test_lm_matches_adam_accuracy_in_far_fewer_steps(master, detector, indexer):
+    """LM (12 steps) reaches Adam's sub-degree accuracy in a fraction of the iterations.
+
+    On the synthetic round trip (project known orientations, coarse-seed, refine), the
+    second-order LM path in 12 steps lands at least as close to truth as Adam at the same
+    step count -- and as close as Adam's full 100-iteration budget -- for several
+    general/asymmetric orientations, batched.
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse, _ = indexer.index(patterns)
+
+    lm12, lm_score = refine_orientation(
+        patterns, master, detector, coarse, method="lm", n_iters=12
+    )
+    adam12, _ = refine_orientation(
+        patterns, master, detector, coarse, method="adam", n_iters=12, lr=0.05
+    )
+    adam100, _ = refine_orientation(
+        patterns, master, detector, coarse, method="adam", n_iters=100, lr=0.05
+    )
+
+    lm_dis, adam100_dis = [], []
+    for i in range(r_true.size):
+        d_lm = _dis(r_true[i], lm12[i])
+        lm_dis.append(d_lm)
+        adam100_dis.append(_dis(r_true[i], adam100[i]))
+        assert d_lm < 0.5, f"orientation {i}: LM {d_lm:.3f} deg > 0.5"
+        # at an equal 12-step budget LM is at least as accurate as Adam (far fewer steps)
+        assert d_lm <= _dis(r_true[i], adam12[i]) + 1e-6
+    # LM in 12 steps is as accurate as Adam in 100 (same objective, second order)
+    assert np.median(lm_dis) <= np.median(adam100_dis) + 0.05
+    assert float(lm_score.min()) > 0.99  # a genuine, near-perfect match
+
+
+def test_lm_is_monotone_and_keep_best(master, detector, indexer):
+    """LM never returns an orientation worse than the seed (monotone by construction).
+
+    Its per-step accept/reject can only raise the NCC, so the refined score is ``>=`` the
+    seed's whether ``keep_best`` is on or off; and refining an already-correct seed does
+    not drift it (the compose order matches ``project``).
+    """
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse, _ = indexer.index(patterns)
+
+    # seed NCC (an LM run of zero steps returns the seed untouched)
+    _, seed_score = refine_orientation(
+        patterns, master, detector, coarse, method="lm", n_iters=0
+    )
+    gated, s_gated = refine_orientation(
+        patterns, master, detector, coarse, method="lm", n_iters=12, keep_best=True
+    )
+    ungated, s_ungated = refine_orientation(
+        patterns, master, detector, coarse, method="lm", n_iters=12, keep_best=False
+    )
+    assert torch.all(s_gated >= seed_score - 1e-6)
+    assert torch.all(s_ungated >= seed_score - 1e-6)  # LM is monotone even ungated
+
+    # a perfect seed stays put
+    refined, score = refine_orientation(
+        patterns, master, detector, r_true, method="lm", n_iters=12
+    )
+    for i in range(r_true.size):
+        assert _dis(r_true[i], refined[i]) < 0.05
+    assert float(score.min()) > 0.99
+
+
+def test_lm_and_adam_both_run_and_history(master, detector, indexer):
+    """Both methods run through ``refine_orientation`` and honor ``return_history``."""
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
+    patterns = master.project(detector, r_true, rescale=True)
+    coarse, _ = indexer.index(patterns)
+
+    for method, n_iters in (("adam", 20), ("lm", 8)):
+        out = refine_orientation(
+            patterns, master, detector, coarse, method=method, n_iters=n_iters,
+            return_history=True,
+        )
+        assert len(out) == 3
+        rotation, score, history = out
+        assert isinstance(rotation, Rotation)
+        assert tuple(history.shape) == (n_iters, r_true.size)
+        # history[0] is the seed NCC; the objective rises to the final score
+        assert float(score.mean()) >= float(history[0].mean()) - 1e-6
+
+    with pytest.raises(ValueError, match="method must be"):
+        refine_orientation(patterns, master, detector, coarse, method="newton")
+
+
+def test_lm_refine_pc_falls_back_to_adam(master):
+    """``method="lm"`` with ``refine_pc=True`` falls back to Adam and still returns pc."""
+    pc_true = (0.5, 0.5, 0.20)
+    det_true = EBSDDetector(shape=(90, 90), pc=pc_true, sample_tilt=70.0, tilt=5.0)
+    r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
+    patterns = master.project(det_true, r_true, rescale=True)
+
+    pc_true_t = torch.tensor(pc_true, dtype=torch.float64)
+    pc_seed = pc_true_t + 0.02
+    seed_err = float((pc_seed - pc_true_t).norm())
+
+    det_seed = EBSDDetector(
+        shape=(90, 90), pc=tuple(pc_seed.tolist()), sample_tilt=70.0, tilt=5.0
+    )
+    idx_seed = SphericalIndexer(master, det_seed, bandwidth=BANDWIDTH, device="cpu")
+    coarse, _ = idx_seed.index(patterns)
+
+    # LM is orientation-only, so refine_pc=True must transparently use the Adam path --
+    # which still recovers both the orientation and the pattern center.
+    out = refine_orientation(
+        patterns, master, det_seed, coarse, pc=pc_seed, refine_pc=True, method="lm",
+        directions=idx_seed._dirs, n_iters=200, lr=0.05, device="cpu",
+    )
+    assert len(out) == 3  # (rotation, score, pc) -- the pc IS returned
+    refined, score, pc_ref = out
+    assert tuple(pc_ref.shape) == (3,)
+    assert float((pc_ref - pc_true_t).norm()) < 0.25 * seed_err  # pc genuinely refined
+    for i in range(r_true.size):
+        assert _dis(r_true[i], refined[i]) < 0.5
+
+
+def test_lm_single_and_numpy_input(master, detector, indexer):
+    """LM accepts a bare ``(H, W)`` pattern and numpy input, returning length-1 results."""
+    r_true = Rotation.from_euler(np.deg2rad([[30.0, 40.0, 50.0]]))
+    pattern = master.project(detector, r_true, rescale=True)[0].cpu().numpy()  # (H, W)
+    assert pattern.ndim == 2
+    coarse, _ = indexer.index(pattern)
+
+    refined, score = refine_orientation(
+        pattern, master, detector, coarse, method="lm", n_iters=12
+    )
+    assert refined.size == 1
+    assert tuple(score.shape) == (1,)
+    assert _dis(r_true[0], refined[0]) < 0.5
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_lm_cuda_path(master, detector):
+    """The LM path runs on CUDA and recovers the orientation there."""
+    master_cuda = master.to("cuda")
+    idx = SphericalIndexer(master_cuda, detector, bandwidth=BANDWIDTH, device="cuda")
+    r_true = Rotation.from_euler(np.deg2rad([[123.0, 47.0, 205.0]]))
+    pattern = master_cuda.project(detector, r_true, rescale=True)[0]
+    coarse, _ = idx.index(pattern)
+    refined, score = refine_orientation(
+        pattern, master_cuda, detector, coarse, method="lm", n_iters=12, device="cuda"
+    )
+    assert score.device.type == "cuda"
+    assert _dis(r_true[0], refined[0]) < 0.5
