@@ -17,6 +17,7 @@ piece still outstanding.
 from __future__ import annotations
 
 __all__ = [
+    "DictionaryIndexer",
     "SphericalIndexer",
     "master_from_emsoft",
     "phase_from_crystal",
@@ -38,6 +39,10 @@ def __getattr__(name: str):
         from torchebsd.index.indexer import SphericalIndexer
 
         return SphericalIndexer
+    if name == "DictionaryIndexer":
+        from torchebsd.index.dictionary import DictionaryIndexer
+
+        return DictionaryIndexer
     if name == "refine_orientation":
         from torchebsd.index.refine import refine_orientation
 
