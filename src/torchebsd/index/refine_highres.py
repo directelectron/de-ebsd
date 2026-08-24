@@ -86,6 +86,26 @@ __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
 _EPS = 1e-12
 
 
+def _rotvec_to_matrix(w: torch.Tensor) -> torch.Tensor:
+    """Rotation matrices ``(..., 3, 3)`` from rotation vectors ``w`` ``(..., 3)``.
+
+    ``exp(skew(w))`` in closed form (Rodrigues), which is numerically identical to
+    :func:`torch.matrix_exp` of the skew-symmetric ``skew(w)`` but far cheaper on the
+    GPU -- ``matrix_exp`` runs an adaptive scaling-and-squaring routine whose device
+    syncs (``.item()``, ``unique_consecutive``) dominate the LM step. ``R = I +
+    (sin th / th) K + ((1 - cos th) / th^2) K^2`` with ``th = |w|``, ``K = skew(w)``;
+    the ``th -> 0`` limits (``1`` and ``1/2``) are taken where ``th`` is tiny.
+    """
+    k = _skew(w)
+    th2 = (w * w).sum(-1)  # (...,)
+    th = th2.clamp_min(_EPS).sqrt()
+    small = th2 < 1e-12
+    a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
+    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(_EPS))
+    eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
+    return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)
+
+
 # --------------------------------------------------------------------------- #
 # differentiable pixel -> direction map (forward DC map, differentiable in pc)
 # --------------------------------------------------------------------------- #
@@ -240,21 +260,46 @@ def edge_importance_samples(
         flat = flat[None].expand(np_, -1).contiguous()
     else:
         grad = _sobel_gradient_magnitude(patterns).reshape(np_, height * width)
-        flat_cols, tid_cols = [], []
-        for t in range(n_total):
-            pix = torch.nonzero(tile_map == t, as_tuple=False).reshape(-1)
-            if pix.numel() == 0:
-                continue
-            k = min(samples_per_tile, pix.numel())
-            top = grad[:, pix].topk(k, dim=1).indices  # (Np, k) into pix
-            sel = pix[top]  # (Np, k) flat pixel indices
-            if k < samples_per_tile:  # pad short tiles by repeating their best pixel
-                sel = torch.cat([sel, sel[:, :1].expand(np_, samples_per_tile - k)], dim=1)
-            flat_cols.append(sel)
-            tid_cols.append(torch.full((samples_per_tile,), t, device=device, dtype=torch.long))
-        flat = torch.cat(flat_cols, dim=1)  # (Np, K)
-        tile_ids = torch.cat(tid_cols)  # (K,)
-        counts = torch.bincount(tile_ids, minlength=n_total)
+        th, tw = height // n_tiles, width // n_tiles
+        # Fast path when the tiles are regular blocks (H, W divisible by n_tiles) with
+        # enough pixels: reshape into ``(Np, n_total, tile_pixels)`` and take every tile's
+        # top-``samples_per_tile`` in ONE ``topk`` -- avoids the per-tile Python loop whose
+        # ``nonzero``/``topk`` per tile dominate the whole refine (profiled).
+        if height % n_tiles == 0 and width % n_tiles == 0 and th * tw >= samples_per_tile:
+            gt = (
+                grad.view(np_, n_tiles, th, n_tiles, tw)
+                .permute(0, 1, 3, 2, 4)
+                .reshape(np_, n_total, th * tw)
+            )
+            top = gt.topk(samples_per_tile, dim=2).indices  # (Np, n_total, spt), within-tile
+            # within-tile slot (r * tw + c) -> global flat pixel ((a*th+r)*W + b*tw+c)
+            a = torch.arange(n_tiles, device=device)[:, None, None, None]
+            b = torch.arange(n_tiles, device=device)[None, :, None, None]
+            r = torch.arange(th, device=device)[None, None, :, None]
+            c = torch.arange(tw, device=device)[None, None, None, :]
+            tile_to_flat = ((a * th + r) * width + (b * tw + c)).reshape(n_total, th * tw)
+            flat = torch.gather(tile_to_flat[None].expand(np_, -1, -1), 2, top)
+            flat = flat.reshape(np_, n_total * samples_per_tile)  # (Np, K)
+            tile_ids = torch.arange(n_total, device=device).repeat_interleave(samples_per_tile)
+            counts = torch.bincount(tile_ids, minlength=n_total)
+        else:  # irregular tiles: per-tile fallback (correct, rarely hit)
+            flat_cols, tid_cols = [], []
+            for t in range(n_total):
+                pix = torch.nonzero(tile_map == t, as_tuple=False).reshape(-1)
+                if pix.numel() == 0:
+                    continue
+                k = min(samples_per_tile, pix.numel())
+                top = grad[:, pix].topk(k, dim=1).indices  # (Np, k) into pix
+                sel = pix[top]  # (Np, k) flat pixel indices
+                if k < samples_per_tile:  # pad short tiles by repeating their best pixel
+                    sel = torch.cat([sel, sel[:, :1].expand(np_, samples_per_tile - k)], dim=1)
+                flat_cols.append(sel)
+                tid_cols.append(
+                    torch.full((samples_per_tile,), t, device=device, dtype=torch.long)
+                )
+            flat = torch.cat(flat_cols, dim=1)  # (Np, K)
+            tile_ids = torch.cat(tid_cols)  # (K,)
+            counts = torch.bincount(tile_ids, minlength=n_total)
 
     rows = (flat // width).to(dtype)
     cols = (flat % width).to(dtype)
@@ -353,8 +398,14 @@ def _hr_lm_refine(
     pc = pc0.clone()
     lam = torch.full((n_p,), float(lam0), device=device, dtype=dtype)
 
+    # orientation-only: the pattern center never moves, so its direction cosines are
+    # constant -- build them once instead of rebuilding every step (and inside _ncc).
+    dc_fixed = None if refine_pc else direction_cosines_from_pc(detector, pc0, rows, cols).detach()
+
     def _ncc(r_cur, pc_cur):
-        dc = direction_cosines_from_pc(detector, pc_cur, rows, cols)
+        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
+            detector, pc_cur, rows, cols
+        )
         m = master.sample(dc @ r_cur.transpose(-1, -2)).to(device=device, dtype=dtype)
         _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
         return (e_hat * m_hat).sum(-1) / n_active
@@ -363,7 +414,10 @@ def _hr_lm_refine(
     cur_score = seed_score.clone()
 
     for _ in range(n_steps):
-        dc = direction_cosines_from_pc(detector, pc, rows, cols).detach()  # (Np, K, 3)
+        # (Np, K, 3); constant when the pattern center is fixed, so reuse the precompute
+        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
+            detector, pc, rows, cols
+        ).detach()
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
@@ -388,7 +442,7 @@ def _hr_lm_refine(
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
             a = jtj + lam[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, P)
-            r_new = r_mat @ torch.matrix_exp(_skew(delta[:, :3]))
+            r_new = r_mat @ _rotvec_to_matrix(delta[:, :3])
             pc_new = pc + delta[:, 3:6] if refine_pc else pc
             new_score = _ncc(r_new, pc_new)
             # per-pattern accept/reject: take the step where the summed-tile NCC improved
@@ -425,6 +479,7 @@ def refine_hr(
     keep_best=True,
     device=None,
     all_pixels=False,
+    batch_size=None,
 ):
     """High-precision joint orientation + pattern-center refinement by band-edge sampling.
 
@@ -484,6 +539,13 @@ def refine_hr(
         If ``True``, use **every** detector pixel instead of the band-edge subsample (a
         slow reference path for validation; the tiling still drives the per-tile
         normalization). Default ``False``.
+    batch_size
+        Number of patterns refined per mini-batch. ``None`` (default) picks a
+        memory-aware size from the sample count and the 6-DOF working set, so a large
+        scan does not re-allocate GB-scale per-step intermediates at once (which
+        thrashes the CUDA allocator). The result is identical for any batch size (each
+        pattern is refined independently); it only bounds peak memory. Pass an int to
+        override.
 
     Returns
     -------
@@ -532,15 +594,36 @@ def refine_hr(
             f"{tuple(pc_init.shape)}"
         )
 
-    rows, cols, flat, tile_ids, counts = edge_importance_samples(
-        patt, n_tiles, samples_per_tile, all_pixels
-    )
-    e_raw = patt.reshape(n_p, -1).gather(1, flat.long())  # (Np, K) raw experimental
+    # Mini-batch over patterns so a large scan never allocates GB-scale per-step
+    # intermediates at once. Identical result for any batch (patterns are independent);
+    # bounds peak memory. Size from the dominant per-step working set: the pattern-center
+    # path holds a ``(bs, K, 3, 3)`` d dc/d pc block, the orientation-only path a
+    # ``(bs, K, 3)`` one -- keep it within ~256 MB.
+    k = int(n_tiles * n_tiles * samples_per_tile) if not all_pixels else patt[0].numel()
+    if batch_size is not None:
+        bs = int(batch_size)
+    else:
+        per = k * (36 if refine_pc else 12)  # bytes/pattern of the dominant intermediate
+        bs = int(max(1, min(n_p, 256_000_000 // max(per, 1))))
 
-    r_final, pc_final, score = _hr_lm_refine(
-        master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat, pc0,
-        refine_pc, n_steps, lm_lambda, keep_best, device, dtype,
-    )
+    r_parts, pc_parts, score_parts = [], [], []
+    for i in range(0, n_p, bs):
+        sl = slice(i, i + bs)
+        p_chunk = patt[sl]
+        rows, cols, flat, tile_ids, counts = edge_importance_samples(
+            p_chunk, n_tiles, samples_per_tile, all_pixels
+        )
+        e_raw = p_chunk.reshape(p_chunk.shape[0], -1).gather(1, flat.long())
+        rf, pf, sc = _hr_lm_refine(
+            master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], pc0[sl],
+            refine_pc, n_steps, lm_lambda, keep_best, device, dtype,
+        )
+        r_parts.append(rf)
+        pc_parts.append(pf)
+        score_parts.append(sc)
+    r_final = torch.cat(r_parts)
+    pc_final = torch.cat(pc_parts)
+    score = torch.cat(score_parts)
 
     from orix.quaternion import Rotation
 
