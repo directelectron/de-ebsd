@@ -19,6 +19,7 @@ from __future__ import annotations
 __all__ = [
     "DictionaryIndexer",
     "SphericalIndexer",
+    "determine_pattern_center",
     "master_from_emsoft",
     "phase_from_crystal",
     "refine_hr",
@@ -60,6 +61,10 @@ def __getattr__(name: str):
         from torchebsd.index.refine_highres import refine_hr
 
         return refine_hr
+    if name == "determine_pattern_center":
+        from torchebsd.index.pattern_center import determine_pattern_center
+
+        return determine_pattern_center
     if name in ("phase_from_crystal", "to_crystal_map", "master_from_emsoft"):
         from torchebsd.index import io
 
