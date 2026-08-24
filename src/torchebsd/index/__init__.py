@@ -21,6 +21,7 @@ __all__ = [
     "SphericalIndexer",
     "master_from_emsoft",
     "phase_from_crystal",
+    "refine_hr",
     "refine_orientation",
     "remove_background",
     "remove_dynamic_background",
@@ -55,6 +56,14 @@ def __getattr__(name: str):
         from torchebsd.index.refine import refine_orientation
 
         return refine_orientation
+    if name == "refine_hr":
+        # the implementation module is also named ``refine_hr``; importing it binds the
+        # submodule onto this package, which would shadow the function on the second
+        # lookup ``from ... import`` performs. Overwrite that binding with the function.
+        from torchebsd.index.refine_hr import refine_hr
+
+        globals()["refine_hr"] = refine_hr
+        return refine_hr
     if name in ("phase_from_crystal", "to_crystal_map", "master_from_emsoft"):
         from torchebsd.index import io
 
