@@ -39,7 +39,7 @@ from orix.quaternion import Rotation
 from torchebsd import EBSDDetector, MasterPattern
 from torchebsd.index import refine_hr
 from torchebsd.index.refine import _skew
-from torchebsd.index.refine_hr import (
+from torchebsd.index.refine_highres import (
     _ddc_dpc,
     _residual_jacobian,
     _sobel_gradient_magnitude,
