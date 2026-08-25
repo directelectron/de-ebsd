@@ -480,6 +480,7 @@ def refine_hr(
     device=None,
     all_pixels=False,
     batch_size=None,
+    sample_by="master",
 ):
     """High-precision joint orientation + pattern-center refinement by band-edge sampling.
 
@@ -546,6 +547,14 @@ def refine_hr(
         thrashes the CUDA allocator). The result is identical for any batch size (each
         pattern is refined independently); it only bounds peak memory. Pass an int to
         override.
+    sample_by
+        Which gradient chooses the band-edge sample pixels. ``"master"`` (default)
+        renders the simulated pattern at the seed orientation and samples its
+        **noise-free** gradient -- so the samples land on true Kikuchi band edges.
+        ``"experimental"`` samples the raw pattern's own gradient, which on real (noisy)
+        patterns is noise-dominated and adds substantial per-pattern refinement scatter
+        (a within-grain KAM comparison on real data motivated the ``"master"`` default);
+        it is retained mainly for noise-free/synthetic use.
 
     Returns
     -------
@@ -604,15 +613,44 @@ def refine_hr(
         bs = int(batch_size)
     else:
         per = k * (36 if refine_pc else 12)  # bytes/pattern of the dominant intermediate
+        if sample_by == "master":
+            # the seed render also holds a (bs, H*W, 3) direction-cosine block
+            per = max(per, int(detector.nrows) * int(detector.ncols) * 12)
         bs = int(max(1, min(n_p, 256_000_000 // max(per, 1))))
+
+    # For master-gradient sampling: the full detector pixel grid (row, col) coordinates,
+    # used to render the simulated pattern at the seed to pick band-edge sample pixels.
+    if sample_by == "master":
+        hh, ww = int(detector.nrows), int(detector.ncols)
+        rr, cc = torch.meshgrid(
+            torch.arange(hh, device=device, dtype=dtype),
+            torch.arange(ww, device=device, dtype=dtype),
+            indexing="ij",
+        )
+        full_rows, full_cols = rr.reshape(-1), cc.reshape(-1)
+    elif sample_by != "experimental":
+        raise ValueError(f"sample_by must be 'master' or 'experimental', got {sample_by!r}")
 
     r_parts, pc_parts, score_parts = [], [], []
     for i in range(0, n_p, bs):
         sl = slice(i, i + bs)
         p_chunk = patt[sl]
-        rows, cols, flat, tile_ids, counts = edge_importance_samples(
-            p_chunk, n_tiles, samples_per_tile, all_pixels
-        )
+        if sample_by == "master":
+            # Pick sample pixels from the SIMULATED pattern at the seed -- the master is
+            # noise-free, so its gradient marks the true Kikuchi band edges, whereas the
+            # experimental gradient on real (noisy) patterns is noise-dominated and would
+            # sample noise (measured to add ~0.5 deg of per-pattern refinement scatter).
+            with torch.no_grad():
+                dc_full = direction_cosines_from_pc(detector, pc0[sl], full_rows, full_cols)
+                sim = master.sample(dc_full @ r0_mat[sl].transpose(-1, -2))
+                sim = sim.to(device=device, dtype=dtype).reshape(-1, hh, ww)
+            rows, cols, flat, tile_ids, counts = edge_importance_samples(
+                sim, n_tiles, samples_per_tile, all_pixels
+            )
+        else:
+            rows, cols, flat, tile_ids, counts = edge_importance_samples(
+                p_chunk, n_tiles, samples_per_tile, all_pixels
+            )
         e_raw = p_chunk.reshape(p_chunk.shape[0], -1).gather(1, flat.long())
         rf, pf, sc = _hr_lm_refine(
             master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], pc0[sl],
