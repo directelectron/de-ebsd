@@ -154,6 +154,40 @@ def test_roundtrip_recovers_known_orientations(indexer, master, detector, point_
         assert d < TOL_DEG, f"orientation {i}: {d:.2f} deg > {TOL_DEG:.2f} deg tol"
 
 
+def test_match_binning_recovers_same_and_shrinks(master, detector, crystal, point_group):
+    """match_binning coarse-indexes at a binned resolution: same answer, smaller dict.
+
+    The coarse match only needs the (low-frequency) band geometry, so binning the match
+    resolves the fundamental-zone cell just as well while the dictionary and match matmul
+    shrink by ``match_binning**2``. Input patterns are still full-resolution; binning is
+    internal. (Full-resolution accuracy is retained by refining separately.)
+    """
+    b = 2
+    idx_full = DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
+                                 dtype=torch.float32)
+    idx_bin = DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
+                                dtype=torch.float32, match_binning=b)
+    # dictionary shrinks by b**2 in the pixel axis; same orientation count
+    assert idx_bin.dictionary.shape == (
+        (detector.nrows // b) * (detector.ncols // b), idx_full.n_dict)
+    assert idx_bin.n_dict == idx_full.n_dict
+
+    r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
+    patterns = master.project(detector, r_true, rescale=False)  # full-res (Np, H, W)
+    rot_full, _ = idx_full.index(patterns)
+    rot_bin, _ = idx_bin.index(patterns)  # takes full-res input, bins internally
+    # binned coarse match lands within a cell of the full-res match AND of the truth
+    assert (_disorientation_deg(rot_bin, rot_full, point_group) < TOL_DEG).all()
+    assert (_disorientation_deg(rot_bin, r_true, point_group) < TOL_DEG).all()
+
+
+def test_match_binning_must_divide_detector(master, detector):
+    """match_binning that does not divide the detector shape raises clearly."""
+    with pytest.raises(ValueError, match="must divide"):
+        DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
+                          dtype=torch.float32, match_binning=3)  # 70 not divisible by 3
+
+
 def test_batched_equals_single(indexer, master, detector):
     """A batched index equals indexing each pattern on its own (same argmax per row)."""
     r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
@@ -240,10 +274,13 @@ def test_dictionary_far_smaller_than_full_so3(indexer, point_group):
     assert indexer.n_dict > 0
     # cubic proper order is 24; boundary effects put the measured ratio near ~22.
     assert full.size / indexer.n_dict > 15
+    # stored transposed + contiguous as (n_px, n_dict) so the match B operand is
+    # contiguous (a transposed view runs at ~half the GPU's matmul throughput)
     assert tuple(indexer.dictionary.shape) == (
-        indexer.n_dict,
         indexer.detector.nrows * indexer.detector.ncols,
+        indexer.n_dict,
     )
+    assert indexer.dictionary.is_contiguous()
 
 
 # --------------------------------------------------------------------------- #

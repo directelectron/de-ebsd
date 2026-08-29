@@ -11,8 +11,8 @@ path cannot:
   fundamental zone of the point group, so a cubic dictionary carries ~24x fewer
   orientations than a full-SO(3) grid of the same angular resolution -- the
   crystal symmetry is used, not ignored.
-* **low memory.** The dictionary is an ``(n_dict, H * W)`` matrix and matching is
-  ``scores = patterns @ dictionary.T``; there are no ``O(N^3)`` transient SO(3)
+* **low memory.** The dictionary is an ``(n_px, n_dict)`` matrix and matching is
+  ``scores = patterns @ dictionary``; there are no ``O(N^3)`` transient SO(3)
   tensors to thrash the CUDA allocator.
 * **low precision, high speed.** The dictionary is stored as ``float16`` and the
   match is an fp16 matmul, which on tensor cores accumulates in fp32 (accurate)
@@ -47,8 +47,11 @@ the full SO(3) grid, not the fundamental zone.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
@@ -119,14 +122,25 @@ class DictionaryIndexer:
         the fp16 matmul path is a tensor-core operation). Resolved as: explicit
         ``device`` > ``master.device`` > CPU.
     dtype
-        Storage/compute dtype of the dictionary. Default ``torch.float16`` (the fast,
-        low-memory path); pass ``torch.float32`` for a CPU-friendly, fully-deterministic
-        dictionary. **fp16 matmul is a CUDA (tensor-core) operation** -- PyTorch does
-        not implement half-precision matmul on CPU, so use ``torch.float32`` on CPU.
+        Storage/compute dtype of the dictionary. ``None`` (default) **auto-selects**:
+        ``torch.float16`` on GPUs with tensor cores (compute capability >= 7.0, where it
+        is ~2x faster and half the memory), else ``torch.float32`` -- because on older
+        GPUs (e.g. Pascal, native fp16 at 1/64 the fp32 rate) and on CPU (no fp16 matmul)
+        fp16 is a *pessimization*. Pass an explicit dtype to override the auto-choice.
     energy_kev
         Energy bin (keV) the master is projected at (nearest bin; see
         :meth:`~torchebsd.sim.MasterPattern.project`). ``None`` (default) selects the
         highest bin.
+    match_binning
+        Bin factor for the coarse **match** only (default ``1`` = no binning). Kikuchi
+        bands are low-frequency, so a binned pattern resolves the ~cell-accurate
+        orientation just as well while the match matmul (and the dictionary) shrink by
+        ``match_binning**2`` -- e.g. ``4`` bins a 128px detector to 32px for a ~16x
+        smaller/faster match with no measurable coarse-accuracy loss. Must divide both
+        detector dimensions. **Refinement still uses the full-resolution detector and
+        patterns**, so this trades nothing away: fast coarse match + full-precision
+        refine. The pattern center is a fraction (resolution-independent), so the binned
+        match detector shares the full geometry.
 
     Attributes
     ----------
@@ -140,7 +154,9 @@ class DictionaryIndexer:
         The fundamental-zone orientations, length ``n_dict`` -- the candidate
         orientations :meth:`index` reads its answer off of.
     dictionary : torch.Tensor
-        The normalized dictionary, shape ``(n_dict, H * W)``, ``dtype`` on ``device``.
+        The normalized dictionary, stored transposed and contiguous as
+        ``(n_px, n_dict)`` (``n_px = (H/match_binning)*(W/match_binning)``) so the match
+        ``exp @ dictionary`` runs at full matmul throughput; ``dtype`` on ``device``.
     n_dict : int
         Number of fundamental-zone orientations in the dictionary.
 
@@ -159,14 +175,32 @@ class DictionaryIndexer:
         point_group=None,
         resolution=3.0,
         device=None,
-        dtype=torch.float16,
+        dtype=None,
         energy_kev=None,
+        match_binning=1,
     ):
         self.master = master
-        self.detector = detector
+        self.detector = detector  # full-resolution detector (used for refinement)
         self.resolution = float(resolution)
-        self.dtype = dtype
         self.energy_kev = energy_kev
+        self.match_binning = int(match_binning)
+
+        # The coarse match is done at a BINNED resolution: Kikuchi bands are
+        # low-frequency, so the ~cell-accurate orientation is resolved just as well by a
+        # binned pattern, and the match matmul is ``match_binning**2`` times cheaper (and
+        # the dictionary that much smaller). The pattern center is a fraction, so it is
+        # resolution-independent -- the binned detector shares the full one's geometry.
+        # Refinement still uses the full-resolution `self.detector`, keeping full accuracy.
+        b = self.match_binning
+        if b > 1:
+            h, w = self.detector.nrows, self.detector.ncols
+            if h % b or w % b:
+                raise ValueError(
+                    f"match_binning {b} must divide the detector shape {(h, w)}"
+                )
+            self._match_detector = replace(self.detector, shape=(h // b, w // b))
+        else:
+            self._match_detector = self.detector
 
         self.point_group = self._resolve_point_group(master, point_group)
 
@@ -178,6 +212,18 @@ class DictionaryIndexer:
             self.device = (
                 torch.device(master_device) if master_device is not None else torch.device("cpu")
             )
+
+        # dtype: fp16 only pays off on tensor-core GPUs (compute capability >= 7.0). On
+        # older CUDA (e.g. Pascal, whose native fp16 runs at 1/64 the fp32 rate) and on
+        # CPU (no fp16 matmul at all) fp32 is as fast or faster and more robust -- so the
+        # default auto-picks fp16 only where it helps. Pass an explicit dtype to override.
+        if dtype is None:
+            has_tensor_cores = (
+                self.device.type == "cuda"
+                and torch.cuda.get_device_capability(self.device)[0] >= 7
+            )
+            dtype = torch.float16 if has_tensor_cores else torch.float32
+        self.dtype = dtype
 
         # sample the fundamental zone -- this is the symmetry reduction
         self.dictionary_rotations = get_sample_fundamental(
@@ -226,19 +272,23 @@ class DictionaryIndexer:
         if master.device != self.device:
             master = master.to(self.device)
 
+        det = self._match_detector  # project at the (possibly binned) match resolution
         q = torch.as_tensor(np.asarray(self.dictionary_rotations.data), dtype=torch.float32)
-        n_px = int(self.detector.nrows * self.detector.ncols)
+        n_px = int(det.nrows * det.ncols)
         dictionary = torch.empty(self.n_dict, n_px, device=self.device, dtype=self.dtype)
         for i in range(0, self.n_dict, _PROJ_CHUNK):
             sim = master.project(
-                self.detector,
+                det,
                 q[i : i + _PROJ_CHUNK],
                 energy_kev=self.energy_kev,
                 rescale=False,
             )
             sim = sim.reshape(sim.shape[0], -1).to(torch.float32)  # normalize in fp32
             dictionary[i : i + _PROJ_CHUNK] = _normalize_rows(sim).to(self.dtype)
-        return dictionary
+        # Store transposed and CONTIGUOUS as (n_px, n_dict): the match is then
+        # ``exp @ dictionary`` with a contiguous right operand, which runs at the GPU's
+        # full matmul throughput -- a transposed view runs at ~half (measured ~1.8x).
+        return dictionary.T.contiguous()
 
     def _match_chunk(self, n_patterns: int) -> int:
         """Pattern-axis chunk that keeps the ``(chunk, n_dict)`` score matrix bounded."""
@@ -249,11 +299,13 @@ class DictionaryIndexer:
     def index(self, patterns, return_scores=False):
         """Index one pattern or a stack against the fundamental-zone dictionary.
 
-        Normalizes each pattern the same way the dictionary was normalized, then
-        matches by a chunked matmul (``scores = patterns @ dictionary.T``); the best
-        fundamental-zone orientation is the per-pattern argmax and its NCC is the
-        quality. The pattern axis is chunked so the ``(chunk, n_dict)`` score matrix
-        stays bounded regardless of dictionary size.
+        Bins each pattern to the match resolution (when ``match_binning > 1``),
+        normalizes it the same way the dictionary was normalized, then matches by a
+        chunked matmul (``scores = patterns @ dictionary``); the best fundamental-zone
+        orientation is the per-pattern argmax and its NCC is the quality. The pattern
+        axis is chunked so the ``(chunk, n_dict)`` score matrix stays bounded regardless
+        of dictionary size. Input patterns are always the **full-resolution** detector
+        images (the binning happens internally, only for the coarse match).
 
         Parameters
         ----------
@@ -293,24 +345,30 @@ class DictionaryIndexer:
             )
 
         n_p = patt.shape[0]
+        patt = patt.to(device=self.device, dtype=torch.float32)
+        # bin to the match resolution (Kikuchi bands are low-frequency, so the coarse
+        # cell is resolved just as well -- and the matmul is match_binning^2 cheaper)
+        if self.match_binning > 1:
+            patt = F.avg_pool2d(patt[:, None], self.match_binning)[:, 0]
         # normalize in fp32 (patterns are low-bit-depth; keep the precision until the
         # match), then cast to the dictionary dtype for the matmul.
-        flat = patt.reshape(n_p, -1).to(device=self.device, dtype=torch.float32)
-        exp_n = _normalize_rows(flat).to(self.dtype)
+        exp_n = _normalize_rows(patt.reshape(n_p, -1)).to(self.dtype)
 
         best_idx = torch.empty(n_p, dtype=torch.long, device=self.device)
         best_score = torch.empty(n_p, dtype=torch.float32, device=self.device)
         scores_out = [] if return_scores else None
-        dict_t = self.dictionary.T
         chunk = self._match_chunk(n_p)
         for i in range(0, n_p, chunk):
-            # fp16 matmul accumulates in fp32 on tensor cores; read the peak in fp32
-            scores = (exp_n[i : i + chunk] @ dict_t).float()  # (chunk, n_dict)
+            # contiguous dictionary is (n_px, n_dict): match directly, no transpose.
+            scores = exp_n[i : i + chunk] @ self.dictionary  # (chunk, n_dict), dtype
+            # argmax on the raw dtype scores: it is bit-identical to casting the whole
+            # matrix to fp32 first, and skips a large (chunk, n_dict) fp32 allocation per
+            # chunk (which otherwise dominates once the matmul itself is fast).
             bscore, bidx = scores.max(dim=1)
-            best_score[i : i + chunk] = bscore
+            best_score[i : i + chunk] = bscore.float()
             best_idx[i : i + chunk] = bidx
             if return_scores:
-                scores_out.append(scores)
+                scores_out.append(scores.float())
 
         rot_data = np.asarray(self.dictionary_rotations.data)[best_idx.cpu().numpy()]
         rotations = Rotation(rot_data)
