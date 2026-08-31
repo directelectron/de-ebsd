@@ -1,6 +1,6 @@
 """Spherical harmonic transform (I1): reference, round-trip, autograd, batching.
 
-Validates :mod:`torchebsd.index.harmonics` -- the band-limited SHT on the sphere.
+Validates :mod:`torchebsd.index.spherical.harmonics` -- the band-limited SHT on the sphere.
 The transform is exact for band-limited functions, so round trips hit floating
 point (~1e-12 in float64), the basis matches ``scipy.special.sph_harm_y``, and
 gradients through the transform match finite differences.
@@ -11,7 +11,7 @@ import math
 import pytest
 import torch
 
-from torchebsd.index.harmonics import (
+from torchebsd.index.spherical.harmonics import (
     SphericalHarmonicTransform,
     forward_sht,
     gauss_legendre_grid,

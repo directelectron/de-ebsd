@@ -1,12 +1,7 @@
-"""EBSD detector geometry and direction cosines.
+"""EBSD detector geometry and per-pixel direction cosines.
 
-The :class:`EBSDDetector` describes the pixel grid, the pattern center
-(Bruker convention), and the tilt geometry, and produces the unit direction
-vector of every pixel in the sample reference frame. The math is a torch port
-of kikuchipy's ``EBSDDetector`` (gnomonic bounds from the Britton et al. 2016
-tutorial conventions, the sample-to-detector rotation, and the direction
-cosines of ``_get_direction_cosines_from_detector``), so patterns projected
-from a master pattern here match kikuchipy pixel for pixel.
+Torch port of kikuchipy's ``EBSDDetector`` (Bruker pattern-center convention),
+so patterns projected here match kikuchipy pixel for pixel.
 """
 
 from __future__ import annotations
@@ -16,33 +11,9 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from torchebsd.core.geometry import sample_to_detector_matrix
+
 __all__ = ["EBSDDetector"]
-
-
-def _rodrigues_step(basis: np.ndarray, axis_row: int, angle: float) -> np.ndarray:
-    """Rotate all basis rows about one current basis row by ``angle`` (radians)."""
-    u = basis[axis_row]
-    u = u / np.linalg.norm(u)
-    c, s = np.cos(angle), np.sin(angle)
-    new = np.empty_like(basis)
-    for j in range(3):
-        v = basis[j]
-        new[j] = v * c + np.cross(u, v) * s + u * np.dot(u, v) * (1.0 - c)
-    return new
-
-
-def _sample_to_detector_matrix(
-    sample_tilt: float, tilt: float, azimuthal: float, twist: float
-) -> np.ndarray:
-    """Rows are the detector basis (X_d, Y_d, Z_d) in sample coordinates.
-
-    Port of kikuchipy ``_sample_to_detector_matrix``; angles in degrees.
-    """
-    basis = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
-    sigma, theta, omega, gamma = np.deg2rad([sample_tilt, tilt, azimuthal, twist])
-    for axis_row, angle in zip([0, 0, 1, 2], [-sigma, theta, -omega, -gamma], strict=True):
-        basis = _rodrigues_step(basis, axis_row, angle)
-    return basis
 
 
 @dataclass(frozen=True)
@@ -125,13 +96,13 @@ class EBSDDetector:
         det[..., 1] = gn_y[:, None] * pcz
         det[..., 2] = pcz
 
-        om = _sample_to_detector_matrix(self.sample_tilt, self.tilt, self.azimuthal, self.twist)
+        om = sample_to_detector_matrix(self.sample_tilt, self.tilt, self.azimuthal, self.twist)
         dc = det.reshape(-1, 3) @ om  # (det_to_sample = om.T; row vectors: v @ om)
         dc /= np.linalg.norm(dc, axis=-1, keepdims=True)
         return torch.as_tensor(dc, device=device, dtype=dtype)
 
     def show(self, microscope=None, crystal=None):
-        """Interactive geometry widget (see :class:`torchebsd.sim.widgets.SetupWidget`)."""
-        from torchebsd.sim.widgets import SetupWidget
+        """Interactive geometry widget (see :class:`torchebsd.viz.widgets.SetupWidget`)."""
+        from torchebsd.viz.widgets import SetupWidget
 
         return SetupWidget.from_setup(microscope=microscope, detector=self, crystal=crystal)

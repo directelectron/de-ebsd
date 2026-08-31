@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from torchebsd.sim.constants import (
+from torchebsd.core.constants import (
     electron_wavelength_nm,
     interaction_constant,
     relativistic_correction,
@@ -57,7 +57,7 @@ class Microscope:
 
         The in-crystal wavelength (corrected for the mean inner potential)
         is computed by the simulator once structure factors are available;
-        see :attr:`torchebsd.sim.structure_factors.StructureFactors.wavelength`.
+        see :attr:`torchebsd.crystal.structure_factors.StructureFactors.wavelength`.
         """
         return electron_wavelength_nm(self.energy_kev, v0mod=0.0)
 
@@ -65,6 +65,14 @@ class Microscope:
     def sigma(self) -> float:
         """Interaction constant in (V nm)^-1."""
         return interaction_constant(self.energy_kev, v0mod=0.0)
+
+    def show(self, detector=None, crystal=None):
+        """Display the microscope and detector setup as an editable widget."""
+        from torchebsd.viz.widgets import MicroscopeWidget
+
+        return MicroscopeWidget.from_setup(
+            microscope=self, detector=detector, crystal=crystal
+        )
 
     def __repr__(self) -> str:
         return (

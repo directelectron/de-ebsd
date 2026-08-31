@@ -2,7 +2,7 @@
 
 Validates the two orix bridges (:func:`torchebsd.index.io.phase_from_crystal`,
 :func:`torchebsd.index.io.to_crystal_map`) and the scan wrapper
-:meth:`torchebsd.index.indexer.SphericalIndexer.index_scan`.
+:meth:`torchebsd.index.spherical.indexer.SphericalIndexer.index_scan`.
 
 The synthetic master is the same great-circle **band** master used by
 ``test_indexer.py`` (a stand-in for real Kikuchi bands): it tiles the whole
@@ -23,10 +23,10 @@ from orix.crystal_map import CrystalMap, Phase
 from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.index.indexer import SphericalIndexer
+from torchebsd.core.lambert import master_pattern_grid
+from torchebsd.crystal import Crystal
 from torchebsd.index.io import phase_from_crystal, to_crystal_map
-from torchebsd.sim import Crystal
-from torchebsd.sim.lambert import master_pattern_grid
+from torchebsd.index.spherical.indexer import SphericalIndexer
 
 BANDWIDTH = 16
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)

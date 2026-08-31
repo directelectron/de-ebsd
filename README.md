@@ -51,6 +51,7 @@ sim.dynamical_matrix(k=(0, 0, 1)).show()
 
 master = sim.compute(device="cuda")   # -> MasterPattern
 master.show(projection="lambert")     # also "stereographic" and "sphere"
+sim.crystal.show()                     # real 3-D expanded crystal structure
 
 # refine and recompute (structure factors are reused when still valid):
 better = sim.refine(npx=1000, dmin=0.04)
@@ -61,6 +62,16 @@ patterns = master.project(detector, orientation=rotations)
 
 # interactive geometry widget in Jupyter (anywidget):
 sim.show_setup(detector=detector)
+
+# phase composition for Jupyter or a SpyDE popover; figures stay native:
+phase = sim.crystal.overview(master_pattern=master)
+phase                              # displays metadata + real anyplotlib figures
+phase.figures["phase_overview"]   # SpyDE mounts one native figure/bridge
+sim.microscope.show(detector=detector, crystal=sim.crystal)
+
+# inspect the incident-direction sampling:
+from torchebsd.diffraction.kvectors import sample_incident_directions
+sample_incident_directions(sim.npx).show()
 ```
 
 ## Status
@@ -75,7 +86,7 @@ sim.show_setup(detector=detector)
 | Dynamical (Bloch) matrix with Bethe potentials (`GetDynMat` port) | implemented, tested |
 | Monte Carlo exit-depth statistics: EMsoft HDF5 reader + `single_energy` fallback | implemented, tested |
 | Detector direction cosines (kikuchipy parity), master-pattern projection | implemented, tested |
-| Display layer (anyplotlib) and setup widget (anywidget) | implemented, tested |
+| Native anyplotlib displays, host-neutral phase overview, microscope editor | implemented, tested |
 | Kinematical backend (band geometry; validation placeholder) | implemented, tested |
 | Bloch-wave backend: eigendecomposition + `CalcLgh` depth integration (`bloch`) | implemented, tested |
 | Scattering-matrix (PRISM) GPU backend, exact vs `bloch` (`bloch_prism`) | implemented, tested |

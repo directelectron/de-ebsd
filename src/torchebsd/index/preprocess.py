@@ -1,30 +1,7 @@
-"""GPU background subtraction -- the experimental-pattern preprocessing step.
+"""Background removal for experimental patterns.
 
-Raw EBSD patterns carry two backgrounds that must be removed before indexing:
-
-* a **static** background -- the fixed intensity profile of the detector/beam
-  (a flat field or the scan mean), the *same* image under every pattern;
-* a **dynamic** background -- the slowly varying, per-pattern intensity ramp,
-  estimated as a heavily Gaussian-blurred copy of the pattern itself.
-
-This module removes both on the GPU, batched over a whole scan, so preprocessing
-stops being the CPU bottleneck ahead of a fast :class:`~torchebsd.index.dictionary.
-DictionaryIndexer` pass (measured ~9x faster than the equivalent CPU path, and the
-indexing result is unchanged -- median orientation difference ~0.02 degrees).
-
-**Algorithm** (matching kikuchipy's ``remove_static_background`` /
-``remove_dynamic_background``): cast to float; subtract (or divide by) the static
-background; then subtract (or divide by) a Gaussian blur of the pattern with
-``std = width / 8`` and a ``truncate = 4.0`` sigma kernel; rescale each pattern to
-``[0, 1]``. The Gaussian is a **separable** convolution with reflected padding (the
-spatial-domain filter); kikuchipy defaults to a frequency-domain FFT filter, which
-differs only near the borders -- immaterial after the indexer's per-pattern
-normalization (the NCC is invariant to any affine rescaling of a pattern), which is
-why the two agree to ~0.02 degrees in the recovered orientation.
-
-The functions take and return plain arrays (numpy or torch), so a kikuchipy signal's
-``.data`` and ``.static_background`` pass straight in and the cleaned stack feeds the
-indexer directly -- no kikuchipy import here (torchebsd is the foundation).
+Static (mean over the scan) and dynamic (Gaussian-blurred per pattern)
+background correction, batched on the GPU.
 """
 
 from __future__ import annotations
@@ -42,11 +19,6 @@ _EPS = 1e-12
 
 
 def _as_stack(patterns, device, dtype):
-    """Coerce ``(H,W)`` / ``(N,H,W)`` / ``(rows,cols,H,W)`` to ``(N,H,W)`` + a restorer.
-
-    Returns the float stack on ``device`` and a function that reshapes a processed
-    ``(N,H,W)`` stack back to the caller's original leading shape.
-    """
     x = torch.as_tensor(patterns, device=device, dtype=dtype)
     if x.ndim == 2:
         lead = ()
@@ -68,14 +40,12 @@ def _as_stack(patterns, device, dtype):
 
 
 def _rescale01(p):
-    """Per-pattern affine rescale of ``(N,H,W)`` to ``[0, 1]`` (indexing is scale-free)."""
     lo = p.amin(dim=(-2, -1), keepdim=True)
     hi = p.amax(dim=(-2, -1), keepdim=True)
     return (p - lo) / (hi - lo).clamp_min(_EPS)
 
 
 def _apply(pattern, background, operation):
-    """Subtract or divide, matching kikuchipy's two operations."""
     if operation == "subtract":
         return pattern - background
     if operation == "divide":
@@ -84,7 +54,6 @@ def _apply(pattern, background, operation):
 
 
 def _gaussian_kernel_1d(std, truncate, device, dtype):
-    """A normalized 1-D Gaussian window, radius ``int(truncate * std + 0.5)`` (scipy's)."""
     radius = int(truncate * float(std) + 0.5)
     x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
     k = torch.exp(-0.5 * (x / float(std)) ** 2)
@@ -92,7 +61,6 @@ def _gaussian_kernel_1d(std, truncate, device, dtype):
 
 
 def _gaussian_blur(stack, std, truncate):
-    """Separable Gaussian blur of ``(N,H,W)`` with reflected padding (spatial filter)."""
     k, r = _gaussian_kernel_1d(std, truncate, stack.device, stack.dtype)
     x = stack[:, None]  # (N, 1, H, W)
     x = F.conv2d(F.pad(x, (r, r, 0, 0), mode="reflect"), k.view(1, 1, 1, -1))

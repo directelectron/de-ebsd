@@ -2,7 +2,7 @@
 
 import torch
 
-from torchebsd.sim.kvectors import reduce_to_fundamental_sector, sample_incident_directions
+from torchebsd.diffraction.kvectors import reduce_to_fundamental_sector, sample_incident_directions
 
 
 def test_grid_shapes_and_counts():
@@ -44,7 +44,7 @@ def test_reduce_to_fundamental_sector_triclinic_barely_folds():
 
 def test_reduce_to_fundamental_sector_cache():
     """cache_key memoizes the fold; cached and freshly-computed results agree."""
-    from torchebsd.sim.kvectors import _FZ_CACHE
+    from torchebsd.diffraction.kvectors import _FZ_CACHE
 
     _FZ_CACHE.pop((22, 227), None)
     d = sample_incident_directions(22, dtype=torch.float64).flat()

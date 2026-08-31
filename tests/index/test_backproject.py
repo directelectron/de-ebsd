@@ -15,10 +15,10 @@ import pytest
 import torch
 
 from torchebsd import EBSDDetector, MasterPattern
+from torchebsd.core.lambert import master_pattern_grid
+from torchebsd.core.rotation import quaternion_to_matrix
 from torchebsd.index.backproject import directions_to_pixels, pattern_to_sphere
-from torchebsd.index.harmonics import SphericalHarmonicTransform
-from torchebsd.sim.lambert import master_pattern_grid
-from torchebsd.sim.rotation import quaternion_to_matrix
+from torchebsd.index.spherical.harmonics import SphericalHarmonicTransform
 
 IDENTITY_Q = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float64)
 # a generic, non-axis-aligned unit quaternion (so the rotation genuinely mixes axes)
@@ -114,9 +114,9 @@ def test_fov_mask_matches_gnomonic_bounds(master, detector, directions):
     )
 
     # recompute the gnomonic coordinates independently from the public bounds
-    from torchebsd.index.backproject import _sample_to_detector_tensor
+    from torchebsd.core.geometry import sample_to_detector_tensor
 
-    om = _sample_to_detector_tensor(detector, directions.device, directions.dtype)
+    om = sample_to_detector_tensor(detector, directions.device, directions.dtype)
     comp = directions @ om.transpose(-2, -1)
     gn_x = comp[..., 0] / comp[..., 2]
     gn_y = comp[..., 1] / comp[..., 2]

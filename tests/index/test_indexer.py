@@ -1,6 +1,6 @@
 """End-to-end spherical indexing (I4): the closed round trip through the real sim.
 
-Validates :class:`torchebsd.index.indexer.SphericalIndexer`. The money test is the
+Validates :class:`torchebsd.index.spherical.indexer.SphericalIndexer`. The money test is the
 round trip: a ``torchebsd.sim`` master pattern is projected onto an
 :class:`EBSDDetector` at a *known* orientation ``R`` with
 :meth:`~torchebsd.sim.MasterPattern.project`, then indexed back; the disorientation
@@ -37,12 +37,12 @@ import torch
 from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector, MasterPattern
+from torchebsd.core.lambert import master_pattern_grid
+from torchebsd.crystal import Crystal
 from torchebsd.index.backproject import pattern_to_sphere
-from torchebsd.index.correlation import so3_cross_correlation
-from torchebsd.index.indexer import SphericalIndexer
-from torchebsd.index.wigner import grid_to_rotation
-from torchebsd.sim import Crystal
-from torchebsd.sim.lambert import master_pattern_grid
+from torchebsd.index.spherical.correlation import so3_cross_correlation
+from torchebsd.index.spherical.indexer import SphericalIndexer
+from torchebsd.index.spherical.wigner import grid_to_rotation
 
 BANDWIDTH = 16
 # SOFT grid step in degrees: alpha/gamma are spaced 360 / (2L + 2). The peak should
@@ -521,7 +521,7 @@ def test_return_surface_matches_argmax_and_feeds_show_correlation(master, detect
 
     # the surface feeds show_correlation directly (skip cleanly without anyplotlib)
     pytest.importorskip("anyplotlib")
-    from torchebsd.index import show_correlation
+    from torchebsd.viz import show_correlation
 
     fig = show_correlation(surface)  # a (Np, N, N, N) stack -> first pattern shown
     j0, k0, p0 = (int(x) for x in torch.unravel_index(torch.argmax(surface[0]), (n, n, n)))

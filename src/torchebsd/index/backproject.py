@@ -1,48 +1,9 @@
-"""Detector -> sphere back-projection (I3).
+"""Back-project a detector pattern onto the unit sphere.
 
-Spherical indexing matches two functions on the unit sphere: the dynamical
-master pattern ``M(n)`` and the experimental pattern ``E(n)`` back-projected off
-the detector. This module builds ``E(n)``: it resamples a detector image onto a
-set of sphere directions (typically the SHT quadrature grid, see
-``torchebsd.index.harmonics``) so it can be spherical-harmonic-transformed (I1)
-and cross-correlated against the master over SO(3) (I2). See ``INDEXING_DESIGN.md``
-(milestone I3).
-
-**No orientation is applied.** For spherical indexing the pattern is back-projected
-to the *scattering sphere in the detector/sample frame* -- each detector pixel
-records the intensity scattered into one direction (its "direction cosine"), so a
-sphere direction ``n`` in the detector's field of view simply reads the pixel that
-looks along ``n``. The crystal orientation is exactly what indexing solves for, so
-it is *not* folded in here; back-projecting ``master.project(detector, R)`` recovers
-the master rotated by ``R`` over the field of view.
-
-**Geometry.** This is the inverse of ``torchebsd.sim``'s own ``EBSDDetector`` pixel ->
-direction map, so torchebsd stays self-contained -- no kikuchipy dependency. The
-detector's ``direction_cosines`` builds, for pixel (row, col), the gnomonic point
-``(x, y) = (gn_x, gn_y)``, forms the detector-frame ray ``(gn_x, gn_y, 1) * pcz``,
-and rotates it into the sample frame with the orthonormal sample->detector matrix
-``Om`` (rows = detector basis ``X_d, Y_d, Z_d`` in sample coordinates); the unit vector
-of that ray is the direction cosine. We invert it:
-
-1. project a unit sphere direction ``n`` onto the detector basis,
-   ``(d_x, d_y, d_z) = (n . X_d, n . Y_d, n . Z_d) = n @ Om.T`` (``Om`` orthonormal,
-   so this is the inverse rotation); ``d_z > 0`` means ``n`` points toward the
-   detector (in front of it);
-2. gnomonic projection back to the detector plane, ``gn_x = d_x / d_z``,
-   ``gn_y = d_y / d_z`` (independent of the pattern center -- the ray's direction
-   alone fixes it);
-3. the affine gnomonic -> fractional-pixel map, inverting the node placement in
-   ``direction_cosines``: ``col = (gn_x - x_min) / x_scale - 0.5`` and
-   ``row = (y_max - gn_y) / y_scale - 0.5`` (row 0 = top, matching the detector),
-   where the gnomonic bounds ``[x_min, x_max, y_min, y_max]`` and the scales come
-   from the pattern center ``pc = (pcx, pcy, pcz)`` exactly as in
-   ``EBSDDetector.gnomonic_bounds``.
-
-The pattern center enters only in step 3 (rebuilt here from ``pc`` as torch ops), so
-the whole map is autograd-differentiable in the pattern center -- this is what makes
-joint pattern-center refinement (I6) possible. The intensity read-off is a bilinear
-``grid_sample`` (``align_corners=True``), differentiable in the pattern. Torch-native
-(CPU/CUDA) and batched over an arbitrary stack of patterns.
+The inverse of the forward projection: each sphere direction is mapped to a
+fractional detector pixel and bilinearly sampled, giving E(n) on a supplied
+direction set plus the field-of-view mask. Differentiable in the pattern
+center, which is what makes PC refinement possible. See INDEXING_DESIGN.md (I3).
 """
 
 from __future__ import annotations
@@ -50,25 +11,10 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from torchebsd.sim.detector import EBSDDetector, _sample_to_detector_matrix
+from torchebsd.core.geometry import sample_to_detector_tensor
+from torchebsd.sim.detector import EBSDDetector
 
 __all__ = ["directions_to_pixels", "pattern_to_sphere"]
-
-
-def _sample_to_detector_tensor(
-    detector: EBSDDetector, device: torch.device, dtype: torch.dtype
-) -> torch.Tensor:
-    """The orthonormal sample->detector matrix ``Om`` as a torch tensor.
-
-    Rows are the detector basis ``(X_d, Y_d, Z_d)`` expressed in sample coordinates;
-    this is exactly ``EBSDDetector``'s ``_sample_to_detector_matrix`` (a function of
-    the tilt geometry only, not the pattern center), so the frame convention matches
-    the forward projection bit for bit.
-    """
-    om = _sample_to_detector_matrix(
-        detector.sample_tilt, detector.tilt, detector.azimuthal, detector.twist
-    )
-    return torch.as_tensor(om, device=device, dtype=dtype)
 
 
 def _pc_components(
@@ -77,12 +23,6 @@ def _pc_components(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """The three pattern-center components ``(pcx, pcy, pcz)`` as torch scalars.
-
-    If ``pc`` is given (a length-3 tensor) it overrides ``detector.pc`` and its
-    autograd graph is preserved, so gradients flow back into the pattern center.
-    Otherwise the detector's fixed (non-differentiable) ``pc`` is used.
-    """
     if pc is None:
         pc = torch.as_tensor(detector.pc, device=device, dtype=dtype)
     else:
@@ -122,7 +62,7 @@ def directions_to_pixels(
         the detector (``d_z > 0``) and lands within the gnomonic bounds.
     """
     device = directions.device
-    om = _sample_to_detector_tensor(detector, device, directions.dtype)
+    om = sample_to_detector_tensor(detector, device, directions.dtype)
     dtype = directions.dtype
     pcx, pcy, pcz = _pc_components(detector, pc, device, dtype)
 
@@ -163,9 +103,9 @@ def pattern_to_sphere(
     """Back-project detector ``patterns`` onto ``directions`` on the unit sphere.
 
     Each sphere direction reads the detector pixel that scatters along it (no crystal
-    orientation is applied -- see the module docstring), bilinearly interpolating the
+    orientation is applied), bilinearly interpolating the
     pattern. The result is ``E(n)`` sampled on ``directions``, ready to feed
-    :meth:`torchebsd.index.harmonics.SphericalHarmonicTransform.forward` (reshape the
+    :meth:`torchebsd.index.spherical.harmonics.SphericalHarmonicTransform.forward` (reshape the
     ``(N_theta, N_phi)`` grid directions to ``(M, 3)`` and the samples back).
 
     Parameters

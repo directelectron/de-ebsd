@@ -1,6 +1,6 @@
 """SO(3) cross-correlation (I2): brute force, peak recovery, autograd, batching.
 
-Validates :mod:`torchebsd.index.correlation`. The SOFT-grid values are pinned
+Validates :mod:`torchebsd.index.spherical.correlation`. The SOFT-grid values are pinned
 against a direct ``D^l(g)``-rotate-and-inner-product brute force, the rotate-and-
 recover money test confirms the end-to-end orix convention, and gradients match
 finite differences. fp64 throughout.
@@ -11,9 +11,9 @@ import math
 import pytest
 import torch
 
-from torchebsd.index.correlation import so3_cross_correlation
-from torchebsd.index.harmonics import lm_indices, n_coefficients
-from torchebsd.index.wigner import euler_zyz_to_orix, grid_to_rotation, so3_grid, wigner_D
+from torchebsd.index.spherical.correlation import so3_cross_correlation
+from torchebsd.index.spherical.harmonics import lm_indices, n_coefficients
+from torchebsd.index.spherical.wigner import euler_zyz_to_orix, grid_to_rotation, so3_grid, wigner_D
 
 
 def _pack(flat, L):
@@ -84,7 +84,7 @@ def test_real_field_correlation_is_real():
     L = 6
     plan_L = L
     # build Hermitian spectra from real fields on the I1 grid
-    from torchebsd.index.harmonics import SphericalHarmonicTransform
+    from torchebsd.index.spherical.harmonics import SphericalHarmonicTransform
 
     plan = SphericalHarmonicTransform(plan_L, dtype=torch.float64)
     grid = plan.grid_directions()
@@ -203,7 +203,7 @@ def test_wigner_d_cache_is_byte_identical():
     The cache lets :class:`SphericalIndexer` skip rebuilding the O(L^4) Wigner-d block
     per mini-batch; the correlation must be exactly the same either way.
     """
-    from torchebsd.index.wigner import so3_grid, wigner_d
+    from torchebsd.index.spherical.wigner import so3_grid, wigner_d
 
     L = 6
     n = 2 * L + 2

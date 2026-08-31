@@ -39,8 +39,8 @@ import torch
 from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector, MasterPattern
+from torchebsd.core.lambert import master_pattern_grid
 from torchebsd.index import determine_pattern_center, refine_hr
-from torchebsd.sim.lambert import master_pattern_grid
 
 # fixed band-edge sample budget for the whole file (crisp, fast, plenty for 3 PC params)
 _NT, _SPT = 12, 8

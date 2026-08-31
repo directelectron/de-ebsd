@@ -1,25 +1,4 @@
-"""orix-native output + array ingest -- the ecosystem handoff.
-
-torchebsd is the *foundation*: it emits orix objects and takes plain pattern
-arrays, so it never imports kikuchipy. The intended direction is that kikuchipy
-(and other tools) depend on torchebsd -- they pass their pattern data + detector
-in and consume the orix ``Rotation`` / ``CrystalMap`` out. See
-``INDEXING_DESIGN.md`` (milestones I5b + I8).
-
-This module holds the two orix bridges scan indexing needs (I5b), plus one for
-real-data ingest (I8):
-
-* :func:`phase_from_crystal` -- turn a torchebsd :class:`~torchebsd.sim.Crystal`
-  into an :class:`orix.crystal_map.Phase`, which is what gives a ``CrystalMap``
-  its crystal symmetry (orix derives the point group from the space group);
-* :func:`to_crystal_map` -- assemble a flat orix ``Rotation`` + a per-point
-  quality metric into an :class:`orix.crystal_map.CrystalMap` laid out on the
-  scan grid;
-* :func:`master_from_emsoft` -- load an EMsoft EBSD master-pattern HDF5 file into
-  a torchebsd :class:`~torchebsd.sim.MasterPattern`, rebuilding the crystal into
-  ``metadata["crystal"]`` so a loaded EMsoft master flows straight into
-  :meth:`SphericalIndexer.index_scan` with the phase auto-derived (milestone I8).
-"""
+"""Bridges to orix and kikuchipy: phases, crystal maps, EMsoft master patterns."""
 
 from __future__ import annotations
 
@@ -83,7 +62,6 @@ def phase_from_crystal(crystal):
 
 
 def _crystal_name(crystal) -> str:
-    """A readable phase name from the crystal's asymmetric-unit elements."""
     sites = getattr(crystal, "sites", ())
     elements = []
     for site in sites:
@@ -163,14 +141,12 @@ def to_crystal_map(rotations, quality, shape, phase, step=1.0):
 
 
 def _is_orix_phase(obj) -> bool:
-    """True if ``obj`` is an orix ``Phase`` (without importing orix eagerly here)."""
     from orix.crystal_map import Phase
 
     return isinstance(obj, Phase)
 
 
 def _to_numpy(x) -> np.ndarray:
-    """Detach + move a torch tensor to a plain numpy array (pass numpy through)."""
     detach = getattr(x, "detach", None)
     if detach is not None:
         x = detach().cpu().numpy()
@@ -180,62 +156,34 @@ def _to_numpy(x) -> np.ndarray:
 def master_from_emsoft(path, device=None):
     """Load an EMsoft EBSD master-pattern HDF5 file as a torchebsd ``MasterPattern``.
 
-    This closes the real-data loop (milestone I8): an EMsoft master on disk flows
-    straight into :meth:`SphericalIndexer.index_scan` with the phase auto-derived,
-    so an EMsoft ``*_MC.h5`` (or master-pattern) run indexes into an orix
-    ``CrystalMap`` with no manual crystal bookkeeping.
+    Reads the square-Lambert masters ``EMData/EBSDmaster/mLPNH``/``mLPSH``, summing
+    their leading asymmetric-unit **site** axis (indexing only the first site is a
+    known bug); an already-collapsed ``(n_energy, n, n)`` array is used as-is. All
+    ``EkeVs`` energy bins are kept -- pick one with
+    ``SphericalIndexer(energy_kev=...)``.
 
-    What it reads (via ``h5py``), all group paths verbatim from an EMsoft file:
-
-    * ``EMData/EBSDmaster/mLPNH`` / ``mLPSH`` -- the north/south square-Lambert
-      masters, shape ``(n_sites, n_energy, n, n)`` with a leading **site** axis
-      (one component per asymmetric-unit atom). The components are **summed over
-      the site axis** (indexing only the first site is a known bug); an
-      already-collapsed ``(n_energy, n, n)`` array is used as-is.
-    * ``EMData/EBSDmaster/EkeVs`` -- the energy list (keV); **all** bins are kept
-      (choose an indexing bin with ``SphericalIndexer(energy_kev=...)``).
-    * ``NMLparameters/EBSDMasterNameList/dmin`` -- ``dmin`` (metadata, provenance).
-    * ``EMData/EBSDmaster/BetheParameters`` -- ``(c1, c2, c3, sgdbdiff)`` (metadata).
-    * ``CrystalData/{LatticeParameters, AtomData, Atomtypes, SpaceGroupNumber,
-      SpaceGroupSetting}`` -- the crystal, rebuilt into a
-      :class:`torchebsd.sim.Crystal` and stashed in ``metadata["crystal"]`` so the
-      indexer can auto-derive the phase (via :func:`phase_from_crystal`). Lattice
-      lengths are in nm and angles in degrees (torchebsd's own convention, passed
-      through as-is); atomic **numbers** ``Z`` map to element symbols via
-      ``ELEMENT_SYMBOLS[Z - 1]`` (so ``Z = 14 -> "Si"``); the space-group setting
-      (1 or 2) becomes ``Crystal(origin=...)`` (default 2 if absent).
-
-    The returned :class:`~torchebsd.sim.MasterPattern` has
-    ``data`` of shape ``(n_energy, 2, n, n)`` (axis 1 = hemisphere, north = 0,
-    south = 1) as float32, ``energies_kev`` the full ``EkeVs`` list, and
-    ``metadata`` carrying ``"crystal"`` (the rebuilt crystal), ``"dmin"``,
-    ``"bethe"``, and ``"source"`` (the file path). It feeds ``index_scan``
-    directly::
+    ``CrystalData`` is rebuilt into a :class:`torchebsd.crystal.Crystal` and stashed
+    in ``metadata["crystal"]`` so the indexer can auto-derive the phase. Atomic
+    numbers map to symbols via ``ELEMENT_SYMBOLS[Z - 1]``, and the space-group
+    setting (1 or 2) becomes ``Crystal(origin=...)``, defaulting to 2::
 
         master = master_from_emsoft("Si_MC.h5")
-        indexer = SphericalIndexer(master, detector)
-        xmap = indexer.index_scan(patterns, shape=(rows, cols))  # phase auto-derived
+        xmap = SphericalIndexer(master, detector).index_scan(patterns, shape=shape)
 
     Parameters
     ----------
     path
         Path to the EMsoft master-pattern HDF5 file.
     device
-        Optional torch device the returned ``MasterPattern`` is moved to.
+        Optional torch device the returned master is moved to.
 
     Returns
     -------
     torchebsd.sim.MasterPattern
-        The imported master, with ``metadata["crystal"]`` set (unless the
-        ``CrystalData`` group is missing/malformed, in which case the master is
-        still returned and ``metadata["crystal_error"]`` explains why -- a partial
-        file never sinks the whole load).
-
-    Notes
-    -----
-    ``kikuchipy`` is never imported; ``h5py`` (an existing repo dependency used by
-    :meth:`~torchebsd.sim.MasterPattern.save` /
-    :meth:`~torchebsd.sim.MasterPattern.load`) is imported inside the function.
+        ``data`` of shape ``(n_energy, 2, n, n)`` (axis 1 = hemisphere, north
+        first), with ``metadata`` carrying ``"crystal"``, ``"dmin"``, ``"bethe"``
+        and ``"source"``. A missing or malformed ``CrystalData`` group leaves
+        ``metadata["crystal_error"]`` instead, rather than sinking the whole load.
     """
     import h5py
     import torch
@@ -278,13 +226,6 @@ def master_from_emsoft(path, device=None):
 
 
 def _sum_over_sites(array: np.ndarray) -> np.ndarray:
-    """Collapse an EMsoft square-Lambert master over its leading **site** axis.
-
-    EMsoft stores ``(n_sites, n_energy, n, n)`` with one component per
-    asymmetric-unit atom; summing axis 0 combines them (indexing only the first
-    site is a known bug). An already-collapsed ``(n_energy, n, n)`` array is
-    returned unchanged.
-    """
     array = np.asarray(array, dtype=np.float32)
     if array.ndim == 4:
         return array.sum(axis=0)
@@ -297,7 +238,6 @@ def _sum_over_sites(array: np.ndarray) -> np.ndarray:
 
 
 def _read_emsoft_scalar(f, key: str, cast):
-    """Read a possibly length-1 / bytes EMsoft dataset as a scalar (``None`` if absent)."""
     try:
         return cast(np.asarray(f[key]).ravel()[0])
     except (KeyError, IndexError, ValueError, TypeError):
@@ -305,7 +245,6 @@ def _read_emsoft_scalar(f, key: str, cast):
 
 
 def _read_emsoft_array(f, key: str):
-    """Read an EMsoft dataset as a flat float array (``None`` if absent/unreadable)."""
     try:
         return np.asarray(f[key], dtype=np.float64).ravel()
     except (KeyError, ValueError, TypeError):
@@ -313,12 +252,6 @@ def _read_emsoft_array(f, key: str):
 
 
 def _read_crystal_arrays(f):
-    """Pull the raw ``CrystalData`` arrays out of an open EMsoft HDF5 file.
-
-    Returns a dict of raw values, or ``None`` if the group (or a required field)
-    is missing -- the caller then imports the master without a crystal. Values are
-    read defensively (some EMsoft datasets are length-1 arrays or bytes).
-    """
     try:
         cd = f["CrystalData"]
         arrays = {
@@ -336,18 +269,11 @@ def _read_crystal_arrays(f):
 
 
 def _crystal_from_arrays(arrays):
-    """Build a torchebsd ``Crystal`` from raw EMsoft ``CrystalData`` arrays.
-
-    Returns ``(crystal, None)`` on success, or ``(None, message)`` if the data is
-    missing/malformed so the master still imports with a metadata note. Atomic
-    numbers ``Z`` map to symbols via ``ELEMENT_SYMBOLS[Z - 1]`` (index 0 is ``"H"``,
-    so ``Z = 14 -> "Si"``); site ``j`` is ``AtomData[:, j] = (x, y, z, occupancy, B)``.
-    """
     if arrays is None:
         return None, "CrystalData group missing or unreadable"
     try:
-        from torchebsd.sim import AtomSite, Crystal
-        from torchebsd.sim.data.scattering_tables import ELEMENT_SYMBOLS
+        from torchebsd.crystal import AtomSite, Crystal
+        from torchebsd.crystal.data.scattering_tables import ELEMENT_SYMBOLS
 
         lattice = arrays["lattice"]
         if lattice.size < 6:

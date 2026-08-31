@@ -1,15 +1,4 @@
-"""The master pattern result object.
-
-A :class:`MasterPattern` holds backscatter intensity on the sphere, stored as
-square-Lambert maps for both hemispheres (the same layout as EMsoft and
-kikuchipy: shape ``(n_energies, 2, n, n)`` with hemisphere index 0 = north,
-1 = south, ``n = 2 npx + 1``, row = Lambert Y, column = Lambert X).
-
-It can be interpolated at arbitrary unit vectors (:meth:`sample`), projected
-onto an :class:`~torchebsd.sim.detector.EBSDDetector` for a batch of orientations
-(:meth:`project`), displayed in Lambert / stereographic / sphere projections
-(:meth:`show`), and saved to / loaded from HDF5.
-"""
+"""The simulated master pattern and projection onto a detector."""
 
 from __future__ import annotations
 
@@ -22,9 +11,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from torchebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
+from torchebsd.core.rotation import quaternion_to_matrix
 from torchebsd.sim.detector import EBSDDetector
-from torchebsd.sim.lambert import SQRT_PI_HALF, sphere_to_square
-from torchebsd.sim.rotation import quaternion_to_matrix
 
 if TYPE_CHECKING:
     from anyplotlib import Figure
@@ -64,7 +53,6 @@ class MasterPattern:
         if len(self.energies_kev) != self.data.shape[0]:
             raise ValueError("energies_kev length must match data.shape[0]")
 
-    # ------------------------------------------------------------------ #
     @property
     def npx(self) -> int:
         """Half-width of the Lambert grid (n = 2 npx + 1)."""
@@ -83,9 +71,6 @@ class MasterPattern:
             return len(self.energies_kev) - 1  # highest energy bin
         return int(np.argmin(np.abs(self.energies_kev - energy_kev)))
 
-    # ------------------------------------------------------------------ #
-    # interpolation and projection
-    # ------------------------------------------------------------------ #
     def sample(self, directions: torch.Tensor, energy_kev: float | None = None) -> torch.Tensor:
         """Interpolate the master pattern at unit vectors (..., 3).
 
@@ -148,9 +133,6 @@ class MasterPattern:
             pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(_EPS) - 1.0
         return pattern.reshape(-1, detector.nrows, detector.ncols)
 
-    # ------------------------------------------------------------------ #
-    # resampled views
-    # ------------------------------------------------------------------ #
     def to_stereographic(self, n: int = 501, hemisphere: str = "north",
                          energy_kev: float | None = None) -> torch.Tensor:
         """Resample one hemisphere into a stereographic (equal-angle) image."""
@@ -182,13 +164,11 @@ class MasterPattern:
         )
         return self.sample(v, energy_kev=energy_kev)
 
-    # ------------------------------------------------------------------ #
-    # display
-    # ------------------------------------------------------------------ #
     def show(
         self,
         projection: str = "lambert",
         energy_kev: float | None = None,
+        texture_height: int = 256,
         **kwargs,
     ) -> Figure:
         """Display the master pattern.
@@ -201,33 +181,38 @@ class MasterPattern:
             sphere with the pattern as texture).
         energy_kev
             Energy bin to display (default: highest).
+        texture_height
+            Height of the equirectangular texture used by the interactive
+            sphere. Lower values reduce notebook/SpyDE payload size while
+            leaving the master-pattern data unchanged.
         """
-        from torchebsd.sim import display
+        from torchebsd.viz.patterns import hemispheres_figure, sphere_figure
 
         i_e = self.energy_index(energy_kev)
         label = f"{self.energies_kev[i_e]:g} keV"
         if projection == "lambert":
             north = self.data[i_e, 0].detach().cpu().numpy()
             south = self.data[i_e, 1].detach().cpu().numpy()
-            return display.hemispheres_figure(north, south, title=f"Master pattern ({label})")
+            return hemispheres_figure(north, south, title=f"Master pattern ({label})")
         if projection == "stereographic":
             north = self.to_stereographic(hemisphere="north", energy_kev=energy_kev)
             south = self.to_stereographic(hemisphere="south", energy_kev=energy_kev)
-            return display.hemispheres_figure(
+            return hemispheres_figure(
                 north.detach().cpu().numpy(),
                 south.detach().cpu().numpy(),
                 title=f"Master pattern, stereographic ({label})",
             )
         if projection == "sphere":
-            texture = self.to_equirectangular(energy_kev=energy_kev)
-            return display.sphere_figure(
+            if texture_height < 8:
+                raise ValueError("texture_height must be >= 8")
+            texture = self.to_equirectangular(
+                height=int(texture_height), energy_kev=energy_kev
+            )
+            return sphere_figure(
                 texture.detach().cpu().numpy(), title=f"Master pattern ({label})", **kwargs
             )
         raise ValueError("projection must be 'lambert', 'stereographic', or 'sphere'")
 
-    # ------------------------------------------------------------------ #
-    # persistence
-    # ------------------------------------------------------------------ #
     def save(self, path: str) -> None:
         """Save to HDF5 (data, energies, and string metadata)."""
         with h5py.File(path, "w") as f:
@@ -256,7 +241,6 @@ class MasterPattern:
 
 
 def _as_quaternions(orientation) -> torch.Tensor:
-    """Accept an orix Rotation, array, or tensor; return (N, 4) tensor."""
     data = getattr(orientation, "data", orientation)  # orix Rotation -> .data
     q = torch.as_tensor(np.asarray(data) if not isinstance(data, torch.Tensor) else data)
     q = q.reshape(-1, 4)

@@ -25,8 +25,8 @@ from orix.crystal_map import CrystalMap
 from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector
+from torchebsd.crystal import Crystal
 from torchebsd.index import master_from_emsoft
-from torchebsd.sim import Crystal
 
 # real-file test target (maintainer's local copy; absent on most machines)
 _REAL_SI_MC = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
@@ -192,7 +192,7 @@ def test_master_survives_missing_crystaldata(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_loaded_master_feeds_index_scan(synthetic_file):
     """The EMsoft master flows into index_scan; the phase auto-derives from metadata."""
-    from torchebsd.index.indexer import SphericalIndexer
+    from torchebsd.index.spherical.indexer import SphericalIndexer
 
     path, _, _ = synthetic_file
     m = master_from_emsoft(path, device="cpu")

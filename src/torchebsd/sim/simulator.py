@@ -1,19 +1,8 @@
-"""The master-pattern simulator: composition root and stage access.
+"""The master-pattern simulation chain.
 
-``MasterPatternSimulator`` wires crystal + microscope + numerical parameters
-into the simulation chain and exposes every intermediate stage as an
-inspectable object with ``.show()``:
-
-    sim = MasterPatternSimulator(crystal, microscope, npx=150, dmin=0.1)
-    sim.structure_factors().show()     # |U_g|, absences, V_0
-    sim.reflections().show()           # master reflection list
-    sim.reflections(k=(0, 0, 1)).show()  # Bethe strong/weak split for one beam
-    sim.dynamical_matrix(k=(0, 0, 1)).show()
-    master = sim.compute(device="cuda")
-    master.show(projection="sphere")
-
-Refinement returns a new simulator (``sim.refine(npx=300, dmin=0.05)``) that
-reuses every cached stage still consistent with the new parameters.
+:class:`MasterPatternSimulator` composes a crystal, a microscope and a backend,
+exposing each intermediate (structure factors, reflections, k-vectors) as an
+inspectable, showable object before ``compute()`` runs the full simulation.
 """
 
 from __future__ import annotations
@@ -21,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from torchebsd.sim.bethe import BetheParameters
-from torchebsd.sim.crystal import Crystal
-from torchebsd.sim.dynamical import (
+from torchebsd.crystal.lattice import Crystal
+from torchebsd.crystal.structure_factors import StructureFactors, compute_structure_factors
+from torchebsd.diffraction.backends import (
     DynamicalMatrix,
     MasterPatternBackend,
     SimulationInputs,
@@ -31,12 +20,12 @@ from torchebsd.sim.dynamical import (
     classify_reflections,
     resolve_backend,
 )
-from torchebsd.sim.kvectors import reduce_to_fundamental_sector, sample_incident_directions
+from torchebsd.diffraction.bethe import BetheParameters
+from torchebsd.diffraction.kvectors import reduce_to_fundamental_sector, sample_incident_directions
+from torchebsd.diffraction.reflections import ReflectionList, master_reflection_list
 from torchebsd.sim.masterpattern import MasterPattern
 from torchebsd.sim.microscope import Microscope
-from torchebsd.sim.montecarlo import DepthDistribution
-from torchebsd.sim.reflections import ReflectionList, master_reflection_list
-from torchebsd.sim.structure_factors import StructureFactors, compute_structure_factors
+from torchebsd.sim.montecarlo.depth import DepthDistribution
 
 __all__ = ["MasterPatternSimulator"]
 
@@ -64,7 +53,7 @@ class MasterPatternSimulator:
     backend
         ``"kinematical"`` (runs today; band geometry only), ``"bloch"``
         (the physical model; scheduled -- see DESIGN.md), or any
-        :class:`~torchebsd.sim.dynamical.MasterPatternBackend` instance.
+        :class:`~torchebsd.diffraction.backends.MasterPatternBackend` instance.
     """
 
     def __init__(
@@ -90,9 +79,6 @@ class MasterPatternSimulator:
         self.backend = backend
         self._sf: StructureFactors | None = None
 
-    # ------------------------------------------------------------------ #
-    # stages
-    # ------------------------------------------------------------------ #
     @property
     def energy_kev(self) -> float:
         return self.microscope.energy_kev
@@ -122,9 +108,6 @@ class MasterPatternSimulator:
         matrix = build_dynamical_matrix(sf, refl)
         return DynamicalMatrix(matrix=matrix, hkl=refl.strong(), k=refl.k, reflections=refl)
 
-    # ------------------------------------------------------------------ #
-    # computation
-    # ------------------------------------------------------------------ #
     def compute(
         self,
         device: torch.device | str | None = None,
@@ -215,9 +198,6 @@ class MasterPatternSimulator:
             },
         )
 
-    # ------------------------------------------------------------------ #
-    # refinement
-    # ------------------------------------------------------------------ #
     def refine(self, **changes) -> MasterPatternSimulator:
         """A new simulator with updated parameters, reusing valid caches.
 
@@ -253,7 +233,7 @@ class MasterPatternSimulator:
 
     def show_setup(self, detector=None):
         """Interactive geometry widget for this simulation's setup."""
-        from torchebsd.sim.widgets import SetupWidget
+        from torchebsd.viz.widgets import SetupWidget
 
         return SetupWidget.from_setup(
             microscope=self.microscope, detector=detector, crystal=self.crystal

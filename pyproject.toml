@@ -53,7 +53,9 @@ select = ["E", "F", "I", "W", "UP", "B"]
 # tests import after pytest.importorskip(...) on purpose
 "tests/**" = ["E402"]
 # auto-generated numeric table: long lines / formatting are fine
-"src/torchebsd/sim/data/scattering_tables.py" = ["E501"]
+"src/torchebsd/crystal/data/scattering_tables.py" = ["E501"]
+# Embedded JavaScript is formatted for browser readability, not Python width.
+"src/torchebsd/viz/widgets.py" = ["E501"]
 "scripts/**" = ["E402"]
 
 # --- uv ---------------------------------------------------------------------

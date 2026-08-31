@@ -47,7 +47,7 @@ def test_master_pattern_show_projections(sim):
 
 
 def test_to_uint8_rgb():
-    from torchebsd.sim.display import to_uint8_rgb
+    from torchebsd.viz.figures import to_uint8_rgb
 
     image = np.array([[0.0, 1.0], [2.0, 4.0]])
     rgb = to_uint8_rgb(image)
@@ -58,7 +58,7 @@ def test_to_uint8_rgb():
 
 def test_setup_widget_round_trip():
     pytest.importorskip("anywidget")
-    from torchebsd.sim.widgets import SetupWidget
+    from torchebsd.viz.widgets import SetupWidget
 
     microscope = te.Microscope(energy=15e3, sample_tilt=68.0)
     detector = te.EBSDDetector(shape=(240, 320), pc=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)
@@ -76,6 +76,59 @@ def test_setup_widget_round_trip():
     assert scope2.energy == pytest.approx(15e3)
     assert det2.pc[2] == pytest.approx(0.62)
     assert det2.shape == (240, 320)
+
+
+def test_crystal_show_is_native_anyplotlib_figure(sim):
+    pytest.importorskip("anyplotlib")
+    crystal = sim.crystal
+    figure = crystal.show()
+    assert figure.to_html()
+
+
+def test_phase_overview_composes_native_figures_without_nested_html(sim):
+    pytest.importorskip("anyplotlib")
+    crystal = sim.crystal
+    overview = crystal.overview()
+    assert overview.metadata["space_group"] == 225
+    assert overview.metadata["atom_count"] == 4
+    assert overview.metadata["volume_nm3"] == pytest.approx(crystal.volume)
+    assert set(overview.figures) == {"phase_overview"}
+    assert len(overview.figure.get_axes()) == 1
+
+    master = sim.compute()
+    linked = crystal.overview(master_pattern=master)
+    assert set(linked.figures) == {"phase_overview"}
+    assert len(linked.figure.get_axes()) == 2
+    assert all(figure.to_html() for figure in linked.figures.values())
+    assert linked.metadata["simulation_backend"] in {"bloch_prism", "kinematical", "computed"}
+    assert "html" not in " ".join(linked.metadata).lower()
+    with pytest.raises(ValueError, match="texture_height"):
+        crystal.overview(master_pattern=master, texture_height=4)
+
+
+def test_compact_microscope_widget_round_trip():
+    pytest.importorskip("anywidget")
+    from torchebsd.viz.widgets import MicroscopeWidget
+
+    microscope = te.Microscope(energy=18e3, sample_tilt=69.0, azimuthal=2.5)
+    detector = te.EBSDDetector(
+        shape=(256, 384), pc=(0.42, 0.58, 0.61), tilt=4.0, px_size=0.75
+    )
+    widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
+    assert widget.energy_kev == pytest.approx(18.0)
+    assert widget.px_size == pytest.approx(0.75)
+    widget.pcz = 0.66
+    assert widget.to_microscope().energy == pytest.approx(18e3)
+    assert widget.to_detector().pc[2] == pytest.approx(0.66)
+
+
+def test_sampling_sphere_show():
+    pytest.importorskip("anyplotlib")
+    from torchebsd.diffraction.kvectors import sample_incident_directions
+
+    grid = sample_incident_directions(4)
+    html = grid.show().to_html()
+    assert isinstance(html, str) and len(html) > 100
 
 
 def test_simulator_show_setup(sim):

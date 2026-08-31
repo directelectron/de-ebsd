@@ -2,9 +2,9 @@
 
 **Status:** implemented — the I1–I8 pipeline is complete (SHT, SO(3)
 cross-correlation, back-projection, single-pattern + scan indexing, gradient
-refinement, visualization, and orix-native I/O). The one remaining placeholder is
-`index.peaks` — multi-candidate SO(3) peak detection (future work; single-orientation
-indexing uses the argmax in `index` plus gradient refinement). **Goal:** a fast,
+refinement, visualization, and orix-native I/O). Multi-candidate SO(3) peak
+detection remains future work; single-orientation indexing uses the argmax in
+`index` plus gradient refinement. **Goal:** a fast,
 GPU-accelerated, *differentiable* spherical
 indexing engine for EBSD — the matching counterpart to `torchebsd.sim`'s
 differentiable master-pattern *generation* — modelled on **EMSphInx** (Lenthe,
@@ -65,11 +65,11 @@ differentiable simulation + indexing backend, consuming its orix-native output.
 So `torchebsd.index` reuses only orix and `torchebsd.sim`'s own detector geometry;
 it never imports kikuchipy.
 
-| Piece | From | Used for |
-| --- | --- | --- |
-| Orientations, symmetry, SO(3)/FZ sampling, misorientation, `CrystalMap`, IPF colouring | **orix** (dependency) | trial grid, refinement search, output `Rotation`/`CrystalMap`, viz |
-| `EBSDDetector` geometry (kikuchipy-parity PC conventions), master projection, square-Lambert sphere | **`torchebsd.sim`** (in-package) | back-projection geometry, the continuous "dictionary" `M(n)` |
-| Differentiable master, differentiable in crystal params (DESIGN.md M4) | **`torchebsd.sim`** | forward model for refinement / fitting |
+| Piece                                                                                               | From                             | Used for                                                           |
+|-----------------------------------------------------------------------------------------------------|----------------------------------|--------------------------------------------------------------------|
+| Orientations, symmetry, SO(3)/FZ sampling, misorientation, `CrystalMap`, IPF colouring              | **orix** (dependency)            | trial grid, refinement search, output `Rotation`/`CrystalMap`, viz |
+| `EBSDDetector` geometry (kikuchipy-parity PC conventions), master projection, square-Lambert sphere | **`torchebsd.sim`** (in-package) | back-projection geometry, the continuous "dictionary" `M(n)`       |
+| Differentiable master, differentiable in crystal params (DESIGN.md M4)                              | **`torchebsd.sim`**              | forward model for refinement / fitting                             |
 
 The novel part we build is the **SH + SO(3) matching engine** on top of orix +
 `torchebsd.sim`. Everything geometric (detector, projection, Lambert sphere) is
@@ -87,10 +87,10 @@ torchebsd master M(n) ───────┘
         │
   1. preprocess (background / mask / normalize -- basic in-package, or done upstream)
   2. back-project each pattern to the sphere  E(n)           [index.backproject]
-  3. forward SHT:  M -> a_lm (once) ;  E -> b_lm (batched)    [index.harmonics]
-  4. SO(3) cross-correlation via Wigner-D FFT  ->  C(g)       [index.wigner + index.correlation]
-  5. peak on SO(3): argmax -> best orientation               [index.indexer]
-     (multi-candidate peak extraction is future work          [index.peaks])
+  3. forward SHT:  M -> a_lm (once) ;  E -> b_lm (batched)    [spherical.harmonics]
+  4. SO(3) cross-correlation via Wigner-D FFT  ->  C(g)       [spherical.wigner + .correlation]
+  5. peak on SO(3): argmax -> best orientation               [spherical.indexer]
+     (multi-candidate peak extraction is future work)
   6. refine (sub-pixel SO(3); gradient on the forward model) [index.refine]
   7. assemble orix Rotation per pixel -> CrystalMap          [index.io]
 ```
@@ -99,18 +99,24 @@ torchebsd master M(n) ───────┘
 
 ```
 src/torchebsd/
-  sim/                 # existing simulation code (moved into its own subpackage)
-  index/               # NEW spherical-indexing package
+  core/ crystal/ diffraction/ sim/   # the simulation stack (see DESIGN.md)
+  index/                             # the spherical-indexing package
     __init__.py
-    harmonics.py       # spherical harmonic transform (forward/inverse), GPU, batched, autograd
-    wigner.py          # Wigner-d / D matrices, SO(3) grid, the SOFT transform
-    correlation.py     # SO(3) cross-correlation: SH spectra product -> inverse SO(3) FFT
     backproject.py     # detector pattern <-> sphere resampling (EBSDDetector geometry)
-    peaks.py           # peak detection + sub-pixel refinement on the SO(3) grid
-    refine.py          # gradient-based orientation / pattern-center refinement (differentiable forward model)
-    indexer.py         # SphericalIndexer: end-to-end driver over a scan -> CrystalMap
-    io.py              # orix / kikuchipy adapters (Rotation, CrystalMap, EBSD signal, master import)
-    display.py         # rich viz (anyplotlib / anywidget), matching the sim side
+    preprocess.py      # static / dynamic background removal
+    dictionary.py      # DictionaryIndexer: brute-force template-matching baseline
+    io.py              # orix / kikuchipy adapters (Rotation, CrystalMap, master import)
+    spherical/
+      harmonics.py     # spherical harmonic transform (forward/inverse), GPU, batched, autograd
+      wigner.py        # Wigner-d / D matrices, SO(3) grid, the SOFT transform
+      correlation.py   # SO(3) cross-correlation: SH spectra product -> inverse SO(3) FFT
+      indexer.py       # SphericalIndexer: end-to-end driver over a scan -> CrystalMap
+    refine/
+      orientation.py   # gradient orientation / pattern-center refinement (Adam, LM)
+      highres.py       # band-edge-sampled, tiled high-resolution refinement
+      pattern_center.py# shared-PC calibration over many patterns
+  viz/
+    maps.py            # indexing figures, matching the sim side
 tests/
   index/               # unit + integration tests
 scripts/

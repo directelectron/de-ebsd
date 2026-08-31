@@ -1,11 +1,11 @@
-"""High-precision HR refinement (:func:`torchebsd.index.refine_hr.refine_hr`).
+"""High-precision HR refinement (:func:`torchebsd.index.refine_hr`).
 
 The sub-0.1-degree, edge-importance-sampled, tiled joint orientation + pattern-center
-refiner. Where :func:`torchebsd.index.refine.refine_orientation` evaluates its NCC over a
-back-projected direction set, ``refine_hr`` importance-samples a few thousand band-edge
-pixels (the high-gradient regions that carry the orientation / pattern-center
-information), spreads them across a tile grid, normalizes each tile locally, and runs a
-batched Levenberg-Marquardt refinement of a 6-DOF ``theta = [w, dpc]``.
+refiner. Where :func:`~torchebsd.index.refine.orientation.refine_orientation` evaluates
+its NCC over a back-projected direction set, ``refine_hr`` importance-samples a few
+thousand band-edge pixels, spreads them across a tile grid, normalizes each tile
+locally, and runs a batched Levenberg-Marquardt refinement of a 6-DOF
+``theta = [w, dpc]``.
 
 The money tests:
 
@@ -37,9 +37,10 @@ import torch
 from orix.quaternion import Rotation
 
 from torchebsd import EBSDDetector, MasterPattern
+from torchebsd.core.lambert import master_pattern_grid
+from torchebsd.core.rotation import quaternion_to_matrix
 from torchebsd.index import refine_hr
-from torchebsd.index.refine import _skew
-from torchebsd.index.refine_highres import (
+from torchebsd.index.refine.highres import (
     _ddc_dpc,
     _residual_jacobian,
     _sobel_gradient_magnitude,
@@ -47,8 +48,7 @@ from torchebsd.index.refine_highres import (
     direction_cosines_from_pc,
     edge_importance_samples,
 )
-from torchebsd.sim.lambert import master_pattern_grid
-from torchebsd.sim.rotation import quaternion_to_matrix
+from torchebsd.index.refine.orientation import _skew
 
 
 def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):

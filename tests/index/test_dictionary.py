@@ -26,10 +26,10 @@ from orix.quaternion.symmetry import C1
 from orix.sampling import get_sample_fundamental
 
 from torchebsd import EBSDDetector, MasterPattern
+from torchebsd.core.lambert import master_pattern_grid
+from torchebsd.crystal import Crystal
 from torchebsd.index import DictionaryIndexer
 from torchebsd.index.io import phase_from_crystal
-from torchebsd.sim import Crystal
-from torchebsd.sim.lambert import master_pattern_grid
 
 # A coarse fundamental-zone resolution keeps the dictionary small (~800 orientations for
 # m-3m) so the whole suite is fast; the recovered orientation must land within ~1.5x the

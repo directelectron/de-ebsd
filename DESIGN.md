@@ -50,27 +50,45 @@ Microscope+          |
                      +-- refine(**changes)    : new simulator, caches carried over
 ```
 
-Module layout (flat, one concern per module):
+Package layout -- layered, each level depending only on those above it:
 
-| Module                      | Contents                                                                       |
-|-----------------------------|--------------------------------------------------------------------------------|
-| `crystal.py`                | `AtomSite`, `Crystal` (diffpy space-group operators; origin choice 2 handling) |
-| `microscope.py`             | `Microscope` (energy, sample tilt; relativistic quantities)                    |
-| `bethe.py`                  | `BetheParameters` (EMsoft defaults 8 / 50 / 100 / 1.0)                         |
-| `scattering.py`             | Weickenmeier-Kohl `FSCATT` port (numpy float64)                                |
-| `data/scattering_tables.py` | WK coefficient tables, generated from the Fortran source                       |
-| `structure_factors.py`      | `compute_structure_factors`, `StructureFactors` (U_g lookup box)               |
-| `lambert.py`                | square-Lambert forward/inverse (torch), master-pattern grid                    |
-| `kvectors.py`               | incident-direction sampling (`KVectorGrid`)                                    |
-| `reflections.py`            | `ReflectionList`, excitation errors, Bethe partition                           |
-| `dynamical.py`              | `build_dynamical_matrix`, `DynamicalMatrix`, backend seam + backends           |
-| `montecarlo.py`             | `DepthDistribution` (EMsoft MC HDF5 reader, fallback model)                    |
-| `simulator.py`              | `MasterPatternSimulator` (composition root, stages, refine)                    |
-| `masterpattern.py`          | `MasterPattern` (sample/project/show/save)                                     |
-| `detector.py`               | `EBSDDetector` (kikuchipy-parity direction cosines)                            |
-| `rotation.py`               | orix-order quaternion rotations (torch)                                        |
-| `display.py`                | the anyplotlib display layer (all `.show()` implementations)                   |
-| `widgets.py`                | `SetupWidget` (anywidget geometry schematic)                                   |
+```
+torchebsd/
+  core/          frames, constants, coordinate maps    (no torchebsd deps)
+  crystal/       unit cells, scattering, structure factors
+  diffraction/   reflection lists, Bethe, Bloch-wave backends
+  sim/           master-pattern generation + detector geometry
+  index/         orientation indexing (the matching counterpart)
+  viz/           the anyplotlib display layer
+```
+
+| Module                             | Contents                                                                       |
+|------------------------------------|--------------------------------------------------------------------------------|
+| `core/constants.py`                | physical constants, wavelength and interaction-constant helpers                |
+| `core/rotation.py`                 | orix-order quaternion rotations (torch)                                        |
+| `core/lambert.py`                  | square-Lambert forward/inverse (torch), master-pattern grid                    |
+| `core/geometry.py`                 | sample <-> detector frame matrices, shared by `sim` and `index`                |
+| `crystal/lattice.py`               | `AtomSite`, `Crystal` (diffpy space-group operators; origin choice 2 handling) |
+| `crystal/scattering.py`            | Weickenmeier-Kohl `FSCATT` port (numpy float64)                                |
+| `crystal/scattering_torch.py`      | the differentiable torch port of the same form factors                         |
+| `crystal/structure_factors.py`     | `compute_structure_factors`, `StructureFactors` (U_g lookup box)               |
+| `crystal/data/scattering_tables.py`| WK coefficient tables, generated from the Fortran source                       |
+| `diffraction/bethe.py`             | `BetheParameters` (EMsoft defaults 8 / 50 / 100 / 1.0)                         |
+| `diffraction/reflections.py`       | `ReflectionList`, excitation errors, Bethe partition                           |
+| `diffraction/backends.py`          | `build_dynamical_matrix`, `DynamicalMatrix`, backend seam + backends           |
+| `diffraction/prism.py`             | `BlochPrismBackend` (scattering-matrix / PRISM path)                           |
+| `diffraction/kvectors.py`          | incident-direction sampling (`KVectorGrid`)                                    |
+| `sim/microscope.py`                | `Microscope` (energy, sample tilt; relativistic quantities)                    |
+| `sim/detector.py`                  | `EBSDDetector` (kikuchipy-parity direction cosines)                            |
+| `sim/simulator.py`                 | `MasterPatternSimulator` (composition root, stages, refine)                    |
+| `sim/masterpattern.py`             | `MasterPattern` (sample/project/show/save)                                     |
+| `sim/montecarlo/depth.py`          | `DepthDistribution` (EMsoft MC HDF5 reader, fallback model)                    |
+| `sim/montecarlo/transport.py`      | the native, EMsoft-free Monte Carlo electron transport                         |
+| `viz/figures.py`                   | shared anyplotlib primitives (`apl`, `label`, bar/image figures)               |
+| `viz/patterns.py`                  | master-pattern, crystal-structure and sampling figures                         |
+| `viz/maps.py`                      | indexing figures (pattern match, orientation map, SO(3) surface)               |
+| `viz/widgets.py`                   | one editable microscope/detector anywidget (`SetupWidget`)                     |
+| `viz/views.py`                     | host-neutral phase composition of metadata + native anyplotlib figures         |
 
 Design rules:
 
@@ -81,7 +99,8 @@ Design rules:
 - `refine()` returns a new simulator rather than mutating, and carries over
   every cache that is still consistent (raising `npx` or changing Bethe
   thresholds never recomputes U_g; changing `dmin` or the energy does).
-- One display module; no plotting code anywhere else.
+- All plotting lives in `torchebsd.viz`; no plotting code anywhere else.
+- Dependencies run one way down the layers; `core` imports nothing from torchebsd.
 
 ## 3. Units and conventions
 
@@ -223,11 +242,30 @@ in `display.py`:
 
 anyplotlib is imported lazily so headless compute never needs it.
 
-`widgets.SetupWidget` (anywidget + traitlets) draws the experiment geometry
+`widgets.MicroscopeWidget` (anywidget + traitlets) draws the experiment geometry
 -- beam, tilted sample, detector plane, projection center -- as a live SVG
 schematic with sliders; traitlets sync both ways and `to_microscope()` /
 `to_detector()` read the adjusted configuration back into API objects.
 Entry points: `sim.show_setup(detector=...)` and `detector.show()`.
+
+The compact SpyDE-facing surfaces keep rendering and composition separate:
+
+- `Crystal.show()` returns a native anyplotlib 3-D atom view.
+  `Crystal.overview(master_pattern=...)` returns a host-neutral
+  `PhaseOverview`: compact JSON-compatible metadata plus one native, weighted
+  two-panel figure (master dominant, structure secondary). No figure is
+  serialized into another widget or iframe. Jupyter displays the overview
+  directly; SpyDE registers it through its existing anyplotlib Electron bridge.
+- `Microscope.show(detector=..., crystal=...)` returns `MicroscopeWidget`, an
+  editable microscope/detector popover with beam energy, tilts, projection
+  center, detector dimensions, pixel size, and live gnomonic bounds. The
+  adjusted values round-trip through `to_microscope()` and `to_detector()`.
+- `KVectorGrid.show()` returns an anyplotlib 3D sampling sphere with the
+  north/south sampling split colored distinctly.
+
+The editor uses SpyDE and Jupyter CSS variables with standalone fallbacks.
+SpyDE owns popover layout and figure lifetime; torchebsd supplies figures and
+state instead of maintaining a second application renderer.
 
 ## 7. Differentiability
 

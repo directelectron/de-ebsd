@@ -38,7 +38,7 @@ import numpy as np
 import torch
 
 import torchebsd as te
-from torchebsd.sim.lambert import master_pattern_grid
+from torchebsd.core.lambert import master_pattern_grid
 
 # Reference EMsoft HDF5 paths. Overridable per material via the environment or
 # the --mc flag; the built-in fallbacks are the maintainer's local paths and are
@@ -142,7 +142,7 @@ def main() -> None:
     # exactly, otherwise fall back to torchebsd's own single-energy model.
     monte_carlo = None
     if mc_path and os.path.exists(mc_path):
-        from torchebsd.sim.montecarlo import DepthDistribution
+        from torchebsd.sim.montecarlo.depth import DepthDistribution
 
         monte_carlo = DepthDistribution.from_emsoft(mc_path)
     simulator = te.MasterPatternSimulator(
@@ -180,9 +180,9 @@ def main() -> None:
               "full parity requires the Bloch-wave backend, DESIGN.md M2)")
 
     if args.html:
-        from torchebsd.sim import display
+        from torchebsd.viz.patterns import hemispheres_figure
 
-        figure = display.hemispheres_figure(
+        figure = hemispheres_figure(
             our_n.numpy(), ref_n.detach().numpy(),
             title=f"{args.material.capitalize()} north: torchebsd ({master.metadata['backend']})"
                   " vs EMsoft",
