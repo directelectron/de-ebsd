@@ -5,6 +5,7 @@ Space-group symmetry operations come from :mod:`diffpy.structure`.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -144,6 +145,90 @@ class Crystal:
             space_group=space_group,
             sites=sites,
         )
+
+    @classmethod
+    def from_cif(
+        cls,
+        path: str,
+        origin: int | None = None,
+        debye_waller: float = 0.005,
+    ) -> Crystal:
+        """Create a crystal from a CIF file.
+
+        Reads only the **asymmetric unit**; the symmetry expansion is this class's
+        own job, so passing the expanded cell that ``diffpy.structure.loadStructure``
+        returns would double-count every atom.
+
+        CIF lengths are Angstrom and are converted to nm. An ``U_iso`` column becomes
+        the Debye-Waller factor as ``B = 8 pi^2 U_iso``, converted to nm^2; sites
+        without one (or with ``U_iso <= 0``) fall back to ``debye_waller``. Ionic
+        ``_atom_site_type_symbol`` entries are reduced to the element (``"Si4+"`` ->
+        ``"Si"``), since the scattering tables are per element.
+
+        Parameters
+        ----------
+        path
+            Path to the CIF file. Only its first data block is read.
+        origin
+            Origin choice for the two-origin space groups. ``None`` (default) reads
+            ``_space_group_IT_coordinate_system_code`` from the file and falls back to
+            2 -- the modern standard used by EMsoft and kikuchipy. **Getting this
+            wrong silently produces a plausible but incorrect master pattern**, so
+            pass it explicitly when the file does not record it and the group has two
+            origins (:attr:`has_two_origins`).
+        debye_waller
+            Fallback isotropic B in nm^2 for sites with no usable ``U_iso``.
+
+        Returns
+        -------
+        Crystal
+        """
+        from diffpy.structure.parsers import getParser
+
+        parser = getParser("cif")
+        parser.parseFile(str(path))
+        lattice = parser.asymmetric_unit[0].lattice if parser.asymmetric_unit else None
+        if lattice is None:
+            raise ValueError(f"{path}: no atom sites found in the CIF")
+
+        if origin is None:
+            origin = _cif_origin_choice(parser)
+
+        sites: list[AtomSite] = []
+        for atom in parser.asymmetric_unit:
+            b_nm2 = debye_waller
+            u_iso = float(getattr(atom, "Uisoequiv", 0.0) or 0.0)
+            if u_iso > 0.0:
+                b_nm2 = 8.0 * np.pi**2 * u_iso / 100.0  # 8 pi^2 U [A^2] -> B [nm^2]
+            sites.append(
+                AtomSite(
+                    element=_element_symbol(atom.element),
+                    position=tuple(float(x) for x in atom.xyz),
+                    occupancy=float(atom.occupancy),
+                    debye_waller=b_nm2,
+                )
+            )
+
+        return cls(
+            a=lattice.a / 10.0,
+            b=lattice.b / 10.0,
+            c=lattice.c / 10.0,
+            alpha=lattice.alpha,
+            beta=lattice.beta,
+            gamma=lattice.gamma,
+            space_group=parser.spacegroup.number,
+            sites=sites,
+            origin=origin,
+        )
+
+    @property
+    def has_two_origins(self) -> bool:
+        """Whether this space group is one the Tables list with two origin choices.
+
+        When ``True``, :attr:`origin` changes the atom positions and therefore the
+        master pattern, so a CIF that does not record its choice is ambiguous.
+        """
+        return self.space_group in _TWO_ORIGIN_GROUPS
 
     @property
     def direct_metric(self) -> np.ndarray:
@@ -348,3 +433,46 @@ def _expand_orbit(
         new = np.mod(new, 1.0)  # fold 0.999999... rounded to 1.0 back to 0
         seen.setdefault(tuple(new), new)
     return np.array(list(seen.values()))
+
+
+# The space groups the International Tables list with two origin choices. For these
+# `Crystal.origin` moves the atoms, so a CIF that does not record its choice is
+# ambiguous -- see `Crystal.from_cif`.
+_TWO_ORIGIN_GROUPS = frozenset(
+    {
+        48, 50, 59, 68, 70, 85, 86, 88, 125, 126, 129, 130,
+        133, 134, 137, 138, 141, 142, 201, 203, 222, 224, 227, 228,
+    }
+)
+
+
+def _cif_origin_choice(parser, default: int = 2) -> int:
+    """Origin choice recorded in a CIF, or ``default`` when it says nothing."""
+    try:
+        block = parser.ciffile[next(iter(parser.ciffile.keys()))]
+    except Exception:  # noqa: BLE001 - an unreadable block just means "unspecified"
+        return default
+    for key in (
+        "_space_group_it_coordinate_system_code",
+        "_symmetry_space_group_setting",
+    ):
+        value = str(block.get(key, "")).strip()
+        if value in ("1", "2"):
+            return int(value)
+    return default
+
+
+def _element_symbol(raw: str) -> str:
+    """Element symbol from a CIF ``type_symbol``/label (``"Si4+"``, ``"Si1"`` -> ``"Si"``)."""
+    letters = re.match(r"[A-Za-z]+", str(raw).strip())
+    if letters is None:
+        raise ValueError(f"cannot read an element symbol from {raw!r}")
+    text = letters.group(0)
+    for n in (len(text), 2, 1):
+        candidate = text[:n].capitalize()
+        try:
+            atomic_number(candidate)
+        except ValueError:
+            continue
+        return candidate
+    raise ValueError(f"{raw!r} is not a known element symbol")
