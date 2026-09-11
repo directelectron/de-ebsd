@@ -74,6 +74,33 @@ from torchebsd.diffraction.kvectors import sample_incident_directions
 sample_incident_directions(sim.npx).show()
 ```
 
+## Simulation examples
+
+The [examples folder](examples/) contains executable Sphinx-Gallery tutorials:
+
+- [CIF to detector](examples/plot_01_cif_to_detector.py): silicon structure,
+  native Monte Carlo, diffraction intermediates, full 3D master pattern,
+  orix orientations, detector images, phase overview, and HDF5 round trip.
+- [Energy-resolved simulation](examples/plot_02_energy_resolved_simulation.py):
+  nickel transport statistics and dynamical patterns at multiple energies.
+- [Resolution and backends](examples/plot_03_resolution_and_backends.py):
+  grid refinement, detector-space differences, and PRISM/Bloch comparison.
+- [Compare with EMsoft](examples/plot_04_compare_emsoft.py): use the bundled
+  nickel reference's crystal, Bethe settings and Monte Carlo profile, then
+  compare both hemispheres, normalized residuals, and detector patterns.
+
+Run scripts with `uv run python examples/plot_01_cif_to_detector.py`. Build the
+interactive gallery and downloadable notebooks with:
+
+```shell
+uv sync --group docs --group notebook
+uv run python -m sphinx -b html -W --keep-going docs docs/_build/html
+```
+
+Open `docs/_build/html/index.html`. The scripts use small CPU-friendly teaching
+settings; see [examples/README.rst](examples/README.rst) for execution, display,
+and convergence notes. The existing CIF notebook is preserved.
+
 ## Status
 
 | Component | State |

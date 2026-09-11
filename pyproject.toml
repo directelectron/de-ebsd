@@ -34,6 +34,10 @@ validate = ["kikuchipy"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "kikuchipy"]
+# `uv sync --group notebook` to run examples/*.ipynb. ipywidgets (which the
+# anywidget-based .show() widgets need) already arrives with anywidget.
+notebook = ["jupyterlab", "ipykernel", "nbclient"]
+docs = ["sphinx>=7", "sphinx-gallery>=0.19", "pillow", "kikuchipy"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -57,6 +61,8 @@ select = ["E", "F", "I", "W", "UP", "B"]
 # Embedded JavaScript is formatted for browser readability, not Python width.
 "src/torchebsd/viz/widgets.py" = ["E501"]
 "scripts/**" = ["E402"]
+# Final expressions are the gallery/notebook display protocol.
+"examples/plot_*.py" = ["B018"]
 
 # --- uv ---------------------------------------------------------------------
 # torch is pulled from the CUDA 12.4 index so the Pascal (sm_61) dev GPU works.
