@@ -1,17 +1,17 @@
-# torchebsd
+# de-ebsd
 
 Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in
 PyTorch, with a composable object-oriented API inspired by
 [abTEM](https://github.com/abTEM/abTEM).
 
 A master pattern is the backscattered-electron intensity as a function of
-crystal direction, stored on the square-Lambert grid. torchebsd builds it from
+crystal direction, stored on the square-Lambert grid. de-ebsd builds it from
 first principles -- crystal, structure factors with absorption, reflections,
 Bloch-wave dynamical matrix, depth-integrated dynamical solve -- with every
 intermediate stage inspectable and the whole chain refinable. The physics is
 ported from [EMsoft](https://github.com/EMsoft-org/EMsoftOO) (Callahan &
 De Graef 2013), which remains the validation oracle (for validation only --
-torchebsd does not call EMsoft at runtime). See [DESIGN.md](DESIGN.md) for the
+de-ebsd does not call EMsoft at runtime). See [DESIGN.md](DESIGN.md) for the
 architecture and the roadmap. The Bloch-wave solve is implemented: an exact
 float64 reference (`bloch`) and a batched GPU scattering-matrix backend
 (`bloch_prism`) that reproduces it. The next milestone is a native electron
@@ -24,22 +24,30 @@ Windows / Linux with uv (Python >= 3.11; torch comes from the CUDA 12.4
 index, configured in `pyproject.toml`):
 
 ```
-git clone <this repository>
-cd torchebsd
+git clone <this repository> de-ebsd
+cd de-ebsd
 uv sync
 ```
+
+The distribution is named `de-ebsd`; the Python package is `de_ebsd`.
+When upgrading from `torchebsd`, update imports to `de_ebsd` and run `uv sync`
+again. The validation scripts now use `DE_EBSD_SI_MC` and `DE_EBSD_NI_MC`
+instead of the `TORCHEBSD_*` environment variables. Restart existing Jupyter
+kernels after upgrading. Saved master-pattern HDF5 files are unchanged;
+Python pickles referring to the old module path need migration in the old
+environment. No legacy import alias is installed.
 
 ## Quickstart
 
 ```python
-import torchebsd as te
+import de_ebsd as de
 
-crystal    = te.Crystal.from_parameters(
+crystal    = de.Crystal.from_parameters(
     a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
 )
-microscope = te.Microscope(energy=20e3, sample_tilt=70.0)
-sim        = te.MasterPatternSimulator(
-    crystal, microscope, npx=500, dmin=0.05, bethe=te.BetheParameters(),
+microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
+sim        = de.MasterPatternSimulator(
+    crystal, microscope, npx=500, dmin=0.05, bethe=de.BetheParameters(),
     backend="bloch_prism",   # batched GPU dynamical solve; "bloch" = exact
     #                          float64 reference, "kinematical" = geometry only
 )
@@ -57,7 +65,7 @@ sim.crystal.show()                     # real 3-D expanded crystal structure
 better = sim.refine(npx=1000, dmin=0.04)
 
 # project to a detector for a batch of orientations (orix Rotation):
-detector = te.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
+detector = de.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
 patterns = master.project(detector, orientation=rotations)
 
 # interactive geometry widget in Jupyter (anywidget):
@@ -70,27 +78,41 @@ phase.figures["phase_overview"]   # SpyDE mounts one native figure/bridge
 sim.microscope.show(detector=detector, crystal=sim.crystal)
 
 # inspect the incident-direction sampling:
-from torchebsd.diffraction.kvectors import sample_incident_directions
+from de_ebsd.diffraction.kvectors import sample_incident_directions
 sample_incident_directions(sim.npx).show()
 ```
 
-## Simulation examples
+## Examples
 
-The [examples folder](examples/) contains executable Sphinx-Gallery tutorials:
+The [examples folder](examples/) contains executable Sphinx-Gallery tutorials,
+grouped by the layer they exercise.
 
-- [CIF to detector](examples/plot_01_cif_to_detector.py): silicon structure,
+**[Master-pattern simulation](examples/simulation/)** -- the forward chain:
+
+- [CIF to detector](examples/simulation/cif_to_detector.py): silicon structure,
   native Monte Carlo, diffraction intermediates, full 3D master pattern,
   orix orientations, detector images, phase overview, and HDF5 round trip.
-- [Energy-resolved simulation](examples/plot_02_energy_resolved_simulation.py):
+- [Energy-resolved simulation](examples/simulation/energy_resolved_simulation.py):
   nickel transport statistics and dynamical patterns at multiple energies.
-- [Resolution and backends](examples/plot_03_resolution_and_backends.py):
-  grid refinement, detector-space differences, and PRISM/Bloch comparison.
-- [Compare with EMsoft](examples/plot_04_compare_emsoft.py): use the bundled
+- [Resolution and backends](examples/simulation/resolution_and_backends.py):
+  grid refinement, detector-space differences, and PRISM/Bloch comparison,
+  plus the microscope, probe, detector and depth-slice inspectors.
+- [Compare with EMsoft](examples/simulation/compare_emsoft.py): use the bundled
   nickel reference's crystal, Bethe settings and Monte Carlo profile, then
   compare both hemispheres, normalized residuals, and detector patterns.
 
-Run scripts with `uv run python examples/plot_01_cif_to_detector.py`. Build the
-interactive gallery and downloadable notebooks with:
+**[Orientation indexing](examples/indexing/)** -- the inverse problem, each on a
+synthetic two-grain scan with known orientations:
+
+- [Dictionary indexing](examples/indexing/dictionary_indexing.py): background
+  removal, a fundamental-zone template library, a `CrystalMap` with IPF and
+  quality maps, and Levenberg-Marquardt refinement to sub-degree accuracy.
+- [Spherical indexing](examples/indexing/spherical_indexing.py): the SO(3)
+  cross-correlation surface, the bandwidth accuracy/cost trade-off and how it
+  fails when truncated too far, then refinement off the peak.
+
+Run scripts with `uv run python examples/simulation/cif_to_detector.py`. Build
+the interactive gallery and downloadable notebooks with:
 
 ```shell
 uv sync --group docs --group notebook
@@ -135,7 +157,7 @@ uv run python scripts/validate_master_pattern.py --material si --backend bloch_p
 
 Ni uses kikuchipy's bundled master pattern and runs with no external files. Si
 needs a local EMsoft `Si_MC.h5` reference run (not redistributed here) -- point
-`--mc` or `TORCHEBSD_SI_MC` at your copy.
+`--mc` or `DE_EBSD_SI_MC` at your copy.
 
 Dynamical backend results: **Si r = 1.0000** at native npx-500 against
 `Si_MC.h5`, and **Ni r = 1.00000** against a fresh matched-settings EMsoft master

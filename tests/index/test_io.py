@@ -1,15 +1,15 @@
 """Scan indexing -> orix ``CrystalMap`` (I5b): the ecosystem-handoff output.
 
-Validates the two orix bridges (:func:`torchebsd.index.io.phase_from_crystal`,
-:func:`torchebsd.index.io.to_crystal_map`) and the scan wrapper
-:meth:`torchebsd.index.spherical.indexer.SphericalIndexer.index_scan`.
+Validates the two orix bridges (:func:`de_ebsd.index.io.phase_from_crystal`,
+:func:`de_ebsd.index.io.to_crystal_map`) and the scan wrapper
+:meth:`de_ebsd.index.spherical.indexer.SphericalIndexer.index_scan`.
 
 The synthetic master is the same great-circle **band** master used by
 ``test_indexer.py`` (a stand-in for real Kikuchi bands): it tiles the whole
 sphere, so it has near-uniform local norm and is *not* itself point-group
 symmetric -- the recovered orientation is therefore the exact ``R`` that was
 projected (no symmetry-equivalent ambiguity), and a raw disorientation check is
-correct. The attached :class:`~torchebsd.sim.Crystal` (cubic Si, ``Fd-3m``) is
+correct. The attached :class:`~de_ebsd.sim.Crystal` (cubic Si, ``Fd-3m``) is
 metadata that gives the ``CrystalMap`` its symmetry; it does not make the band
 master symmetric. Small ``L = 16``, CPU, fp64 throughout -- exact-ish and fast.
 """
@@ -22,11 +22,11 @@ import torch
 from orix.crystal_map import CrystalMap, Phase
 from orix.quaternion import Rotation
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.crystal import Crystal
-from torchebsd.index.io import phase_from_crystal, to_crystal_map
-from torchebsd.index.spherical.indexer import SphericalIndexer
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.crystal import Crystal
+from de_ebsd.index.io import phase_from_crystal, to_crystal_map
+from de_ebsd.index.spherical.indexer import SphericalIndexer
 
 BANDWIDTH = 16
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)
@@ -162,7 +162,7 @@ def test_to_crystal_map_layout_and_roundtrip(crystal):
 
 
 def test_to_crystal_map_accepts_crystal_and_torch_quality(crystal):
-    """``to_crystal_map`` accepts a torchebsd Crystal for phase and a torch quality tensor."""
+    """``to_crystal_map`` accepts a de_ebsd Crystal for phase and a torch quality tensor."""
     n = _SCAN_SHAPE[0] * _SCAN_SHAPE[1]
     rot = Rotation.from_euler(np.deg2rad(_SCAN_EULER_DEG))
     quality = torch.arange(n, dtype=torch.float64)
@@ -258,7 +258,7 @@ def test_index_scan_accepts_cpu_numpy_array(master, detector, scan_patterns):
 
 
 def test_index_scan_explicit_phase_paths(master, detector, scan_patterns, crystal):
-    """Explicit ``phase`` accepts both an orix Phase and a torchebsd Crystal."""
+    """Explicit ``phase`` accepts both an orix Phase and a de_ebsd Crystal."""
     indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
     phase = phase_from_crystal(crystal)
 

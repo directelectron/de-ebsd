@@ -13,12 +13,12 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.crystal import Crystal
-from torchebsd.index import to_crystal_map
-from torchebsd.index.spherical.indexer import SphericalIndexer
-from torchebsd.viz import show_correlation, show_map, show_match, show_refinement
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.crystal import Crystal
+from de_ebsd.index import to_crystal_map
+from de_ebsd.index.spherical.indexer import SphericalIndexer
+from de_ebsd.viz import show_correlation, show_map, show_match, show_refinement
 
 BANDWIDTH = 16
 _SCAN_SHAPE = (2, 3)

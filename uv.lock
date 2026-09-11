@@ -626,6 +626,76 @@ array = [
 ]
 
 [[package]]
+name = "de-ebsd"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyplotlib" },
+    { name = "anywidget" },
+    { name = "diffsims" },
+    { name = "h5py" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "orix" },
+    { name = "torch" },
+]
+
+[package.optional-dependencies]
+validate = [
+    { name = "kikuchipy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "kikuchipy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+docs = [
+    { name = "kikuchipy" },
+    { name = "pillow" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "sphinx-gallery" },
+]
+notebook = [
+    { name = "ipykernel" },
+    { name = "jupyterlab" },
+    { name = "nbclient" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anyplotlib" },
+    { name = "anywidget" },
+    { name = "diffsims" },
+    { name = "h5py" },
+    { name = "kikuchipy", marker = "extra == 'validate'" },
+    { name = "numpy" },
+    { name = "orix" },
+    { name = "torch", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu124" },
+]
+provides-extras = ["validate"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "kikuchipy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+docs = [
+    { name = "kikuchipy" },
+    { name = "pillow" },
+    { name = "sphinx", specifier = ">=7" },
+    { name = "sphinx-gallery", specifier = ">=0.19" },
+]
+notebook = [
+    { name = "ipykernel" },
+    { name = "jupyterlab" },
+    { name = "nbclient" },
+]
+
+[[package]]
 name = "debugpy"
 version = "1.8.21"
 source = { registry = "https://pypi.org/simple" }
@@ -3695,76 +3765,6 @@ wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-linux_x86_64.whl", hash = "sha256:0f3bc53c988ce9568cd876a2a5316761e84a8704135ec8068f5f81b4417979cb", upload-time = "2025-01-30T00:59:14Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-win_amd64.whl", hash = "sha256:519330eef09534acad8110b6f423d2fe58c1d8e9ada999ed077a637a0021f908", upload-time = "2025-01-30T00:59:45Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313t-linux_x86_64.whl", hash = "sha256:35cba404c0d742406cdcba1609085874bc60facdfbc50e910c47a92405fef44c", upload-time = "2025-01-30T01:01:25Z" },
-]
-
-[[package]]
-name = "torchebsd"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anyplotlib" },
-    { name = "anywidget" },
-    { name = "diffsims" },
-    { name = "h5py" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "orix" },
-    { name = "torch" },
-]
-
-[package.optional-dependencies]
-validate = [
-    { name = "kikuchipy" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "kikuchipy" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "kikuchipy" },
-    { name = "pillow" },
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "sphinx-gallery" },
-]
-notebook = [
-    { name = "ipykernel" },
-    { name = "jupyterlab" },
-    { name = "nbclient" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anyplotlib" },
-    { name = "anywidget" },
-    { name = "diffsims" },
-    { name = "h5py" },
-    { name = "kikuchipy", marker = "extra == 'validate'" },
-    { name = "numpy" },
-    { name = "orix" },
-    { name = "torch", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cu124" },
-]
-provides-extras = ["validate"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "kikuchipy" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "kikuchipy" },
-    { name = "pillow" },
-    { name = "sphinx", specifier = ">=7" },
-    { name = "sphinx-gallery", specifier = ">=0.19" },
-]
-notebook = [
-    { name = "ipykernel" },
-    { name = "jupyterlab" },
-    { name = "nbclient" },
 ]
 
 [[package]]

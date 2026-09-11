@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import Crystal
-from torchebsd.core.constants import electron_wavelength_nm
-from torchebsd.crystal.structure_factors import compute_structure_factors, differentiable_ucg_lut
+from de_ebsd import Crystal
+from de_ebsd.core.constants import electron_wavelength_nm
+from de_ebsd.crystal.structure_factors import compute_structure_factors, differentiable_ucg_lut
 
 
 def _si():

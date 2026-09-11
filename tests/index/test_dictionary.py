@@ -1,8 +1,8 @@
 """Fundamental-zone dictionary indexing: the symmetry-native, fp16 round trip.
 
-Validates :class:`torchebsd.index.dictionary.DictionaryIndexer`. The money test is the
-same closed round trip the SOFT indexer uses -- project a ``torchebsd.sim`` master at a
-*known* orientation ``R`` with :meth:`~torchebsd.sim.MasterPattern.project`, then index
+Validates :class:`de_ebsd.index.dictionary.DictionaryIndexer`. The money test is the
+same closed round trip the SOFT indexer uses -- project a ``de_ebsd.sim`` master at a
+*known* orientation ``R`` with :meth:`~de_ebsd.sim.MasterPattern.project`, then index
 it back -- but here the master must carry the **crystal point-group symmetry**, because
 that is exactly what makes sampling only the fundamental zone valid: two orientations
 related by a symmetry operator project to the same pattern, so one fundamental-zone
@@ -25,11 +25,11 @@ from orix.quaternion import Orientation, Rotation
 from orix.quaternion.symmetry import C1
 from orix.sampling import get_sample_fundamental
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.crystal import Crystal
-from torchebsd.index import DictionaryIndexer
-from torchebsd.index.io import phase_from_crystal
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.crystal import Crystal
+from de_ebsd.index import DictionaryIndexer
+from de_ebsd.index.io import phase_from_crystal
 
 # A coarse fundamental-zone resolution keeps the dictionary small (~800 orientations for
 # m-3m) so the whole suite is fast; the recovered orientation must land within ~1.5x the

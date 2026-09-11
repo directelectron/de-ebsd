@@ -1,7 +1,7 @@
 """Detector -> sphere back-projection (I3): round-trip, FOV mask, autograd, batching.
 
-Validates :mod:`torchebsd.index.backproject`. The money test is the round trip: a
-``torchebsd.sim`` master pattern is projected onto an :class:`EBSDDetector` and then
+Validates :mod:`de_ebsd.index.backproject`. The money test is the round trip: a
+``de_ebsd.sim`` master pattern is projected onto an :class:`EBSDDetector` and then
 back-projected onto sphere directions; over the detector's field of view it must
 recover the master evaluated on those same directions to bilinear-interpolation
 accuracy. The rotated case recovers the *rotated* master, pinning the frame/orientation
@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.core.rotation import quaternion_to_matrix
-from torchebsd.index.backproject import directions_to_pixels, pattern_to_sphere
-from torchebsd.index.spherical.harmonics import SphericalHarmonicTransform
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.index.backproject import directions_to_pixels, pattern_to_sphere
+from de_ebsd.index.spherical.harmonics import SphericalHarmonicTransform
 
 IDENTITY_Q = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float64)
 # a generic, non-axis-aligned unit quaternion (so the rotation genuinely mixes axes)
@@ -114,7 +114,7 @@ def test_fov_mask_matches_gnomonic_bounds(master, detector, directions):
     )
 
     # recompute the gnomonic coordinates independently from the public bounds
-    from torchebsd.core.geometry import sample_to_detector_tensor
+    from de_ebsd.core.geometry import sample_to_detector_tensor
 
     om = sample_to_detector_tensor(detector, directions.device, directions.dtype)
     comp = directions @ om.transpose(-2, -1)

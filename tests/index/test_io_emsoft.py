@@ -1,7 +1,7 @@
-"""EMsoft master-pattern import (I8): ``torchebsd.index.io.master_from_emsoft``.
+"""EMsoft master-pattern import (I8): ``de_ebsd.index.io.master_from_emsoft``.
 
 Covers the real-data loop close: an EMsoft EBSD master-pattern HDF5 on disk loads
-into a torchebsd :class:`~torchebsd.sim.MasterPattern` (with the crystal rebuilt
+into a de_ebsd :class:`~de_ebsd.sim.MasterPattern` (with the crystal rebuilt
 into ``metadata["crystal"]``) and flows straight into
 :meth:`SphericalIndexer.index_scan` with the phase auto-derived.
 
@@ -24,12 +24,12 @@ import torch
 from orix.crystal_map import CrystalMap
 from orix.quaternion import Rotation
 
-from torchebsd import EBSDDetector
-from torchebsd.crystal import Crystal
-from torchebsd.index import master_from_emsoft
+from de_ebsd import EBSDDetector
+from de_ebsd.crystal import Crystal
+from de_ebsd.index import master_from_emsoft
 
 # real-file test target (maintainer's local copy; absent on most machines)
-_REAL_SI_MC = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+_REAL_SI_MC = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
 
 N_SITES = 2
 N_ENERGY = 2
@@ -192,7 +192,7 @@ def test_master_survives_missing_crystaldata(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_loaded_master_feeds_index_scan(synthetic_file):
     """The EMsoft master flows into index_scan; the phase auto-derives from metadata."""
-    from torchebsd.index.spherical.indexer import SphericalIndexer
+    from de_ebsd.index.spherical.indexer import SphericalIndexer
 
     path, _, _ = synthetic_file
     m = master_from_emsoft(path, device="cpu")
@@ -225,7 +225,7 @@ def test_loaded_master_feeds_index_scan(synthetic_file):
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(
     not os.path.exists(_REAL_SI_MC),
-    reason=f"real EMsoft Si_MC.h5 not found at {_REAL_SI_MC} (set TORCHEBSD_SI_MC)",
+    reason=f"real EMsoft Si_MC.h5 not found at {_REAL_SI_MC} (set DE_EBSD_SI_MC)",
 )
 def test_real_si_mc_file():
     """The real EMsoft Si_MC.h5 loads with sane shape, energies, and a Si crystal."""

@@ -1,7 +1,7 @@
 # M-MC — Native electron Monte Carlo (scope & design)
 
 **Status:** scoping. **Goal:** produce the exit depth/energy statistics that the
-Bloch depth integration needs *natively*, removing torchebsd's last runtime
+Bloch depth integration needs *natively*, removing de-ebsd's last runtime
 dependency on EMsoft-generated files. EMsoft `accum_z` stays the validation
 oracle for the MC itself.
 
@@ -11,7 +11,7 @@ oracle for the MC itself.
 
 The master-pattern pipeline consumes exactly one object,
 `montecarlo.DepthDistribution`, through three members
-(`src/torchebsd/sim/montecarlo/depth.py`):
+(`src/de_ebsd/sim/montecarlo/depth.py`):
 
 - fields: `energies_kev (nE,)`, `depth_step` (nm), `accum_z (nE, nz, ny, nx)`,
   `n_total`;
@@ -123,7 +123,7 @@ gradients have variance — so temperature annealing and electron count are tune
 against the gradient-validation study (§5), and the *forward* master pattern
 always uses hard mode.
 
-New module: `src/torchebsd/sim/montecarlo/transport.py` (keeps the EMsoft *reader* in
+New module: `src/de_ebsd/sim/montecarlo/transport.py` (keeps the EMsoft *reader* in
 `montecarlo.py` clean), exporting the simulator and the `from_simulation`
 constructor. Tests in `tests/test_montecarlo_sim.py`.
 

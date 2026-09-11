@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from torchebsd.core.lambert import (
+from de_ebsd.core.lambert import (
     SQRT_PI_HALF,
     master_pattern_grid,
     sphere_to_square,

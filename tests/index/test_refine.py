@@ -1,7 +1,7 @@
 """Gradient-based refinement (I6): the differentiable payoff, end to end.
 
-Validates :func:`torchebsd.index.refine.orientation.refine_orientation` and
-:meth:`torchebsd.index.spherical.indexer.SphericalIndexer.refine`. The coarse spherical index is
+Validates :func:`de_ebsd.index.refine.orientation.refine_orientation` and
+:meth:`de_ebsd.index.spherical.indexer.SphericalIndexer.refine`. The coarse spherical index is
 only accurate to its SOFT grid cell (``360 / (2L + 2)`` degrees); refinement sharpens a
 seed to sub-grid-cell accuracy by gradient ascent on a spherical masked NCC through the
 differentiable forward model, and recovers a perturbed pattern center.
@@ -34,18 +34,18 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.core.rotation import quaternion_to_matrix
-from torchebsd.index import refine_orientation
-from torchebsd.index.backproject import pattern_to_sphere
-from torchebsd.index.refine.orientation import (
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.index import refine_orientation
+from de_ebsd.index.backproject import pattern_to_sphere
+from de_ebsd.index.refine.orientation import (
     _fov_directions,
     _lm_residual_jacobian,
     _skew,
     _standardize,
 )
-from torchebsd.index.spherical.indexer import SphericalIndexer
+from de_ebsd.index.spherical.indexer import SphericalIndexer
 
 BANDWIDTH = 20
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)  # ~8.57 deg SOFT cell at L = 20

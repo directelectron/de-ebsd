@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import EBSDDetector
+from de_ebsd import EBSDDetector
 
 
 def test_direction_cosines_shape_and_norm():

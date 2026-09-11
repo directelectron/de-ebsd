@@ -2,8 +2,8 @@
 
 import pytest
 
-from torchebsd import Crystal, Microscope
-from torchebsd.crystal.structure_factors import compute_structure_factors
+from de_ebsd import Crystal, Microscope
+from de_ebsd.crystal.structure_factors import compute_structure_factors
 
 SI_MC_PATH = r"D:\emsoft\EMdata\Si_MC.h5"
 

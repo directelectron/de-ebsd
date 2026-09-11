@@ -1,4 +1,4 @@
-"""Shared pattern-center calibration (:func:`torchebsd.index.determine_pattern_center`).
+"""Shared pattern-center calibration (:func:`de_ebsd.index.determine_pattern_center`).
 
 ``determine_pattern_center`` fits ONE pattern center (PC) shared across many patterns --
 the well-posed way to determine a PC. A single pattern is R--PC degenerate (a small PC
@@ -38,9 +38,9 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
-from torchebsd import EBSDDetector, MasterPattern
-from torchebsd.core.lambert import master_pattern_grid
-from torchebsd.index import determine_pattern_center, refine_hr
+from de_ebsd import EBSDDetector, MasterPattern
+from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.index import determine_pattern_center, refine_hr
 
 # fixed band-edge sample budget for the whole file (crisp, fast, plenty for 3 PC params)
 _NT, _SPT = 12, 8

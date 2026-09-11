@@ -12,11 +12,11 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import Crystal
-from torchebsd.core.constants import C_AVOGADRO
-from torchebsd.crystal.scattering import atomic_weight
-from torchebsd.sim.montecarlo.depth import DepthDistribution
-from torchebsd.sim.montecarlo.transport import (
+from de_ebsd import Crystal
+from de_ebsd.core.constants import C_AVOGADRO
+from de_ebsd.crystal.scattering import atomic_weight
+from de_ebsd.sim.montecarlo.depth import DepthDistribution
+from de_ebsd.sim.montecarlo.transport import (
     MaterialProperties,
     elastic_cross_section_na,
     mean_free_path_nm,
@@ -278,8 +278,8 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     """The native MC depth profile is a drop-in for the Bloch depth integration."""
     import torch
 
-    from torchebsd import BetheParameters
-    from torchebsd.diffraction.backends import BlochWaveBackend, SimulationInputs
+    from de_ebsd import BetheParameters
+    from de_ebsd.diffraction.backends import BlochWaveBackend, SimulationInputs
 
     dd = simulate_depth_distribution(
         si_crystal, si_sf.energy_kev, e_min_kev=si_sf.energy_kev - 5.0,
@@ -361,7 +361,7 @@ def test_soft_histogram_gradient_matches_finite_difference():
 # M-MC.7: native MC is the simulator's default depth source
 # --------------------------------------------------------------------------- #
 def test_backend_depth_profile_flags():
-    from torchebsd.diffraction.backends import resolve_backend
+    from de_ebsd.diffraction.backends import resolve_backend
 
     assert resolve_backend("bloch").uses_depth_profile is True
     assert resolve_backend("bloch_prism").uses_depth_profile is True
@@ -372,7 +372,7 @@ def test_simulator_defaults_to_native_mc(si_crystal, microscope):
     """A plain bloch compute() with no Monte Carlo runs the native MC itself."""
     import torch
 
-    from torchebsd import MasterPatternSimulator
+    from de_ebsd import MasterPatternSimulator
 
     sim = MasterPatternSimulator(si_crystal, microscope, npx=6, dmin=0.1, backend="bloch")
     assert sim.monte_carlo is None  # nothing supplied; standalone by default
@@ -385,7 +385,7 @@ def test_simulator_defaults_to_native_mc(si_crystal, microscope):
 # --------------------------------------------------------------------------- #
 # M-MC.4: validation against EMsoft accum_z (needs the reference file)
 # --------------------------------------------------------------------------- #
-_SI_MC = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+_SI_MC = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
 
 
 @pytest.mark.skipif(not os.path.exists(_SI_MC), reason="EMsoft Si_MC.h5 reference not available")
@@ -399,7 +399,7 @@ def test_native_mc_matches_emsoft_accum_z():
     Bloch backend uses), and the mean correlation. The two bins at the Ehistmin
     cutoff are boundary-truncated and noisier at this electron count.
     """
-    from torchebsd.sim.montecarlo.depth import DepthDistribution
+    from de_ebsd.sim.montecarlo.depth import DepthDistribution
 
     ref = DepthDistribution.from_emsoft(_SI_MC)
     crystal = Crystal.from_parameters(

@@ -1,12 +1,12 @@
 """Validate the native Monte Carlo depth statistics against EMsoft ``accum_z``.
 
-EMsoft is the oracle (validation only). This compares torchebsd's native
-:func:`~torchebsd.sim.montecarlo.transport.simulate_depth_distribution` against a reference
+EMsoft is the oracle (validation only). This compares de_ebsd's native
+:func:`~de_ebsd.sim.montecarlo.transport.simulate_depth_distribution` against a reference
 EMsoft ``*_MC.h5`` run: per-energy-bin Pearson correlation of the exit-depth
 profiles and the total backscatter yield. The native MC is run with the
 reference run's own parameters (tilt, energy/depth binning), read from its
 namelist. The reference file is not redistributed; point ``--mc`` (or
-``TORCHEBSD_{SI,NI}_MC``) at your copy.
+``DE_EBSD_{SI,NI}_MC``) at your copy.
 
 Usage::
 
@@ -22,12 +22,12 @@ import os
 import h5py
 import numpy as np
 
-import torchebsd as te
-from torchebsd.sim.montecarlo.depth import DepthDistribution
-from torchebsd.sim.montecarlo.transport import simulate_depth_distribution
+import de_ebsd as de
+from de_ebsd.sim.montecarlo.depth import DepthDistribution
+from de_ebsd.sim.montecarlo.transport import simulate_depth_distribution
 
-SI_MC_PATH = os.environ.get("TORCHEBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
-NI_MC_PATH = os.environ.get("TORCHEBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")
+SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")
 
 CRYSTALS = {
     "si": dict(a=0.5431, space_group=227,
@@ -68,12 +68,12 @@ def main() -> None:
     if not os.path.exists(mc_path):
         raise SystemExit(
             f"reference not found: {mc_path}\n"
-            "Point --mc or TORCHEBSD_{SI,NI}_MC at your EMsoft *_MC.h5 file."
+            "Point --mc or DE_EBSD_{SI,NI}_MC at your EMsoft *_MC.h5 file."
         )
 
     ref = DepthDistribution.from_emsoft(mc_path)
     p = read_mc_params(mc_path)
-    crystal = te.Crystal.from_parameters(**CRYSTALS[args.material])
+    crystal = de.Crystal.from_parameters(**CRYSTALS[args.material])
     print(f"reference: {ref}")
     print(f"MC params: tilt={p['sig']:g} deg, E {p['ehistmin']:g}..{p['ekev']:g} keV "
           f"/ {p['ebinsize']:g}, depth {p['depthstep']:g}..{p['depthmax']:g} nm")

@@ -9,12 +9,12 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd.index import (
+from de_ebsd.index import (
     remove_background,
     remove_dynamic_background,
     remove_static_background,
 )
-from torchebsd.index.preprocess import _gaussian_blur
+from de_ebsd.index.preprocess import _gaussian_blur
 
 
 def _rng(shape, seed=0):

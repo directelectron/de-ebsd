@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from torchebsd import Crystal
+from de_ebsd import Crystal
 
 
 def test_si_d_spacings(si_crystal):

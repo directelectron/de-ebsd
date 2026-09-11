@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from torchebsd.crystal.scattering import wk_scattering_factor
-from torchebsd.crystal.scattering_torch import wk_scattering_factor_torch
+from de_ebsd.crystal.scattering import wk_scattering_factor
+from de_ebsd.crystal.scattering_torch import wk_scattering_factor_torch
 
 
 def test_torch_amplitude_matches_numpy():

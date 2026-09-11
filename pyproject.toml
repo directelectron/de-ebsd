@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "torchebsd"
+name = "de-ebsd"
 version = "0.1.0"
 description = "Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in PyTorch"
 readme = "README.md"
@@ -42,6 +42,9 @@ docs = ["sphinx>=7", "sphinx-gallery>=0.19", "pillow", "kikuchipy"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"de_ebsd.viz" = ["*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -57,12 +60,12 @@ select = ["E", "F", "I", "W", "UP", "B"]
 # tests import after pytest.importorskip(...) on purpose
 "tests/**" = ["E402"]
 # auto-generated numeric table: long lines / formatting are fine
-"src/torchebsd/crystal/data/scattering_tables.py" = ["E501"]
+"src/de_ebsd/crystal/data/scattering_tables.py" = ["E501"]
 # Embedded JavaScript is formatted for browser readability, not Python width.
-"src/torchebsd/viz/widgets.py" = ["E501"]
+"src/de_ebsd/viz/widgets.py" = ["E501"]
 "scripts/**" = ["E402"]
 # Final expressions are the gallery/notebook display protocol.
-"examples/plot_*.py" = ["B018"]
+"examples/**/*.py" = ["B018"]
 
 # --- uv ---------------------------------------------------------------------
 # torch is pulled from the CUDA 12.4 index so the Pascal (sm_61) dev GPU works.

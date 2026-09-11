@@ -1,4 +1,4 @@
-# Spherical Indexing (`torchebsd.index`) — plan & project structure
+# Spherical Indexing (`de_ebsd.index`) — plan & project structure
 
 **Status:** implemented — the I1–I8 pipeline is complete (SHT, SO(3)
 cross-correlation, back-projection, single-pattern + scan indexing, gradient
@@ -6,7 +6,7 @@ refinement, visualization, and orix-native I/O). Multi-candidate SO(3) peak
 detection remains future work; single-orientation indexing uses the argmax in
 `index` plus gradient refinement. **Goal:** a fast,
 GPU-accelerated, *differentiable* spherical
-indexing engine for EBSD — the matching counterpart to `torchebsd.sim`'s
+indexing engine for EBSD — the matching counterpart to `de_ebsd.sim`'s
 differentiable master-pattern *generation* — modelled on **EMSphInx** (Lenthe,
 Singh & De Graef, *Ultramicroscopy* 2019), implemented in PyTorch, that emits
 **orix** orientations / `CrystalMap`s and plugs into **kikuchipy**. Rich
@@ -49,7 +49,7 @@ The primitives are therefore: a **spherical harmonic transform (SHT)**, the
   1. gradient-based **orientation refinement** on the correlation surface;
   2. joint **pattern-center / projection-geometry** refinement — the classic hard
      EBSD calibration — by autograd through the back-projection;
-  3. because `torchebsd.sim` master patterns are already differentiable in the
+  3. because `de_ebsd.sim` master patterns are already differentiable in the
      **crystal parameters** (positions, occupancy, Debye–Waller — see
      `DESIGN.md` M4), forward-model *fitting* of the structure to a real scan
      becomes possible. This is the research frontier the differentiable simulator
@@ -57,33 +57,33 @@ The primitives are therefore: a **spherical harmonic transform (SHT)**, the
 
 ## 3. Dependency direction & the groundwork we build on
 
-**torchebsd is a foundational engine.** In the crystallography ecosystem it
+**de-ebsd is a foundational engine.** In the crystallography ecosystem it
 depends only on **orix** -- the shared base that kikuchipy also builds on. It does
 **not** depend on kikuchipy. The intended direction is the reverse: **kikuchipy
-(and other tools) depend on torchebsd** and call it as a GPU-accelerated,
+(and other tools) depend on de-ebsd** and call it as a GPU-accelerated,
 differentiable simulation + indexing backend, consuming its orix-native output.
-So `torchebsd.index` reuses only orix and `torchebsd.sim`'s own detector geometry;
+So `de_ebsd.index` reuses only orix and `de_ebsd.sim`'s own detector geometry;
 it never imports kikuchipy.
 
 | Piece                                                                                               | From                             | Used for                                                           |
 |-----------------------------------------------------------------------------------------------------|----------------------------------|--------------------------------------------------------------------|
 | Orientations, symmetry, SO(3)/FZ sampling, misorientation, `CrystalMap`, IPF colouring              | **orix** (dependency)            | trial grid, refinement search, output `Rotation`/`CrystalMap`, viz |
-| `EBSDDetector` geometry (kikuchipy-parity PC conventions), master projection, square-Lambert sphere | **`torchebsd.sim`** (in-package) | back-projection geometry, the continuous "dictionary" `M(n)`       |
-| Differentiable master, differentiable in crystal params (DESIGN.md M4)                              | **`torchebsd.sim`**              | forward model for refinement / fitting                             |
+| `EBSDDetector` geometry (kikuchipy-parity PC conventions), master projection, square-Lambert sphere | **`de_ebsd.sim`** (in-package) | back-projection geometry, the continuous "dictionary" `M(n)`       |
+| Differentiable master, differentiable in crystal params (DESIGN.md M4)                              | **`de_ebsd.sim`**              | forward model for refinement / fitting                             |
 
 The novel part we build is the **SH + SO(3) matching engine** on top of orix +
-`torchebsd.sim`. Everything geometric (detector, projection, Lambert sphere) is
-already in `torchebsd.sim` -- torchebsd is self-contained, no kikuchipy needed.
+`de_ebsd.sim`. Everything geometric (detector, projection, Lambert sphere) is
+already in `de_ebsd.sim` -- de-ebsd is self-contained, no kikuchipy needed.
 kikuchipy appears only as an **optional validation baseline** (its dictionary
 indexing, behind a test/benchmark extra), never at runtime. Emitting orix-native
-objects is exactly what lets kikuchipy depend on torchebsd and call it.
+objects is exactly what lets kikuchipy depend on de-ebsd and call it.
 
 ## 4. The pipeline
 
 ```
 pattern arrays (H x W scan) ─┐
-torchebsd EBSDDetector ──────┤   (kikuchipy hands us arrays + geometry; we don't import it)
-torchebsd master M(n) ───────┘
+de-ebsd EBSDDetector ──────┤   (kikuchipy hands us arrays + geometry; we don't import it)
+de-ebsd master M(n) ───────┘
         │
   1. preprocess (background / mask / normalize -- basic in-package, or done upstream)
   2. back-project each pattern to the sphere  E(n)           [index.backproject]
@@ -98,7 +98,7 @@ torchebsd master M(n) ───────┘
 ## 5. Project structure
 
 ```
-src/torchebsd/
+src/de_ebsd/
   core/ crystal/ diffraction/ sim/   # the simulation stack (see DESIGN.md)
   index/                             # the spherical-indexing package
     __init__.py
@@ -124,7 +124,7 @@ scripts/
 INDEXING_DESIGN.md     # this document
 ```
 
-`torchebsd.index` sits beside `torchebsd.sim`: **sim generates, index matches**,
+`de_ebsd.index` sits beside `de_ebsd.sim`: **sim generates, index matches**,
 and both are differentiable and GPU-native.
 
 ## 6. Milestones
@@ -138,7 +138,7 @@ and both are differentiable and GPU-native.
 | I5 | **Scan indexing** — batched map → `CrystalMap` | full Ni/Si map; **benchmark vs kikuchipy DI** (and EMSphInx if available) |
 | I6 | **Refinement** — sub-pixel SO(3) + gradient orientation/PC | orientation error below the DI grid; PC refinement demonstrated |
 | I7 | **Visualization** — SO(3) surface, IPF + quality maps, pattern overlay | interactive figures like `sim.show_setup` |
-| I8 | **Integration** — orix-native output (`Rotation`/`CrystalMap`), array-based ingest (no kikuchipy import); documented so kikuchipy can *depend on* torchebsd | orix round-trip; a kikuchipy dataset indexes through torchebsd |
+| I8 | **Integration** — orix-native output (`Rotation`/`CrystalMap`), array-based ingest (no kikuchipy import); documented so kikuchipy can *depend on* de-ebsd | orix round-trip; a kikuchipy dataset indexes through de-ebsd |
 
 Sequencing: **I1 → I2 first** (the maths engine, validated against brute force),
 then I3–I4 (geometry + one pattern), then I5 (scale + benchmark), then I6–I8
@@ -172,8 +172,8 @@ numbers.
 ## 9. Dependencies
 
 Runtime: `torch`, `numpy`, **`orix`**, `diffsims`, `h5py`, `anyplotlib`,
-`anywidget`, plus **`torchebsd.sim`** as the forward model. **kikuchipy is NOT a
+`anywidget`, plus **`de_ebsd.sim`** as the forward model. **kikuchipy is NOT a
 runtime dependency** -- it is an optional validation/benchmark baseline only (the
-reverse direction is the goal: kikuchipy depends on torchebsd). No new hard
+reverse direction is the goal: kikuchipy depends on de-ebsd). No new hard
 dependency is anticipated (the SH/SO(3) transforms are implemented in torch for
 GPU execution and autograd).

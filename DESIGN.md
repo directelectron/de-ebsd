@@ -1,4 +1,4 @@
-# torchebsd design
+# de-ebsd design
 
 Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in
 PyTorch. This document records the architecture, the conventions, the
@@ -30,7 +30,7 @@ until the EBSD chain is validated.
 The simulation chain mirrors abTEM's `Atoms -> Potential -> PlaneWave ->
 multislice -> Detector -> Measurement` composition:
 
-| abTEM               | torchebsd                    | Responsibility                                                         |
+| abTEM               | de-ebsd                    | Responsibility                                                         |
 |---------------------|------------------------------|------------------------------------------------------------------------|
 | `Atoms`             | `Crystal`                    | lattice, space group, asymmetric unit, metric tensors, orbits          |
 | `Potential`         | `StructureFactors`           | complex U_g with absorption, V_0, wavelength (stage, cached)           |
@@ -53,8 +53,8 @@ Microscope+          |
 Package layout -- layered, each level depending only on those above it:
 
 ```
-torchebsd/
-  core/          frames, constants, coordinate maps    (no torchebsd deps)
+de_ebsd/
+  core/          frames, constants, coordinate maps    (no de-ebsd deps)
   crystal/       unit cells, scattering, structure factors
   diffraction/   reflection lists, Bethe, Bloch-wave backends
   sim/           master-pattern generation + detector geometry
@@ -99,8 +99,8 @@ Design rules:
 - `refine()` returns a new simulator rather than mutating, and carries over
   every cache that is still consistent (raising `npx` or changing Bethe
   thresholds never recomputes U_g; changing `dmin` or the energy does).
-- All plotting lives in `torchebsd.viz`; no plotting code anywhere else.
-- Dependencies run one way down the layers; `core` imports nothing from torchebsd.
+- All plotting lives in `de_ebsd.viz`; no plotting code anywhere else.
+- Dependencies run one way down the layers; `core` imports nothing from de_ebsd.
 
 ## 3. Units and conventions
 
@@ -115,7 +115,7 @@ Design rules:
   Lambert X, both spanning `[-sqrt(pi/2), +sqrt(pi/2)]`; hemisphere index
   0 = north (z >= 0), 1 = south. Interpolation is bilinear
   `grid_sample(align_corners=True)`. These are exactly kikuchipy's and
-  `nn_hrebsd.sim`'s conventions, so a torchebsd master pattern feeds the
+  `nn_hrebsd.sim`'s conventions, so a de-ebsd master pattern feeds the
   validated external projector unchanged.
 - Quaternions are orix order (a, b, c, d), scalar first.
 - Projection centers use the Bruker convention, detector geometry follows
@@ -146,7 +146,7 @@ Per energy bin E and incident direction k (EMsoft
    (`mod_kvectors.f90 Calckvectors/AddkVector`; `k = k_hat / lambda`,
    `k_n = 1 / lambda`). EMsoft samples only the point-group fundamental
    sector and replicates by symmetry (`SamplingType`,
-   `Apply3DPGSymmetry`); torchebsd v0 samples the full sphere, which is
+   `Apply3DPGSymmetry`); de-ebsd v0 samples the full sphere, which is
    redundant but cannot mis-symmetrize -- the reduction is a pure
    optimization scheduled for M3.
 3. **Reflection list** [implemented]. All centering-allowed hkl with
@@ -264,7 +264,7 @@ The compact SpyDE-facing surfaces keep rendering and composition separate:
   north/south sampling split colored distinctly.
 
 The editor uses SpyDE and Jupyter CSS variables with standalone fallbacks.
-SpyDE owns popover layout and figure lifetime; torchebsd supplies figures and
+SpyDE owns popover layout and figure lifetime; de-ebsd supplies figures and
 state instead of maintaining a second application renderer.
 
 ## 7. Differentiability
@@ -281,16 +281,16 @@ replacing the numpy structure-factor input with a torch one.
 
 ## 8. Validation
 
-EMsoft is the ground-truth oracle -- for *validation only*; torchebsd computes
+EMsoft is the ground-truth oracle -- for *validation only*; de-ebsd computes
 the master pattern itself and does not call EMsoft at runtime:
 
 - Ni, 20 keV, npx = 200: `kikuchipy.data.nickel_ebsd_master_pattern_small`
   (bundled with kikuchipy -- Ni validates with no external files).
 - Si, 20 keV, npx = 500, 11 energy bins: a local EMsoft `Si_MC.h5` run (path
-  via `--mc` / `TORCHEBSD_SI_MC`; the file is not redistributed). It also
+  via `--mc` / `DE_EBSD_SI_MC`; the file is not redistributed). It also
   provides the reference-run Monte Carlo depth statistics, crystal data, and
   Bethe parameters. When no MC file is supplied the depth integration falls back
-  to torchebsd's own `single_energy` model, so simulation stays EMsoft-free; a
+  to de-ebsd's own `single_energy` model, so simulation stays EMsoft-free; a
   native Monte Carlo that makes that path physically accurate is the next
   milestone (M-MC below).
 
@@ -302,11 +302,11 @@ do not matter; frame or symmetry errors collapse it toward zero.
 
 M2 status (backend done; Ni parity open). The exact `bloch` reference and the
 batched `bloch_prism` backend both reproduce EMsoft. The residual that initially capped Si near 0.94
-was traced not to the scattering factors (torchebsd `U_g` match EMsoft
+was traced not to the scattering factors (de-ebsd `U_g` match EMsoft
 `CalcUcg` to <0.003%) but to the Bethe partition promoting systematically
 absent reflections to strong beams; excluding them (`status[forbidden] =
 IGNORED`) makes the strong-beam map pixel-exact against EMsoft. At matched
-resolution torchebsd equals EMsoft's own master to r = 1.00000; a full native
+resolution de-ebsd equals EMsoft's own master to r = 1.00000; a full native
 npx-500 Si master via `bloch_prism` scores **r = 1.0000** against `Si_MC.h5`
 in ~10 s (fp32) on a Pascal TITAN X (numbers from the maintainer's GPU, not
 reproduced in CI). The acceptance gate (r >= 0.99 on both references) is met:

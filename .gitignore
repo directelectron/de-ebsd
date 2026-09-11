@@ -25,3 +25,7 @@ dist/
 docs/_build/
 docs/auto_examples/
 docs/sg_execution_times.rst
+
+# Jupyter / JupyterLab scratch
+.ipynb_checkpoints/
+.virtual_documents/

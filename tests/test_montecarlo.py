@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import SI_MC_PATH
-from torchebsd import DepthDistribution
+from de_ebsd import DepthDistribution
 
 
 def test_single_energy_model():

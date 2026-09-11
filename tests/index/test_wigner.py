@@ -1,6 +1,6 @@
 """Wigner-d / D matrices and the SO(3) grid (I2): closed forms, unitarity, orix.
 
-Validates :mod:`torchebsd.index.spherical.wigner`. The small-d matrices are checked against
+Validates :mod:`de_ebsd.index.spherical.wigner`. The small-d matrices are checked against
 the analytic ``d^1`` / ``d^2`` formulas and the ``exp(-i beta J_y)`` group / unitary
 properties; the SOFT grid and the orix bridge are checked against the documented
 active ``ZYZ`` convention. fp64 throughout.
@@ -11,7 +11,7 @@ import math
 import pytest
 import torch
 
-from torchebsd.index.spherical.wigner import (
+from de_ebsd.index.spherical.wigner import (
     euler_zyz_to_orix,
     grid_to_rotation,
     n_orientations,

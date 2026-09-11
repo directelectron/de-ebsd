@@ -7,15 +7,15 @@ instantiated and their traitlets exercised; no browser is required.
 import numpy as np
 import pytest
 
-import torchebsd as te
+import de_ebsd as de
 
 
 @pytest.fixture(scope="module")
 def sim():
-    crystal = te.Crystal.from_parameters(
+    crystal = de.Crystal.from_parameters(
         a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035
     )
-    return te.MasterPatternSimulator(crystal, te.Microscope(energy=20e3), npx=24, dmin=0.12)
+    return de.MasterPatternSimulator(crystal, de.Microscope(energy=20e3), npx=24, dmin=0.12)
 
 
 def test_structure_factors_show(sim):
@@ -47,7 +47,7 @@ def test_master_pattern_show_projections(sim):
 
 
 def test_to_uint8_rgb():
-    from torchebsd.viz.figures import to_uint8_rgb
+    from de_ebsd.viz.figures import to_uint8_rgb
 
     image = np.array([[0.0, 1.0], [2.0, 4.0]])
     rgb = to_uint8_rgb(image)
@@ -58,10 +58,10 @@ def test_to_uint8_rgb():
 
 def test_setup_widget_round_trip():
     pytest.importorskip("anywidget")
-    from torchebsd.viz.widgets import SetupWidget
+    from de_ebsd.viz.widgets import SetupWidget
 
-    microscope = te.Microscope(energy=15e3, sample_tilt=68.0)
-    detector = te.EBSDDetector(shape=(240, 320), pc=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)
+    microscope = de.Microscope(energy=15e3, sample_tilt=68.0)
+    detector = de.EBSDDetector(shape=(240, 320), pc=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)
     widget = SetupWidget.from_setup(microscope=microscope, detector=detector)
 
     assert widget.energy_kev == pytest.approx(15.0)
@@ -108,11 +108,12 @@ def test_phase_overview_composes_native_figures_without_nested_html(sim):
 
 def test_compact_microscope_widget_round_trip():
     pytest.importorskip("anywidget")
-    from torchebsd.viz.widgets import MicroscopeWidget
+    from de_ebsd.viz.widgets import MicroscopeWidget
 
-    microscope = te.Microscope(energy=18e3, sample_tilt=69.0, azimuthal=2.5)
-    detector = te.EBSDDetector(
-        shape=(256, 384), pc=(0.42, 0.58, 0.61), tilt=4.0, px_size=0.75
+    microscope = de.Microscope(energy=18e3, sample_tilt=69.0, azimuthal=2.5)
+    detector = de.EBSDDetector(
+        shape=(256, 384), pc=(0.42, 0.58, 0.61), tilt=4.0, px_size=0.75,
+        sample_tilt=69.0, azimuthal=2.5,
     )
     widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
     assert widget.energy_kev == pytest.approx(18.0)
@@ -124,7 +125,7 @@ def test_compact_microscope_widget_round_trip():
 
 def test_sampling_sphere_show():
     pytest.importorskip("anyplotlib")
-    from torchebsd.diffraction.kvectors import sample_incident_directions
+    from de_ebsd.diffraction.kvectors import sample_incident_directions
 
     grid = sample_incident_directions(4)
     html = grid.show().to_html()
@@ -133,5 +134,5 @@ def test_sampling_sphere_show():
 
 def test_simulator_show_setup(sim):
     pytest.importorskip("anywidget")
-    widget = sim.show_setup(detector=te.EBSDDetector())
+    widget = sim.show_setup(detector=de.EBSDDetector())
     assert "Ni" in widget.crystal_label

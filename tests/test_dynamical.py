@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import BetheParameters, BlochWaveBackend, KinematicalBackend
-from torchebsd.diffraction.backends import (
+from de_ebsd import BetheParameters, BlochWaveBackend, KinematicalBackend
+from de_ebsd.diffraction.backends import (
     SimulationInputs,
     build_dynamical_matrix,
     classify_reflections,
@@ -61,7 +61,7 @@ def test_weak_beams_perturb_matrix(si_sf):
 
 def test_calc_lgh_single_beam():
     """The depth integral for a single (incident) beam matches a direct sum."""
-    from torchebsd.diffraction.backends import calc_lgh
+    from de_ebsd.diffraction.backends import calc_lgh
 
     a = np.array([[0.0 + 0.3j]], dtype=np.complex128)  # one strong beam
     kn, thick, depthstep = 116.0, 50.0, 1.0

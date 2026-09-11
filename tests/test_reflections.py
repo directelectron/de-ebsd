@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from torchebsd import BetheParameters
-from torchebsd.diffraction.backends import classify_reflections
-from torchebsd.diffraction.reflections import (
+from de_ebsd import BetheParameters
+from de_ebsd.diffraction.backends import classify_reflections
+from de_ebsd.diffraction.reflections import (
     IGNORED,
     STRONG,
     WEAK,
