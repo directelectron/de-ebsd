@@ -89,7 +89,7 @@ class StructureFactors:
         return torch.as_tensor(self.ucg_lut, dtype=dtype, device=device)
 
     def families(self, n: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Group the reflection list by |g|; representative hkl, g, and U_g.
+        """Group the reflection list by ``|g|``; representative hkl, g, and U_g.
 
         Returns the first ``n`` (or all) families sorted by g length.
         """
@@ -101,7 +101,7 @@ class StructureFactors:
         return self.hkl[order], self.g[order], self.ucg[order]
 
     def show(self, n: int = 25) -> Figure:
-        """Bar chart of |U_g| for the first ``n`` reflection families.
+        """Bar chart of ``|U_g|`` for the first ``n`` reflection families.
 
         Systematic absences appear as (near-)zero bars.
         """

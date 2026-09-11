@@ -111,17 +111,31 @@ synthetic two-grain scan with known orientations:
   cross-correlation surface, the bandwidth accuracy/cost trade-off and how it
   fails when truncated too far, then refinement off the peak.
 
-Run scripts with `uv run python examples/simulation/cif_to_detector.py`. Build
-the interactive gallery and downloadable notebooks with:
+Run scripts with `uv run python examples/simulation/cif_to_detector.py`. They
+use small CPU-friendly teaching settings; see
+[examples/README.rst](examples/README.rst) for execution, display, and
+convergence notes. The existing CIF notebook is preserved.
+
+## Documentation
+
+The full site -- user guide, the executable example gallery, and an API
+reference generated from the docstrings -- builds with:
 
 ```shell
 uv sync --group docs --group notebook
 uv run python -m sphinx -b html -W --keep-going docs docs/_build/html
 ```
 
-Open `docs/_build/html/index.html`. The scripts use small CPU-friendly teaching
-settings; see [examples/README.rst](examples/README.rst) for execution, display,
-and convergence notes. The existing CIF notebook is preserved.
+Open `docs/_build/html/index.html`. The build executes every example, so a
+broken example fails the build.
+
+Start at [`docs/user/conventions.rst`](docs/user/conventions.rst) before
+interpreting any number: units, the Cartesian crystal frame, square-Lambert
+storage, the orientation convention and the space-group origin choice are all
+load-bearing, and they are what make de-ebsd's output comparable to EMsoft's
+and kikuchipy's. The deeper reasoning lives in [DESIGN.md](DESIGN.md),
+[INDEXING_DESIGN.md](INDEXING_DESIGN.md), [MC_DESIGN.md](MC_DESIGN.md) and
+[BENCHMARKS.md](BENCHMARKS.md).
 
 ## Status
 

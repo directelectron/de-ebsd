@@ -40,10 +40,10 @@ class ReflectionList:
     Attributes
     ----------
     hkl, g, d, u_mod
-        Miller indices (N, 3), lengths |g| (nm^-1), spacings d (nm), and
-        structure-factor moduli |U_g| (nm^-2).
+        Miller indices (N, 3), lengths ``|g|`` (nm^-1), spacings d (nm), and
+        structure-factor moduli ``|U_g|`` (nm^-2).
     forbidden
-        True where |U_g| is (numerically) zero; such reflections only matter
+        True where ``|U_g|`` is (numerically) zero; such reflections only matter
         as double-diffraction channels.
     k
         The beam direction (unit vector, Cartesian crystal frame) used for
@@ -91,7 +91,7 @@ class ReflectionList:
         return self.hkl[self.status == WEAK]
 
     def show(self, n: int = 40) -> Figure:
-        """Bar chart of |U_g| for the first ``n`` reflections.
+        """Bar chart of ``|U_g|`` for the first ``n`` reflections.
 
         With a classification, bars are colored by status (strong / weak /
         ignored); without one, all bars share one color.
@@ -122,7 +122,7 @@ class ReflectionList:
 
 
 def master_reflection_list(sf: StructureFactors) -> ReflectionList:
-    """All centering-allowed reflections with d >= dmin, sorted by |g|."""
+    """All centering-allowed reflections with d >= dmin, sorted by ``|g|``."""
     u_mod = np.abs(sf.ucg)
     return ReflectionList(
         hkl=sf.hkl,

@@ -121,7 +121,7 @@ class DynamicalMatrix:
         return self.matrix.shape[0]
 
     def show(self) -> Figure:
-        """Heat map of log10 |A_gh|."""
+        """Heat map of ``log10 |A_gh|``."""
         from de_ebsd.viz.figures import image_figure
 
         with np.errstate(divide="ignore"):
@@ -176,7 +176,7 @@ class KinematicalBackend(MasterPatternBackend):
     """Kinematical band model: correct band geometry, approximate profiles.
 
     Each allowed reflection paints a band of angular half-width equal to its
-    Bragg angle, weighted by |U_g|^2, centered on its Kikuchi great circle.
+    Bragg angle, weighted by ``|U_g|^2``, centered on its Kikuchi great circle.
     This is a geometry-validation placeholder for the Bloch-wave backend: it
     puts every band in the right place with a plausible relative weight but
     does not reproduce dynamical band profiles or excess/deficiency effects.

@@ -37,7 +37,18 @@ dev = ["pytest", "ruff", "kikuchipy"]
 # `uv sync --group notebook` to run examples/*.ipynb. ipywidgets (which the
 # anywidget-based .show() widgets need) already arrives with anywidget.
 notebook = ["jupyterlab", "ipykernel", "nbclient"]
-docs = ["sphinx>=7", "sphinx-gallery>=0.19", "pillow", "kikuchipy"]
+docs = [
+    "sphinx>=7",
+    "sphinx-gallery>=0.19",
+    "pydata-sphinx-theme>=0.16",
+    "numpydoc",
+    "sphinx-design",
+    "sphinx-copybutton",
+    "sphinx-codeautolink",
+    "sphinxcontrib-bibtex",
+    "pillow",
+    "kikuchipy",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

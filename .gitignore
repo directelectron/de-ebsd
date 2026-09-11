@@ -29,3 +29,6 @@ docs/sg_execution_times.rst
 # Jupyter / JupyterLab scratch
 .ipynb_checkpoints/
 .virtual_documents/
+
+# Autosummary-generated API stubs
+docs/reference/generated/

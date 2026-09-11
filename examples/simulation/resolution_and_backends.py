@@ -9,8 +9,8 @@ the scattering-matrix backend with the Bloch eigensolver at identical settings.
 An explicitly prescribed exponential depth distribution keeps this numerical
 comparison short and deterministic. It is an approximate depth model, not a
 replacement for the native Monte Carlo workflow in the preceding examples.
-Two small grids demonstrate a convergence procedure; agreement between two
-solvers is not evidence that the physical model is converged.
+Two grids demonstrate a convergence procedure; agreement between two solvers is
+not evidence that the physical model is converged.
 """
 
 from time import perf_counter
@@ -101,10 +101,10 @@ depth.show(energy_kev=microscope.energy_kev)
 # -----------------------------------------------------------------------------
 
 coarse_sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=8, dmin=0.12, monte_carlo=depth, backend="bloch_prism",
+    crystal, microscope, npx=100, dmin=0.12, monte_carlo=depth, backend="bloch_prism",
 )
 coarse_sim.structure_factors()
-fine_sim = coarse_sim.refine(npx=16)
+fine_sim = coarse_sim.refine(npx=200)
 assert fine_sim.structure_factors() is coarse_sim.structure_factors()
 
 # %%
@@ -116,10 +116,10 @@ assert fine_sim.structure_factors() is coarse_sim.structure_factors()
 
 start = perf_counter()
 coarse = coarse_sim.compute(device=device, dtype=torch.float64, chunk_size=512)
-print(f"17 x 17 per hemisphere: {perf_counter() - start:.3f} s")
+print(f"201 x 201 per hemisphere: {perf_counter() - start:.3f} s")
 start = perf_counter()
 fine = fine_sim.compute(device=device, dtype=torch.float64, chunk_size=512)
-print(f"33 x 33 per hemisphere: {perf_counter() - start:.3f} s")
+print(f"401 x 401 per hemisphere: {perf_counter() - start:.3f} s")
 fine.show(projection="sphere", texture_height=128, n_grid=64)
 
 # %%
@@ -141,7 +141,7 @@ print(f"Grid-change relative RMS difference: {relative_rms.item():.3%}")
 figure, axes = apl.subplots(1, 3, figsize=(900, 300))
 for ax, values, title in zip(
     np.ravel(axes), (coarse_image, fine_image, difference),
-    ("npx = 8", "npx = 16", "Fine minus coarse (own contrast)"), strict=True,
+    ("npx = 100", "npx = 200", "Fine minus coarse (own contrast)"), strict=True,
 ):
     panel = ax.imshow(values.detach().cpu().numpy(), cmap="gray", origin="upper")
     panel.set_title(title)
@@ -151,9 +151,11 @@ figure
 # Compare the two solvers at identical sampling and depth settings
 # -----------------------------------------------------------------------------
 #
-# Use the smaller grid for a quick numerical check. Reuse the same supplied
-# depth distribution and float64 directions. This checks implementation
-# consistency; neither solver is being compared with measured data here.
+# Use the coarser of the two grids: the exact eigensolver costs ~4x the
+# scattering-matrix backend here, and ~20x at ``npx=200``. Reuse the same
+# supplied depth distribution and float64 directions. This checks
+# implementation consistency; neither solver is being compared with measured
+# data here.
 
 reference_sim = coarse_sim.refine(backend="bloch")
 reference = reference_sim.compute(device=device, dtype=torch.float64, chunk_size=512)
@@ -172,4 +174,4 @@ print(f"PRISM versus Bloch maximum relative difference: {relative_max.item():.3e
 # ``texture_height`` in ``.show()`` only changes the rendering and cannot
 # improve the computed master pattern.
 
-print("Next grid size:", fine_sim.refine(npx=32).npx)
+print("Next grid size:", fine_sim.refine(npx=400).npx)

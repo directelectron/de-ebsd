@@ -274,7 +274,7 @@ class Crystal:
         return np.linalg.inv(self.direct_structure_matrix).T
 
     def g_length(self, hkl: np.ndarray) -> np.ndarray:
-        """Length |g| in nm^-1 for Miller indices ``hkl`` of shape (..., 3)."""
+        """Length ``|g|`` in nm^-1 for Miller indices ``hkl`` of shape (..., 3)."""
         hkl = np.asarray(hkl, dtype=np.float64)
         gstar = self.reciprocal_metric
         return np.sqrt(np.einsum("...i,ij,...j->...", hkl, gstar, hkl))

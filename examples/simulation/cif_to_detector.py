@@ -7,8 +7,9 @@ transport, compute both master-pattern hemispheres, and project them for known
 orix orientations. Finish with a compact phase overview and an HDF5 round trip.
 
 The bundled CIF contains an asymmetric unit in angstroms. This example uses
-5,000 Monte Carlo electrons, a 33-by-33 grid per hemisphere, and a relatively
-short reflection list so it is practical on a CPU. Increase the electron
+5,000 Monte Carlo electrons, a 201-by-201 grid per hemisphere, and a relatively
+short reflection list so it is practical on a CPU. That grid is fine enough to
+read the Kikuchi bands; it is not a converged simulation. Increase the electron
 count, integration-depth window and grid resolution, and lower ``dmin`` in a
 convergence study before interpreting fine experimental contrast.
 """
@@ -71,7 +72,7 @@ print("Bruker PC:", detector.pc, "gnomonic bounds:", detector.gnomonic_bounds)
 # Monte Carlo when computing or refining this simulator.
 
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=16, dmin=0.12,
+    crystal, microscope, npx=100, dmin=0.12,
     monte_carlo=depth, backend="bloch_prism",
 )
 sim.structure_factors().show(n=12)
@@ -88,8 +89,12 @@ sim.dynamical_matrix(k=(1, 1, 3)).show()
 
 # %%
 # The sampling points cover both hemispheres, including their shared equator.
+#
+# Drawn at a deliberately coarse ``npx`` so the individual directions stay
+# visible: the grid this simulation actually solves, ``npx=100``, is 80,802
+# points and renders as a solid ball.
 
-sample_incident_directions(sim.npx).show()
+sample_incident_directions(16).show()
 
 # %%
 # Compute the full master pattern
@@ -100,7 +105,7 @@ sample_incident_directions(sim.npx).show()
 # This single-energy calculation uses the 20 keV depth bin.
 
 master = sim.compute(device=device, dtype=torch.float64, chunk_size=512)
-assert master.data.shape == (1, 2, 33, 33)
+assert master.data.shape == (1, 2, 2 * sim.npx + 1, 2 * sim.npx + 1)
 assert torch.isfinite(master.data).all() and master.data.std() > 0
 print(master)
 master.show(projection="lambert")

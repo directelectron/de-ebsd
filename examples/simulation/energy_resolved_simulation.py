@@ -63,10 +63,10 @@ histogram
 # transport depth weights for each energy. Explicitly use a dynamical backend.
 
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=12, dmin=0.12, monte_carlo=depth, backend="bloch_prism",
+    crystal, microscope, npx=100, dmin=0.12, monte_carlo=depth, backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float64, energy_resolved=True, chunk_size=512)
-assert master.data.shape == (3, 2, 25, 25)
+assert master.data.shape == (3, 2, 2 * sim.npx + 1, 2 * sim.npx + 1)
 assert torch.isfinite(master.data).all()
 print(master)
 master.show(projection="sphere", energy_kev=20.0, texture_height=128, n_grid=64)
