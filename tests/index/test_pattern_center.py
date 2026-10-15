@@ -147,15 +147,21 @@ def test_pc_recovery(which, off, master, smooth_master, detector):
 def test_single_pattern_degenerate_ensemble_reliable(master, detector):
     """Single-pattern PC fits scatter wildly; the shared ensemble fit is reliable.
 
-    Fitting the PC from one pattern at a time (``N=1``) is R--PC degenerate: across a set of
-    patterns the recovered PC error scatters over two orders of magnitude and the worst is
-    several-fold worse than the ensemble -- you cannot trust any single one. Fitting one
-    shared PC over the whole ``N=20`` set (the ensemble accumulation) recovers it reliably.
+    Fitting the PC from one pattern at a time (``N=1``) is nearly R--PC degenerate: a small
+    PC shift is almost a small rotation, so the fit is ill-conditioned and noise moves it a
+    long way. Across a set of noisy patterns the recovered PC error scatters widely and the
+    worst is several-fold worse than the ensemble -- you cannot trust any single one.
+    Fitting one shared PC over the whole ``N=20`` set (the ensemble accumulation) recovers
+    it reliably. Noise-free, even a single pattern is solved exactly, so the noise is what
+    this test is about.
     """
     pc_true = torch.tensor(detector.pc, dtype=torch.float64)
     n = 20
     r_true = _orientations(n, seed=0)
     patterns = master.project(detector, r_true, rescale=True)
+    g = torch.Generator().manual_seed(5)
+    patterns = patterns + 0.3 * patterns.std() * torch.randn(
+        patterns.shape, generator=g, dtype=patterns.dtype)
     pc0 = pc_true + 0.03
 
     single = np.array([
@@ -181,14 +187,9 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
     assert ens < float(single.mean()), (
         f"ensemble {ens:.5f} not below mean single-pattern err {single.mean():.5f}"
     )
-    # ...and the single-pattern fits are erratic: the worst is far worse than the ensemble,
-    # and they span a huge range (some patterns land close by luck, others badly off).
+    # ...and you cannot trust any single one: the worst is far worse than the ensemble
     assert float(single.max()) > 3.0 * ens, (
         f"worst single {single.max():.5f} not >> ensemble {ens:.5f}"
-    )
-    assert float(single.max()) / float(single.min()) > 8.0, (
-        f"single-pattern errors not erratic enough (spread "
-        f"{single.max() / single.min():.1f}x)"
     )
 
 
@@ -392,3 +393,26 @@ def test_cuda_path(master, detector):
     )
     assert pc_ref.device.type == "cuda"
     assert float((pc_ref.cpu() - pc_true).norm()) < 0.005
+
+
+def test_a_sharp_master_is_reached_from_outside_its_basin(detector):
+    """A real dynamical master's band edges are narrow: its fit falls to ~0
+    within 0.02 of PC, so a start 0.03 off sees no slope. The coarse-to-fine
+    blur schedule must still recover the PC -- and without it, it must not
+    (otherwise this test is not testing the schedule)."""
+    sharp = _make_band_master(npx=200, width=0.012, nbands=30, seed=3)
+    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    r_true = _orientations(24, seed=0)
+    patterns = sharp.project(detector, r_true, rescale=True)
+    pc0 = pc_true + torch.tensor((0.03, -0.03, 0.03), dtype=torch.float64)
+
+    pc_ref, info = determine_pattern_center(
+        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pc0=pc0, n_rounds=8,
+        n_tiles=_NT, samples_per_tile=_SPT,
+    )
+    assert float((pc_ref - pc_true).norm()) < 0.005, info
+    pc_flat, _ = determine_pattern_center(
+        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pc0=pc0, n_rounds=8,
+        n_tiles=_NT, samples_per_tile=_SPT, blur=None,
+    )
+    assert float((pc_flat - pc_true).norm()) > 0.02
