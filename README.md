@@ -14,9 +14,7 @@ De Graef 2013), which remains the validation oracle (for validation only --
 de-ebsd does not call EMsoft at runtime). See [DESIGN.md](DESIGN.md) for the
 architecture and the roadmap. The Bloch-wave solve is implemented: an exact
 float64 reference (`bloch`) and a batched GPU scattering-matrix backend
-(`bloch_prism`) that reproduces it. The next milestone is a native electron
-Monte Carlo, to drop the last runtime dependency on EMsoft-generated
-exit-depth statistics.
+(`bloch_prism`) that reproduces it. 
 
 ## Installation
 
