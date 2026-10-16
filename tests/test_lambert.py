@@ -107,3 +107,13 @@ def test_grid_sample_compatibility():
         align_corners=True,
     ).view(n, n)
     assert torch.allclose(sampled, ramp.double(), atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_sphere_to_square_gradient_is_finite_at_the_poles(dtype):
+    """At a pole sqrt(2(1 - |z|)) has an infinite slope; a NaN there used to
+    poison every Gauss-Newton system summed over samples that hit one."""
+    v = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1e-5, 0.0, 1.0]], dtype=dtype,
+                     requires_grad=True)
+    (grad,) = torch.autograd.grad(sphere_to_square(v).sum(), v)
+    assert torch.isfinite(grad).all()

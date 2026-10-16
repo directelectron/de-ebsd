@@ -33,7 +33,10 @@ def sphere_to_square(v: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     v = v / v.norm(dim=-1, keepdim=True).clamp_min(eps)
     x, y, z = v.unbind(-1)
     abs_z = z.abs()
-    sqrt_z = torch.sqrt((2.0 * (1.0 - abs_z)).clamp_min(0.0))
+    # clamped above zero: sqrt's slope at 0 is infinite, and at a pole (where |z|
+    # rounds to 1, within ~0.02 deg in float32) it made the gradient NaN even
+    # though the pole branch below discards the value
+    sqrt_z = torch.sqrt((2.0 * (1.0 - abs_z)).clamp_min(torch.finfo(v.dtype).tiny))
 
     cond = y.abs() <= x.abs()
 
