@@ -1,0 +1,229 @@
+name: Prepare Release
+
+# Run manually from the Actions tab (same flow and inputs as SpyDE's and
+# anyplotlib's Prepare Release). Creates a branch + PR that bumps the version,
+# assembles CHANGELOG.rst from upcoming_changes/, and says the one tag that
+# release.yml will accept.
+#
+# The version lives in two places, pyproject.toml and src/de_ebsd/__init__.py
+# (__version__, which docs/conf.py reads); this workflow bumps both, and
+# release.yml refuses a tag that disagrees with either.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version component to bump"
+        required: true
+        type: choice
+        options:
+          - finalize      # drop the bN suffix: release the current beta's base as stable (0.3.0b2 -> 0.3.0)
+          - minor
+          - bugfix
+          - major
+          - pre-release   # increments the bN counter on the current base version
+      beta:
+        description: "Mark as beta pre-release (adds bN suffix). Ignored for 'pre-release' (always beta) and 'finalize' (always stable)."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # push the release branch
+  pull-requests: write   # open the PR
+
+jobs:
+  prepare:
+    name: Prepare release PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          # Pinned: resolving "latest" hits the GitHub releases API.
+          version: "0.10.11"
+          python-version: "3.13"
+          enable-cache: true
+
+      # ── Compute the new version ──────────────────────────────────────────
+      - name: Compute new version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          IS_BETA: ${{ inputs.beta }}
+        run: |
+          CURRENT=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          export CURRENT_VERSION="$CURRENT"
+
+          NEW_VERSION=$(python3 - <<'PYEOF'
+          import os, re, sys
+
+          current = os.environ["CURRENT_VERSION"]
+          bump    = os.environ["BUMP"]
+          is_beta = os.environ["IS_BETA"].lower() == "true"
+
+          m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:b(\d+))?$", current)
+          if not m:
+              sys.exit(f"unparseable current version: {current!r}")
+          major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+          beta_n = int(m.group(4)) if m.group(4) else None
+          on_beta = beta_n is not None
+
+          if bump == "finalize":
+              # Release the current beta's base as stable: 0.3.0b2 -> 0.3.0.
+              if not on_beta:
+                  sys.exit(
+                      f"'finalize' requires a beta base version, but current "
+                      f"version {current!r} has no bN suffix. Use minor / bugfix "
+                      f"/ major to start a new release instead."
+                  )
+              is_beta = False
+          elif bump == "pre-release":
+              # Keep the same base; walk the beta counter forward.
+              is_beta = True
+              beta_n  = (beta_n or 0) + 1
+          elif on_beta:
+              # On a beta of the NEXT release, minor/bugfix/major would skip
+              # that release entirely; the intent is almost always 'finalize'.
+              sys.exit(
+                  f"Current version {current!r} is a beta of the upcoming "
+                  f"{major}.{minor}.{patch} release. To ship it, use "
+                  f"bump='finalize' (-> {major}.{minor}.{patch})."
+              )
+          elif bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          elif bump == "bugfix":
+              patch += 1
+
+          if is_beta:
+              if bump != "pre-release":
+                  beta_n = 1          # fresh beta series for the new base
+              print(f"{major}.{minor}.{patch}b{beta_n}", end="")
+          else:
+              print(f"{major}.{minor}.{patch}", end="")
+          PYEOF
+          )
+
+          if [[ "$NEW_VERSION" =~ b[0-9]+$ ]]; then IS_BETA_OUT=true; else IS_BETA_OUT=false; fi
+
+          echo "new_version=$NEW_VERSION"     >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW_VERSION"            >> "$GITHUB_OUTPUT"
+          echo "branch=release/v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_beta=$IS_BETA_OUT"         >> "$GITHUB_OUTPUT"
+          echo "Bumping (${BUMP}): $CURRENT → $NEW_VERSION"
+
+      - name: Fail if the tag already exists
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "::error::tag ${{ steps.version.outputs.tag }} already exists on origin"
+            exit 1
+          fi
+
+      # ── Release pre-flight checks — fail HERE, not at release time ──────────
+      - name: Verify uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
+      # PyPI rejects a package whose dependencies are direct git/path URLs.
+      - name: Verify dependencies are all on an index
+        shell: python
+        run: |
+          import sys, tomllib
+          project = tomllib.load(open("pyproject.toml", "rb"))["project"]
+          deps = list(project.get("dependencies", []))
+          for extra in project.get("optional-dependencies", {}).values():
+              deps += extra
+          bad = [d for d in deps if "@" in d or "://" in d]
+          if bad:
+              sys.exit(f"direct-URL dependencies cannot be published to PyPI: {bad}")
+
+      # ── Bump the version ─────────────────────────────────────────────────
+      - name: Bump version in pyproject.toml and __init__.py
+        env:
+          V: ${{ steps.version.outputs.new_version }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${V}\"/" pyproject.toml
+          sed -i "s/^__version__ = \".*\"/__version__ = \"${V}\"/" src/de_ebsd/__init__.py
+          grep -q "^version = \"${V}\"" pyproject.toml
+          grep -q "^__version__ = \"${V}\"" src/de_ebsd/__init__.py
+          uv lock
+
+      # ── Assemble the changelog ───────────────────────────────────────────
+      # --draft first, into a temp file, so the PR body can quote the notes
+      # after `build` has consumed the fragments they came from. Not fatal
+      # when there are none: a release can legitimately carry no fragments.
+      - name: Assemble the changelog
+        env:
+          V: ${{ steps.version.outputs.new_version }}
+        run: |
+          if ls upcoming_changes/*.rst 2>/dev/null | grep -qv README; then
+            uvx towncrier build --draft --version "$V" > "${RUNNER_TEMP}/release-notes.rst"
+            uvx towncrier build --yes   --version "$V"
+          else
+            echo "no changelog fragments — skipping towncrier"
+          fi
+
+      # ── Commit and push ──────────────────────────────────────────────────
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit release changes
+        run: |
+          git checkout -b "${{ steps.version.outputs.branch }}"
+          git add pyproject.toml uv.lock src/de_ebsd/__init__.py
+          # -A, because towncrier DELETES the fragments it consumed: a plain
+          # `git add <path>` leaves the deletions unstaged, and the next
+          # release re-publishes them.
+          git add -A CHANGELOG.rst upcoming_changes
+          git commit -m "chore: prepare release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.branch }}"
+
+      # ── Open pull request ────────────────────────────────────────────────
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          gh pr create \
+            --title "Release ${TAG}" \
+            --base  main \
+            --head  "${BRANCH}" \
+            --body  "## Release ${TAG}
+
+          > Auto-generated by the **Prepare Release** workflow.
+
+          ### What changed
+          - Version bumped to \`${TAG#v}\` in \`pyproject.toml\` and \`src/de_ebsd/__init__.py\`
+          - Pre-flight checks passed: \`uv lock --check\`, no direct-URL dependencies
+          - \`CHANGELOG.rst\` assembled from the fragments in \`upcoming_changes/\`
+
+          <details><summary><b>Release notes</b> (as they will appear in \`CHANGELOG.rst\`)</summary>
+
+          \`\`\`rst
+          $(cat "${RUNNER_TEMP}/release-notes.rst" 2>/dev/null || echo 'No changelog fragments were filed for this release.')
+          \`\`\`
+          </details>
+
+          ### Review checklist
+          - [ ] \`CHANGELOG.rst\` reads well — edit the text directly if needed
+          - [ ] CI passes
+          - [ ] On a CUDA machine, the GPU tests pass (CI has no GPU)
+
+          ### After merging
+          Tag **the merge commit on main** — the tag MUST be exactly \`${TAG}\`:
+          \`\`\`bash
+          git fetch origin
+          git tag ${TAG} origin/main
+          git push origin ${TAG}
+          \`\`\`
+          The tag push triggers \`release.yml\`: build → check → publish to PyPI →
+          GitHub Release."
