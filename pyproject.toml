@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in PyTorch"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "Carter Francis", email = "cartsfrancis@gmail.com" }]
 keywords = [
     "EBSD",
@@ -17,6 +18,16 @@ keywords = [
     "master-pattern",
     "pytorch",
     "kikuchipy",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
     "numpy",
@@ -27,6 +38,12 @@ dependencies = [
     "anyplotlib",
     "anywidget",
 ]
+
+[project.urls]
+Homepage = "https://github.com/CSSFrancis/torchebsd"
+Source = "https://github.com/CSSFrancis/torchebsd"
+Issues = "https://github.com/CSSFrancis/torchebsd/issues"
+Changelog = "https://github.com/CSSFrancis/torchebsd/blob/main/CHANGELOG.rst"
 
 [project.optional-dependencies]
 # kikuchipy is only needed to load reference/validation master patterns.
@@ -79,12 +96,74 @@ select = ["E", "F", "I", "W", "UP", "B"]
 "examples/**/*.py" = ["B018"]
 
 # --- uv ---------------------------------------------------------------------
-# torch is pulled from the CUDA 12.4 index so the Pascal (sm_61) dev GPU works.
-# `uv sync` then `uv run ...`.
+# On Windows torch is pulled from the CUDA 12.4 index so the Pascal (sm_61) dev
+# GPU works, and on Linux from the CPU index, so CI does not download CUDA; macOS
+# gets PyPI's. Only `uv` reads this --
+# the published package just requires `torch`. `uv sync` then `uv run ...`.
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
-torch = { index = "pytorch-cu124" }
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+# --- towncrier ----------------------------------------------------------------
+# CHANGELOG.rst is assembled from one fragment file per PR under
+# upcoming_changes/ (see its README.rst), written while the change is fresh.
+# The Prepare Release workflow passes the version explicitly.
+[tool.towncrier]
+directory        = "upcoming_changes"
+filename         = "CHANGELOG.rst"
+start_string     = ".. towncrier release notes start\n"
+issue_format     = "`#{issue} <https://github.com/CSSFrancis/torchebsd/pull/{issue}>`_"
+title_format     = "{version} ({project_date})"
+underlines       = ["=", "-", "~"]
+
+[[tool.towncrier.type]]
+directory    = "api_change"
+name         = "API and Behaviour Changes"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "new_feature"
+name         = "New Features"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "bugfix"
+name         = "Bug Fixes"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "performance"
+name         = "Performance"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "deprecation"
+name         = "Deprecations"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "removal"
+name         = "Removals"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "doc"
+name         = "Documentation"
+showcontent  = true
+
+[[tool.towncrier.type]]
+directory    = "maintenance"
+name         = "Maintenance"
+showcontent  = true
