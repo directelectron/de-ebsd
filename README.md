@@ -75,12 +75,24 @@ phase                              # displays metadata + real anyplotlib figures
 phase.figures["phase_overview"]   # SpyDE mounts one native figure/bridge
 sim.microscope.show(detector=detector, crystal=sim.crystal)
 
+# STEM zone-axis exploration: geometric Kikuchi lines + kinematic spots,
+# independently toggleable in one projection; no master pattern required:
+explorer = sim.crystal.explore(energy_kev=200, dmin=0.1)
+explorer                            # live Jupyter controls and native figures
+
 # inspect the incident-direction sampling:
 from de_ebsd.diffraction.kvectors import sample_incident_directions
 sample_incident_directions(sim.npx).show()
 ```
 
 ## Examples
+
+The [STEM orientation explorer](examples/simulation/stem_orientation_explorer.py)
+links a band-line sphere, crystal structure, and a combined lines/spots view.
+Its energy setting is in keV and its lattice-spacing cutoff in nm. It provides
+geometric band centerlines and relative elastic kinematic spot intensities;
+it does not simulate transmission Kikuchi contrast or convergent-beam discs.
+Linked recalculation requires a running Python kernel or application bridge.
 
 The [examples folder](examples/) contains executable Sphinx-Gallery tutorials,
 grouped by the layer they exercise.

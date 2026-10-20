@@ -101,7 +101,7 @@ depth.show(energy_kev=microscope.energy_kev)
 # -----------------------------------------------------------------------------
 
 coarse_sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.12, monte_carlo=depth, backend="bloch_prism",
+    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
 )
 coarse_sim.structure_factors()
 fine_sim = coarse_sim.refine(npx=200)
@@ -129,7 +129,9 @@ fine.show(projection="sphere", texture_height=128, n_grid=64)
 # Compare raw intensities so independent image normalization cannot hide an
 # amplitude change. Report relative RMS error against the finer projection.
 # A larger Lambert grid samples the same diffraction model more finely;
-# lowering ``dmin`` is a separate convergence axis that adds reflections.
+# lowering ``dmin`` is a separate convergence axis: it adds reflections rather
+# than sampling the existing ones more finely. Both grids here share one
+# ``dmin=0.05`` reflection list, so this comparison isolates sampling alone.
 
 orientation = Rotation.from_euler([[35.0, 45.0, 10.0]], degrees=True)
 coarse_image = coarse.project(detector, orientation, rescale=False)[0]

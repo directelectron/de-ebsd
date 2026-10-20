@@ -7,11 +7,12 @@ transport, compute both master-pattern hemispheres, and project them for known
 orix orientations. Finish with a compact phase overview and an HDF5 round trip.
 
 The bundled CIF contains an asymmetric unit in angstroms. This example uses
-5,000 Monte Carlo electrons, a 201-by-201 grid per hemisphere, and a relatively
-short reflection list so it is practical on a CPU. That grid is fine enough to
-read the Kikuchi bands; it is not a converged simulation. Increase the electron
-count, integration-depth window and grid resolution, and lower ``dmin`` in a
-convergence study before interpreting fine experimental contrast.
+5,000 Monte Carlo electrons, a 201-by-201 grid per hemisphere, and ``dmin=0.05``
+nm, which admits ~340 reflections -- enough bands to read the pattern as a real
+one. It is still not a converged simulation: the electron count is low and the
+grid is a quarter of a production one. Increase the electron count, the
+integration-depth window and the grid resolution in a convergence study before
+interpreting fine experimental contrast.
 """
 
 from pathlib import Path
@@ -72,7 +73,7 @@ print("Bruker PC:", detector.pc, "gnomonic bounds:", detector.gnomonic_bounds)
 # Monte Carlo when computing or refining this simulator.
 
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.12,
+    crystal, microscope, npx=100, dmin=0.05,
     monte_carlo=depth, backend="bloch_prism",
 )
 sim.structure_factors().show(n=12)
