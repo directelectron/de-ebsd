@@ -5,6 +5,7 @@ never pay for (or require) them.
 """
 
 __all__ = [
+    "CrystalExplorer",
     "DepthWidget",
     "MicroscopeWidget",
     "PhaseOverview",
@@ -24,6 +25,7 @@ __all__ = [
 ]
 
 _MODULES = {
+    "explorer": ("CrystalExplorer",),
     "figures": ("bar_figure", "image_figure", "to_uint8_rgb"),
     "patterns": (
         "crystal_structure_figure",

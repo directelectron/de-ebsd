@@ -46,6 +46,7 @@ __all__ = [
     "BetheParameters",
     "BlochWaveBackend",
     "Crystal",
+    "CrystalExplorer",
     "DepthDistribution",
     "EBSDDetector",
     "KinematicalBackend",
@@ -59,7 +60,11 @@ __all__ = [
 ]
 
 # the display stack is lazy so `import de_ebsd` stays functional on headless nodes
-_LAZY = {"PhaseOverview": "de_ebsd.viz.views", "SetupWidget": "de_ebsd.viz.widgets"}
+_LAZY = {
+    "CrystalExplorer": "de_ebsd.viz.explorer",
+    "PhaseOverview": "de_ebsd.viz.views",
+    "SetupWidget": "de_ebsd.viz.widgets",
+}
 
 
 def __getattr__(name: str):
