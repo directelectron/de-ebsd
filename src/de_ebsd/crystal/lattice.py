@@ -363,6 +363,21 @@ class Crystal:
 
         return crystal_structure_figure(self, title=title or "Crystal structure")
 
+    def explore(self, *, energy_kev: float = 200.0, dmin: float = 0.1, **kwargs):
+        """Explore STEM orientations using geometric lines and kinematic spots.
+
+        Returns a :class:`~de_ebsd.viz.explorer.CrystalExplorer` with a shared
+        projection, band sphere, and crystal view. Beam energy is in keV and
+        the minimum lattice spacing ``dmin`` in nm. Further keyword arguments
+        are passed to the explorer. No master-pattern simulation is run.
+
+        Display the result in Jupyter for interactive controls, or mount its
+        native ``figure`` in an application with a live Python bridge.
+        """
+        from de_ebsd.viz.explorer import CrystalExplorer
+
+        return CrystalExplorer(self, energy_kev=energy_kev, dmin=dmin, **kwargs)
+
     def overview(
         self,
         master_pattern=None,

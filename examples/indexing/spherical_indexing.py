@@ -50,7 +50,7 @@ depth = de.DepthDistribution.single_energy(
     microscope.energy_kev, thickness=40.0, depth_step=2.0, decay_length=15.0,
 )
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.10, monte_carlo=depth, backend="bloch_prism",
+    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float32)
 symmetry = phase_from_crystal(crystal).point_group
@@ -100,7 +100,7 @@ print(f"{rows * cols} patterns of shape {tuple(patterns.shape[-2:])}")
 # The indexer does not know about symmetry and does not reduce to the
 # fundamental zone -- ``Orientation`` with a point group does that afterwards.
 
-indexer = SphericalIndexer(master, detector, bandwidth=53, device=device)
+indexer = SphericalIndexer(master, detector, bandwidth=68, device=device)
 rotations, quality, surface = indexer.index(patterns[:1], return_surface=True)
 print(f"L = {indexer.bandwidth}, SOFT grid step "
       f"{360 / (2 * indexer.bandwidth + 2):.2f} deg, surface {tuple(surface.shape)}")
@@ -119,15 +119,24 @@ show_correlation(surface)
 # needs, the error tracks the grid step and refinement cleans up the rest.
 # Below it the error does not degrade gracefully: the truncated pattern stops
 # resolving the narrow bands, the global peak moves to a different basin, and
-# the answer is tens of degrees wrong. A dictionary indexer misbehaves the same
-# way when ``resolution`` is too coarse. This is why the quality map, not the
-# orientation map, is the one to read first -- a wrong-basin point scores
-# visibly low, while its orientation just looks like a differently colored
-# pixel.
+# the answer is tens of degrees wrong.
+#
+# Where that threshold sits is a property of the **master**, not of the
+# indexer. This ``dmin=0.05`` nickel master carries ~340 reflections, and the
+# table shows ``L = 40`` already past the edge: its median error is larger than
+# its own grid step, so the peak is no longer landing in the right cell, and
+# over the full scan it puts some points in a wholly wrong basin. ``L = 53``
+# and ``L = 68`` track their grid steps as they should. A ``dmin=0.10`` master
+# (58 reflections) indexes cleanly at ``L = 40``. Sharper bands cost bandwidth,
+# exactly as they cost a dictionary indexer resolution.
+#
+# This is why the quality map, not the orientation map, is the one to read
+# first -- a wrong-basin point scores visibly low, while its orientation just
+# looks like a differently colored pixel.
 
 probe = patterns[:6]
 probe_truth = truth_o[:6]
-for bandwidth in (32, 40, 53):
+for bandwidth in (40, 53, 68):
     start = time.perf_counter()
     trial = SphericalIndexer(master, detector, bandwidth=bandwidth, device=device)
     rot, _ = trial.index(probe)
@@ -154,9 +163,7 @@ for bandwidth in (32, 40, 53):
 # gracefully.
 
 scan = patterns.reshape(rows, cols, detector.nrows, detector.ncols)
-xmap = SphericalIndexer(master, detector, bandwidth=40, device=device).index_scan(
-    scan, step=0.5, batch_size=16,
-)
+xmap = indexer.index_scan(scan, step=0.5, batch_size=16)
 print(xmap)
 show_map(xmap, value="both")
 

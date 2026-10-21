@@ -14,8 +14,8 @@ pattern-center error and a phase list that none of this exercises. See
 ``simulation/compare_emsoft.py`` for a comparison against an external reference.
 
 Sizes are kept small so the example runs on a CPU in seconds: a 100-pixel
-Lambert grid, a 60-by-80 detector, and a 140-point scan. Raise ``npx``, lower
-``dmin`` and lower ``resolution`` for production work.
+Lambert grid, a 60-by-80 detector, and a 140-point scan. Raise ``npx`` and
+lower ``resolution`` for production work.
 """
 
 import numpy as np
@@ -53,7 +53,7 @@ depth = de.DepthDistribution.single_energy(
     microscope.energy_kev, thickness=40.0, depth_step=2.0, decay_length=15.0,
 )
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.10, monte_carlo=depth, backend="bloch_prism",
+    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float32)
 print(master)
@@ -113,16 +113,21 @@ print(f"preprocessed {tuple(patterns.shape)}, range "
 # The dictionary is the master projected at every orientation of a
 # fundamental-zone sample, normalized once at construction; indexing is then a
 # single matmul per chunk. ``resolution`` is the target average disorientation
-# of that sample, and it drives the cost: the m-3m fundamental zone holds ~1,700
-# orientations at 8 degrees but ~11,900 at 4 degrees. The point group comes from
+# of that sample, and it drives the cost: the m-3m fundamental zone holds ~11,900
+# orientations at 4 degrees but ~52,600 at 2.5. The point group comes from
 # ``master.metadata["crystal"]`` when it is not passed explicitly.
 #
 # Coarse-plus-refine is the intended workflow, so ``resolution`` only has to be
-# fine enough to land in the right basin; 4 degrees is already conservative for
-# cubic nickel. Pseudo-symmetric phases need finer.
+# fine enough to seed refinement **inside the NCC basin** -- and how wide that
+# basin is depends on the master, not on the indexer. Sharper bands mean a
+# narrower basin. For this ``dmin=0.05`` nickel master the basin is roughly a
+# degree wide, so a 4-degree grid (which seeds ~2 degrees out) leaves refinement
+# stranded outside it and stalls near 0.8 degrees; 2.5 degrees seeds inside it
+# and refinement reaches ~0.02. Raising ``dmin`` instead would widen the basin
+# and let a coarser grid work. Pseudo-symmetric phases need finer still.
 
 indexer = DictionaryIndexer(
-    master, detector, resolution=4.0, device=device, dtype=torch.float32,
+    master, detector, resolution=2.5, device=device, dtype=torch.float32,
 )
 print(f"point group {indexer.point_group.name}, "
       f"{indexer.n_dict} dictionary orientations at {indexer.resolution} deg")
@@ -158,8 +163,8 @@ show_match(patterns[point], master, detector, xmap.rotations[point])
 # Refine to sub-degree
 # -----------------------------------------------------------------------------
 #
-# The coarse orientations sit on a 4-degree grid, so they cannot be better than
-# ~2 degrees. :meth:`~de_ebsd.index.dictionary.DictionaryIndexer.refine`
+# The coarse orientations sit on a 2.5-degree grid, so they cannot be better
+# than ~1.2 degrees. :meth:`~de_ebsd.index.dictionary.DictionaryIndexer.refine`
 # maximizes the same NCC by autograd through the projection, seeded from the
 # coarse result. The default ``method="lm"`` (Levenberg-Marquardt with an
 # analytic Jacobian) converges in ~12 steps where Adam needs ~60.
