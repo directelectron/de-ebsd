@@ -48,6 +48,9 @@ Changelog = "https://github.com/CSSFrancis/de-ebsd/blob/main/CHANGELOG.rst"
 [project.optional-dependencies]
 # kikuchipy is only needed to load reference/validation master patterns.
 validate = ["kikuchipy"]
+# CuPy compiles the fused kernels of live indexing (de_ebsd.index.live) at run
+# time; without it the same steps run as plain torch, ~25x slower.
+live = ["cupy-cuda12x"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "kikuchipy"]
