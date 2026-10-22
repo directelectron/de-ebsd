@@ -310,9 +310,10 @@ class LiveIndexer:
         return _normalized_rows(search.flatten(1)), _normalized_rows(t.flatten(1))
 
     def search(self, search_rows: torch.Tensor):
-        """The best dictionary entry for each pattern: ``(phase, g, score)``."""
+        """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
+        *entry* indexing :attr:`rotations` (every phase's entries, in phase order)."""
         score, entry = (search_rows @ self.dictionary).max(1)
-        return self.phase_of[entry], self.rotations[entry], score
+        return self.phase_of[entry], self.rotations[entry], score, entry
 
     def refine(
         self,
@@ -357,7 +358,7 @@ class LiveIndexer:
         an orientation. The patterns should come from several grains: one
         orientation alone cannot tell the center from a turn.
         """
-        phase, g, score = self.index(frames)
+        phase, g, score, _ = self.index(frames)
         best = torch.argsort(score, descending=True)[:patterns]
         _, rows = self.prepare(torch.as_tensor(frames, device=self.device)[best])
         phase, g = phase[best], g[best]
@@ -379,12 +380,15 @@ class LiveIndexer:
         return center
 
     def index(self, frames):
-        """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score)``."""
+        """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
+        *entry* is the dictionary entry the search seeded the refine from (see
+        :meth:`search`): anything worked out once per entry, such as a color, stands
+        for the refined orientation to within the dictionary's resolution."""
         out = []
         for lo in range(0, len(frames), BATCH):
             search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
-            phase, g, score = self.search(search_rows)
+            phase, g, score, entry = self.search(search_rows)
             if self.refine_steps:
                 g, score = self.refine(refine_rows, phase, g)
-            out.append((phase, g, score))
+            out.append((phase, g, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))

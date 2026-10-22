@@ -64,12 +64,13 @@ def test_round_trip_recovers_known_orientations(master, point_group, detector):
         refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
         device="cpu",
     )
-    phase, g, score = indexer.index(patterns)
+    phase, g, score, entry = indexer.index(patterns)
     found = Rotation.from_matrix(g.numpy())
     error = Orientation(found, point_group).angle_with(
         Orientation(rotations, point_group), degrees=True
     )
     assert (phase == 0).all()
+    assert (indexer.phase_of[entry] == phase).all()
     assert np.max(error) < 0.3, error
     assert (score > 0.95).all(), score
 
