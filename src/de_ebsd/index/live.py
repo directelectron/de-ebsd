@@ -95,6 +95,17 @@ DEFORMATION_ITERATIONS = 3
 #: smaller steps measure the bilinear master texture's facets rather than its slope.
 DEFORMATION_STEP = 2e-3
 
+#: The largest change one Gauss-Newton iteration may make to any of the
+#: deformation's eight numbers. A step is the solve of a local linear model, and on
+#: a poor pattern (a grain boundary, two patterns overlapping) that model can
+#: point far outside the elastic range; without the limit 1-3% of a real scan's
+#: fits ran off to strains of 0.1 and more.
+DEFORMATION_MAX_STEP = 5e-3
+
+#: How far below its seed's score a deformation fit may end before it is refused:
+#: a fit that only ties its seed loses that much to rounding.
+DEFORMATION_SCORE_MARGIN = 1e-4
+
 
 def _normalized_rows(x: torch.Tensor) -> torch.Tensor:
     x = x - x.mean(-1, keepdim=True)
@@ -121,6 +132,14 @@ def _average_to(stack: torch.Tensor, shape) -> torch.Tensor:
     if (rows * shape[0], cols * shape[1]) == tuple(stack.shape[-2:]):
         return F.avg_pool2d(stack[:, None], (rows, cols))[:, 0]
     return F.adaptive_avg_pool2d(stack[:, None], shape)[:, 0]
+
+
+def _pick(frames: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
+    """``frames[rows]``, for a camera's uint16 frames too: CUDA cannot index a
+    uint16 tensor, but it can the same bits as int16."""
+    if frames.dtype == torch.uint16:
+        return frames.view(torch.int16)[rows].view(torch.uint16)
+    return frames[rows]
 
 
 def _parabola_offset(scores: torch.Tensor) -> torch.Tensor:
@@ -419,7 +438,7 @@ class LiveIndexer:
         """
         phase, g, score, _ = self.index(frames)
         best = torch.argsort(score, descending=True)[:patterns]
-        _, rows = self.prepare(torch.as_tensor(frames, device=self.device)[best])
+        _, rows = self.prepare(_pick(torch.as_tensor(frames, device=self.device), best))
         phase, g = phase[best], g[best]
         orientation_steps = tuple(math.radians(s) for s in orientation_steps_deg)
         pc = torch.tensor(self.detector.pc, dtype=torch.float64)
@@ -528,6 +547,10 @@ class LiveIndexer:
         *center_maps* (:meth:`center_maps`) give each pattern its own center.
         *ghost* (:attr:`ghost`) is taken out of the patterns and the simulations
         alike, so every pattern may have any amount of it.
+
+        Each iteration moves at most :data:`DEFORMATION_MAX_STEP`, and a fit that
+        ends scoring below its seed (:data:`DEFORMATION_SCORE_MARGIN`) is refused:
+        its strain is NaN and its *g* and *score* are the seed's.
         """
         basis = _trace_free_basis(self.device)
         n, k = len(g), 1 + 2 * len(basis)
@@ -549,6 +572,7 @@ class LiveIndexer:
                 return torch.zeros(simulated.shape[:-1], device=self.device)
             return simulated @ ghost
 
+        seed_score = None
         for _ in range(iterations):
             beta = torch.einsum("nkc,cij->nkij", p[:, None] + offsets, basis)
             candidates = g[:, None] @ (eye - beta)
@@ -569,6 +593,8 @@ class LiveIndexer:
             # both off the ghost (the patterns already are, so only the fit's
             # length and the products with the Jacobian need correcting)
             scale = (refine_rows * fit).sum(-1, keepdim=True) / (1 - fit_along**2)
+            if seed_score is None:
+                seed_score = scale[:, 0] * (1 - fit_along[:, 0] ** 2).sqrt()
             residual = refine_rows - scale * fit
             normal = torch.einsum("nkp,nlp->nkl", jacobian, jacobian)
             normal = normal - jacobian_along[:, :, None] * jacobian_along[:, None, :]
@@ -576,7 +602,9 @@ class LiveIndexer:
             gradient = (
                 torch.einsum("nkp,np->nk", jacobian, residual) + scale * jacobian_along * fit_along
             ) / scale.clamp_min(_EPS)
-            p = p + torch.linalg.solve(normal, gradient)
+            change = torch.linalg.solve(normal, gradient)
+            reach = change.abs().amax(-1, keepdim=True)
+            p = p + change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))
         beta = torch.einsum("nc,cij->nij", p, basis)
         final = g @ (eye - beta)
         if center_maps is not None:
@@ -586,7 +614,13 @@ class LiveIndexer:
         )
         score = (simulated * refine_rows).sum(-1) / (1 - on_ghost(simulated) ** 2).sqrt()
         rotation, strain = polar_parts(beta)
-        return g @ rotation.transpose(-1, -2), strain, score
+        fitted = g @ rotation.transpose(-1, -2)
+        if seed_score is not None:
+            refused = ~(score >= seed_score - DEFORMATION_SCORE_MARGIN)  # NaN is refused too
+            strain = torch.where(refused[:, None, None], torch.nan, strain)
+            fitted = torch.where(refused[:, None, None], g, fitted)
+            score = torch.where(refused, seed_score, score)
+        return fitted, strain, score
 
     def strain_from_reference(self, frames, reference, *, grid: int = 6, n_passes: int = 2):
         """The strain of each of *frames* ``(N, H, W)`` relative to one real

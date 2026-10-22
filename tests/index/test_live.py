@@ -20,7 +20,13 @@ from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.crystal import Crystal
 from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
-from de_ebsd.index.live import LiveIndexer, _normalized_rows, _texture
+from de_ebsd.index.live import (
+    DEFORMATION_MAX_STEP,
+    LiveIndexer,
+    _normalized_rows,
+    _pick,
+    _texture,
+)
 
 fused = pytest.mark.skipif(
     not _kernels.available("cuda") or not torch.cuda.is_available(),
@@ -216,6 +222,29 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     assert with_ghost.abs().max() < 1e-4, with_ghost.abs().max()
     assert without.abs().max() > 5 * with_ghost.abs().max(), without.abs().max()
     assert (score > 0.999).all(), score
+
+
+def test_a_fit_cannot_run_away(master, point_group, detector):
+    """A pattern of noise beside a real one: the noise's fit moves at most
+    DEFORMATION_MAX_STEP an iteration, and the real pattern's fit is untouched."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
+    phase = torch.zeros(2, dtype=torch.int64)
+    rows = _normalized_rows(indexer._project(indexer.texture, g, phase, indexer.refine_directions))
+    noise = torch.randn(1, rows.shape[1], generator=torch.Generator().manual_seed(1))
+    rows[1] = _normalized_rows(noise)[0]
+    _, strain, score = indexer.refine_deformation(rows, phase, g, iterations=10)
+    assert strain[0].abs().max() < 1e-5 and score[0] > 0.999
+    # strain is the symmetric part of eight numbers that each moved this far at most
+    assert strain[1].abs().max() <= 10 * DEFORMATION_MAX_STEP
+
+
+def test_uint16_frames_are_picked_as_they_are():
+    frames = torch.randint(0, 2**16, (6, 4, 4), dtype=torch.int32).to(torch.uint16)
+    rows = torch.tensor([4, 0, 4])
+    assert torch.equal(_pick(frames, rows).int(), frames.int()[rows])
 
 
 def test_the_static_background_divides_out(master, point_group, detector):
