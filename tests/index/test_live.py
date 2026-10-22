@@ -193,3 +193,26 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     assert np.max(error) < 0.02, error
     assert torch.allclose(found_strain, strain, atol=2e-4), (found_strain - strain).abs().max()
     assert (score > 0.999).all(), score
+
+
+def test_strain_from_a_reference_pattern(master, point_group, detector):
+    """Patterns of one orientation with known strains, against an unstrained
+    pattern of it: the strain comes back relative to that reference."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known()[:1].data, dtype=torch.float32))
+    rng = np.random.default_rng(5)
+    e = rng.normal(0.0, 2e-3, (4, 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    strain = torch.as_tensor(e, dtype=torch.float32)
+    deformed = torch.cat([g, g @ torch.linalg.inv(torch.eye(3) + strain)])
+    phase = torch.zeros(len(deformed), dtype=torch.int64)
+    frames = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
+    frames = frames.view(-1, *indexer.refine_shape)
+    found, rotation, residual = indexer.strain_from_reference(frames[1:], frames[0])
+    # 16-pixel regions of a 64-pixel pattern resolve a few 1e-4
+    assert torch.allclose(found, strain, atol=8e-4), (found - strain).abs().max()
+    assert 0.9 < float((found * strain).sum() / (strain * strain).sum()) < 1.1
+    assert rotation.abs().max() < 6e-4
