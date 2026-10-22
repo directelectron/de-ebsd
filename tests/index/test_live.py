@@ -149,3 +149,47 @@ def test_fused_score_is_the_normalized_cross_correlation(master, detector):
     simulated = _normalized_rows(_kernels.project(texture, g, bases, directions)).view(4, 7, -1)
     expected = (simulated * rows[:, None]).sum(-1).flatten()
     assert torch.allclose(got, expected, atol=1e-5)
+
+
+def test_center_maps_move_the_directions_to_another_center(master, point_group, detector):
+    """The refine's directions at one center, mapped and normalized, are exactly
+    the directions at another."""
+    indexer = LiveIndexer([master], [point_group], detector, resolution=10.0, device="cpu")
+    other = (0.507, 0.392, 0.561)
+    (m,) = indexer.center_maps([other])
+    moved = indexer.refine_directions @ m.T
+    moved = moved / moved.norm(dim=-1, keepdim=True)
+    expected = replace(detector, pc=other, shape=indexer.refine_shape).direction_cosines()
+    assert torch.allclose(moved, expected, atol=1e-5)
+
+
+def test_strain_is_refined_with_the_orientation(master, point_group, detector):
+    """Patterns projected with a known trace-free strain and a seed 0.2° off: the
+    deformation refine returns the strain and the orientation.
+
+    The patterns come from the indexer's own projection, so this checks the fit and
+    its conventions -- ``F = R U`` in the sample frame, the orientation that of the
+    deformed lattice -- not how closely a master matches a camera; on twin scans
+    see :data:`DEFORMATION_ITERATIONS`."""
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
+    rng = np.random.default_rng(3)
+    e = rng.normal(0.0, 2e-3, (len(g), 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    strain = torch.as_tensor(e, dtype=torch.float32)
+    deformed = g @ torch.linalg.inv(torch.eye(3) + strain)
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    rows = _normalized_rows(
+        indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
+    )
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.2, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32))
+    found, found_strain, score = indexer.refine_deformation(rows, phase, seed, iterations=5)
+    error = Rotation.from_matrix(found.numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.02, error
+    assert torch.allclose(found_strain, strain, atol=2e-4), (found_strain - strain).abs().max()
+    assert (score > 0.999).all(), score

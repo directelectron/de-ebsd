@@ -85,6 +85,16 @@ PATTERN_CENTER_PATTERNS = 256
 #: (patterns, 7, pixels, 3) sample directions.
 BATCH = 256
 
+#: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. On the twin
+#: scans of :data:`REFINE_STEPS_DEG`, rendered with a known random strain of 1e-3 and
+#: 3e-3, three took the orientation median from 0.14-0.20° (the stencil refine
+#: alone) to 0.073-0.076°; a fourth and a fifth changed nothing.
+DEFORMATION_ITERATIONS = 3
+
+#: The central-difference step of the deformation's Jacobian, as a strain. Much
+#: smaller steps measure the bilinear master texture's facets rather than its slope.
+DEFORMATION_STEP = 2e-3
+
 
 def _normalized_rows(x: torch.Tensor) -> torch.Tensor:
     x = x - x.mean(-1, keepdim=True)
@@ -137,6 +147,31 @@ def _rotation_matrices(w: torch.Tensor) -> torch.Tensor:
     c = torch.cos(theta)[..., None]
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand_as(skew)
     return eye + s * skew + (1 - c) * (skew @ skew)
+
+
+def _trace_free_basis(device) -> torch.Tensor:
+    """The 8 trace-free 3x3 matrices ``(8, 3, 3)``, orthonormal in the Frobenius
+    sense: rotations about x, y and z, then the five deviatoric strains. A
+    projection cannot see the ninth, hydrostatic, component."""
+    root2, root6 = math.sqrt(2.0), math.sqrt(6.0)
+    basis = torch.zeros(8, 3, 3, dtype=torch.float64)
+    for k, (i, j) in enumerate(((1, 2), (2, 0), (0, 1))):
+        basis[k, i, j], basis[k, j, i] = -1 / root2, 1 / root2
+        basis[3 + k, i, j] = basis[3 + k, j, i] = 1 / root2
+    basis[6] = torch.diag(torch.tensor([1.0, -1.0, 0.0], dtype=torch.float64)) / root2
+    basis[7] = torch.diag(torch.tensor([1.0, 1.0, -2.0], dtype=torch.float64)) / root6
+    return basis.to(device, torch.float32)
+
+
+def polar_parts(beta: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The deformation gradient ``F = (I - beta)^-1`` of a displacement gradient
+    *beta* ``(N, 3, 3)``, split as ``F = R U``: ``(R, U - I)``, the lattice rotation
+    and the (Biot) strain, both in the sample frame."""
+    eye = torch.eye(3, device=beta.device, dtype=torch.float64)
+    f = torch.linalg.inv(eye - beta.double())
+    u, s, vt = torch.linalg.svd(f)
+    stretch = vt.transpose(-1, -2) @ torch.diag_embed(s) @ vt
+    return (u @ vt).to(beta.dtype), (stretch - eye).to(beta.dtype)
 
 
 class LiveIndexer:
@@ -393,6 +428,129 @@ class LiveIndexer:
         center = tuple(float(v) for v in pc)
         self.set_pattern_center(center)
         return center
+
+    def center_maps(self, pattern_centers) -> torch.Tensor:
+        """``(N, 3, 3)`` maps taking the refine's directions at the indexer's pattern
+        center to those at each of *pattern_centers* ``(N, 3)``, up to length.
+
+        On a flat screen a pixel's position is linear in its index at any center,
+        so moving the center is exactly a linear map of the directions: in a
+        candidate ``g @ m`` it is one more matrix, and the fused kernels, which
+        normalize what they are given, need nothing new. It also means that, within
+        one pattern, a center error is indistinguishable from a strain, which is
+        why a scan's centers must come from its geometry rather than from each
+        pattern.
+        """
+        from de_ebsd.core.geometry import sample_to_detector_matrix
+
+        detector = replace(self.detector, shape=self.refine_shape)
+
+        def screen(pc):
+            # (col, row, 1) -> the unnormalized screen position, as direction_cosines
+            b = replace(detector, pc=tuple(float(v) for v in pc)).gnomonic_bounds
+            x_scale, y_scale = (b[1] - b[0]) / detector.ncols, (b[3] - b[2]) / detector.nrows
+            z = float(pc[2])
+            return np.array(
+                [
+                    [x_scale * z, 0.0, (b[0] + 0.5 * x_scale) * z],
+                    [0.0, -y_scale * z, (b[3] - 0.5 * y_scale) * z],
+                    [0.0, 0.0, z],
+                ]
+            )
+
+        frame = sample_to_detector_matrix(
+            detector.sample_tilt, detector.tilt, detector.azimuthal, detector.twist
+        )
+        to_index = np.linalg.inv(screen(detector.pc)) @ frame
+        maps = [frame.T @ screen(pc) @ to_index for pc in np.asarray(pattern_centers, float)]
+        return torch.as_tensor(np.stack(maps), device=self.device, dtype=torch.float32)
+
+    def refine_deformation(
+        self,
+        refine_rows: torch.Tensor,
+        phase: torch.Tensor,
+        g: torch.Tensor,
+        *,
+        iterations: int = DEFORMATION_ITERATIONS,
+        step: float = DEFORMATION_STEP,
+        center_maps: torch.Tensor | None = None,
+    ):
+        """Each orientation *g* ``(N, 3, 3)`` refined together with its pattern's
+        deviatoric strain: ``(g, strain, score)``, *g* the lattice's orientation,
+        *strain* ``(N, 3, 3)`` the symmetric, trace-free Biot strain in the sample
+        frame (the hydrostatic part is invisible to a projection), *score* the fit's.
+
+        A crystal deformed by ``F`` shows the master's pattern at ``g F^-1 r`` for a
+        ray ``r``, so a candidate is the matrix ``g (I - beta)`` with *beta* the
+        eight trace-free numbers -- three rotations and five strains -- that the
+        fused kernels project like any orientation. Each Gauss-Newton iteration
+        projects the current fit and its 16 central differences and solves the 8x8
+        normal equations of the normalized pattern, for every pattern at once.
+        Fitting the rotations alongside the strains is what sharpens the
+        orientations: a strain left out of the model is partly fitted as a turn.
+
+        *g* should already be within a few tenths of a degree (:meth:`refine`).
+        *center_maps* (:meth:`center_maps`) give each pattern its own center.
+        """
+        basis = _trace_free_basis(self.device)
+        n, k = len(g), 1 + 2 * len(basis)
+        eye = torch.eye(3, device=self.device)
+        offsets = step * torch.cat(
+            [torch.zeros(1, 8, device=self.device), torch.eye(8, device=self.device)]
+        )
+        offsets = torch.cat([offsets, -offsets[1:]])  # (17, 8): the fit, +each, -each
+        damping = 1e-3 * torch.eye(8, device=self.device)
+        p = torch.zeros(n, 8, device=self.device)
+        for _ in range(iterations):
+            beta = torch.einsum("nkc,cij->nkij", p[:, None] + offsets, basis)
+            candidates = g[:, None] @ (eye - beta)
+            if center_maps is not None:
+                candidates = candidates @ center_maps[:, None]
+            simulated = self._project(
+                self.texture,
+                candidates.reshape(-1, 3, 3),
+                phase.repeat_interleave(k),
+                self.refine_directions,
+            )
+            simulated = _normalized_rows(simulated).view(n, k, -1)
+            fit = simulated[:, 0]
+            jacobian = (simulated[:, 1:9] - simulated[:, 9:]) / (2 * step)
+            # the pattern's contrast is free: the residual is against scale * fit
+            scale = (refine_rows * fit).sum(-1, keepdim=True)
+            residual = refine_rows - scale * fit
+            normal = torch.einsum("nkp,nlp->nkl", jacobian, jacobian)
+            normal = normal + damping * normal.diagonal(dim1=-2, dim2=-1).mean(-1)[:, None, None]
+            gradient = torch.einsum("nkp,np->nk", jacobian, residual) / scale.clamp_min(_EPS)
+            p = p + torch.linalg.solve(normal, gradient)
+        beta = torch.einsum("nc,cij->nij", p, basis)
+        final = g @ (eye - beta)
+        if center_maps is not None:
+            final = final @ center_maps
+        score = (
+            _normalized_rows(self._project(self.texture, final, phase, self.refine_directions))
+            * refine_rows
+        ).sum(-1)
+        rotation, strain = polar_parts(beta)
+        return g @ rotation.transpose(-1, -2), strain, score
+
+    def index_with_strain(self, frames, pattern_centers=None):
+        """:meth:`index`, then each orientation refined together with its pattern's
+        strain (:meth:`refine_deformation`): ``(phase, g, strain, score, entry)``.
+        *pattern_centers* ``(N, 3)``, one per frame, default to the indexer's."""
+        maps = None if pattern_centers is None else self.center_maps(pattern_centers)
+        out = []
+        for lo in range(0, len(frames), BATCH):
+            search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
+            phase, g, _, entry = self.search(search_rows)
+            g, _ = self.refine(refine_rows, phase, g)
+            g, strain, score = self.refine_deformation(
+                refine_rows,
+                phase,
+                g,
+                center_maps=None if maps is None else maps[lo : lo + BATCH],
+            )
+            out.append((phase, g, strain, score, entry))
+        return tuple(torch.cat(column) for column in zip(*out, strict=True))
 
     def index(self, frames):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
