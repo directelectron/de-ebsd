@@ -289,23 +289,38 @@ class LiveIndexer:
         if self._static_count >= MIN_FRAMES_FOR_STATIC:
             self.static = self._static_sum / self._static_count
 
+    def _without_background(self, t: torch.Tensor) -> torch.Tensor:
+        """*t* ``(N, H, W)`` less the static background and each pattern's dynamic
+        one, at whatever shape it is."""
+        shape = tuple(t.shape[-2:])
+        if self.static is not None:
+            static = self.static
+            if shape != self.refine_shape:
+                static = F.interpolate(
+                    static[None, None], size=shape, mode="bilinear", align_corners=False
+                )[0, 0]
+            t = t - static
+        # The dynamic background is an eighth of the width wide, so it is found at a
+        # quarter of the refine resolution and drawn back up: a full-size blur that
+        # wide was most of the preparation's time.
+        coarse = _average_to(t, (self.refine_shape[0] // 4, self.refine_shape[1] // 4))
+        coarse = _gaussian_blur(coarse, coarse.shape[-1] / 8.0, 4.0)
+        return (
+            t
+            - F.interpolate(coarse[:, None], size=shape, mode="bilinear", align_corners=False)[:, 0]
+        )
+
+    def corrected(self, frames) -> torch.Tensor:
+        """*frames* ``(N, H, W)`` with the backgrounds removed as :meth:`prepare` removes
+        them, at their own resolution: what the indexer matches, to be looked at."""
+        t = torch.as_tensor(frames, device=self.device)
+        t = t[None] if t.ndim == 2 else t
+        return self._without_background(t.to(torch.float32))
+
     def prepare(self, frames) -> tuple[torch.Tensor, torch.Tensor]:
         """*frames* ``(N, H, W)`` corrected and normalized, as ``(search, refine)``
         rows ``(N, pixels)`` at the two shapes."""
-        t = self._pooled(frames)
-        if self.static is not None:
-            t = t - self.static
-        # The dynamic background is an eighth of the width wide, so it is found at a
-        # quarter of the resolution and drawn back up: a full-size blur that wide
-        # was most of this step's time.
-        coarse = _average_to(t, (self.refine_shape[0] // 4, self.refine_shape[1] // 4))
-        coarse = _gaussian_blur(coarse, coarse.shape[-1] / 8.0, 4.0)
-        t = (
-            t
-            - F.interpolate(
-                coarse[:, None], size=self.refine_shape, mode="bilinear", align_corners=False
-            )[:, 0]
-        )
+        t = self._without_background(self._pooled(frames))
         search = _average_to(t, self.search_shape)
         return _normalized_rows(search.flatten(1)), _normalized_rows(t.flatten(1))
 
