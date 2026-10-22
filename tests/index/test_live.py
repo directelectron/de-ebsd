@@ -7,6 +7,8 @@ back: the search must land in the right cell of a coarse dictionary and the
 refine must take it to well under that cell's size.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import torch
@@ -90,6 +92,32 @@ def test_refine_moves_a_seed_toward_its_orientation(master, point_group, detecto
     g, _ = indexer.refine(rows, torch.zeros(len(seed), dtype=torch.int64), seed)
     error = Rotation.from_matrix(g.numpy()).angle_with(rotations, degrees=True)
     assert np.max(error) < 0.2, error
+
+
+def test_pattern_center_is_refined_from_the_patterns(master, point_group, detector):
+    """Patterns projected at a known center: indexed from that center and from
+    one 0.006 off in every coordinate, the refine arrives at the same center.
+
+    That center is a few thousandths from the true one here, because this band
+    master is mostly smooth background, which the patterns lose in preparation
+    and the simulations keep. On twin scans rendered from dynamical masters it
+    stays within 0.0002 of the truth (``PATTERN_CENTER_STEPS``)."""
+    patterns = master.project(detector, _known())
+    found = []
+    for start in (detector.pc, tuple(v + 0.006 for v in detector.pc)):
+        indexer = LiveIndexer(
+            [master],
+            [point_group],
+            replace(detector, pc=start),
+            resolution=10.0,
+            refine_shape=(64, 64),
+            refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
+            device="cpu",
+        )
+        found.append(indexer.refine_pattern_center(patterns))
+        assert indexer.detector.pc == found[-1]
+    assert np.allclose(found[0], found[1], atol=0.001), found
+    assert np.allclose(found[1], detector.pc, atol=0.005), found
 
 
 @fused

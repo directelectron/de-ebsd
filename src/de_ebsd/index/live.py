@@ -18,6 +18,9 @@ leave the device.
    master on the fly at the refine shape. A parabola through each axis's three
    scores moves the orientation; the step shrinks each level. Every level is the
    same seven projections per pattern, so its cost is fixed and known.
+4. **Pattern center** (:meth:`LiveIndexer.refine_pattern_center`): the center
+   shared by a buffer's best patterns, refined the same way -- seven centers a
+   level, each scored with every pattern's orientation refined again there.
 
 Orientations are rotation matrices ``g`` taking a sample-frame direction to the
 crystal frame (``v_crystal = g @ v_sample``), as :meth:`MasterPattern.project`
@@ -63,6 +66,21 @@ REFINE_STEPS_DEG = (2.0, 1.0, 0.5, 0.25, 0.12)
 #: 40-60° off unblurred, none at 2°.
 SEARCH_BLUR_DEG = 2.0
 
+#: Pattern-center steps (fractions of the detector, as the center is), each half the
+#: last. On the twin scan above, starts 0.004-0.01 off in every coordinate came back
+#: within 0.001 of the truth (256 patterns, 0.45 s); 0.002 off costs 0.07° of median
+#: orientation error.
+PATTERN_CENTER_STEPS = (0.008, 0.004, 0.002, 0.001)
+
+#: The orientation refine run at each candidate center. It must resolve far finer
+#: than the indexing's: a center 0.004 off in x moves every pattern's best fit by a
+#: few tenths of a degree, and steps ending at 0.12° follow that in jumps, which
+#: leaves the mean score flat in x and the center stuck 0.003 short.
+PATTERN_CENTER_ORIENTATION_STEPS_DEG = (0.5, 0.25, 0.12, 0.06, 0.03)
+
+#: Patterns a center is fitted with: the best-scored of the buffer.
+PATTERN_CENTER_PATTERNS = 256
+
 #: Patterns per batched step, which bounds the largest intermediate: the refine's
 #: (patterns, 7, pixels, 3) sample directions.
 BATCH = 256
@@ -93,6 +111,17 @@ def _average_to(stack: torch.Tensor, shape) -> torch.Tensor:
     if (rows * shape[0], cols * shape[1]) == tuple(stack.shape[-2:]):
         return F.avg_pool2d(stack[:, None], (rows, cols))[:, 0]
     return F.adaptive_avg_pool2d(stack[:, None], shape)[:, 0]
+
+
+def _parabola_offset(scores: torch.Tensor) -> torch.Tensor:
+    """The step ``(N, 3)``, in units of the stencil's, to each axis's best: the
+    vertex of the parabola through the scores ``(N, 7)`` at -1, 0 and +1 (see
+    :data:`STENCIL`), or the better neighbor where the three make no maximum."""
+    center, plus, minus = scores[:, :1], scores[:, 1::2], scores[:, 2::2]
+    curvature = plus - 2 * center + minus
+    vertex = 0.5 * (minus - plus) / curvature.clamp_max(-_EPS)
+    fallback = torch.where(plus > minus, 1.0, -1.0) * (torch.maximum(plus, minus) > center)
+    return torch.where(curvature < 0, vertex.clamp(-1, 1), fallback.to(scores.dtype))
 
 
 def _rotation_matrices(w: torch.Tensor) -> torch.Tensor:
@@ -155,18 +184,13 @@ class LiveIndexer:
         if len(masters) != len(point_groups):
             raise ValueError("one point group per master")
         self.device = torch.device(device) if device is not None else masters[0].device
+        self.detector = detector
         self.search_shape = tuple(search_shape)
         self.refine_shape = tuple(refine_shape)
         self.refine_steps = tuple(math.radians(s) for s in refine_steps_deg)
         self.fused = _kernels.available(self.device)
         self.texture = _texture(masters, self.device)
         self.search_texture = _texture(masters, self.device, search_blur_deg)
-        self.search_directions = replace(detector, shape=self.search_shape).direction_cosines(
-            device=self.device
-        )
-        self.refine_directions = replace(detector, shape=self.refine_shape).direction_cosines(
-            device=self.device
-        )
         self.stencil = torch.tensor(STENCIL, device=self.device, dtype=torch.float32)
 
         rotations, phases = [], []
@@ -181,6 +205,21 @@ class LiveIndexer:
         self.rotations = torch.cat(rotations)
         self.phase_of = torch.cat(phases)
         self.sizes = [len(r) for r in rotations]
+        self.set_pattern_center(detector.pc)
+        self.static = None
+        self._static_sum = torch.zeros(self.refine_shape, device=self.device)
+        self._static_count = 0
+
+    def _directions(self, pc, shape) -> torch.Tensor:
+        detector = replace(self.detector, pc=tuple(float(v) for v in pc), shape=shape)
+        return detector.direction_cosines(device=self.device)
+
+    def set_pattern_center(self, pc) -> None:
+        """Index at pattern center *pc* from now on: the dictionary is projected
+        again, which takes milliseconds with the fused kernels."""
+        self.detector = replace(self.detector, pc=tuple(float(v) for v in pc))
+        self.search_directions = self._directions(pc, self.search_shape)
+        self.refine_directions = self._directions(pc, self.refine_shape)
         entries = [
             _normalized_rows(
                 self._project(
@@ -194,9 +233,6 @@ class LiveIndexer:
         ]
         #: ``(pixels, entries)``, contiguous so the search's product runs at full rate.
         self.dictionary = torch.cat(entries).T.contiguous()
-        self.static = None
-        self._static_sum = torch.zeros(self.refine_shape, device=self.device)
-        self._static_count = 0
 
     def _project(
         self,
@@ -222,20 +258,16 @@ class LiveIndexer:
         return values.gather(0, channel[None])[0]
 
     def _scores(
-        self, candidates: torch.Tensor, phases: torch.Tensor, rows: torch.Tensor
+        self, candidates: torch.Tensor, phases: torch.Tensor, rows: torch.Tensor, directions
     ) -> torch.Tensor:
         """Scores ``(N, K)`` of candidates ``(N, K, 3, 3)`` against their patterns'
-        normalized *rows* ``(N, pixels)``."""
+        normalized *rows* ``(N, pixels)``, sampled at *directions*."""
         n, k = candidates.shape[:2]
         flat = candidates.reshape(-1, 3, 3)
         bases = phases.repeat_interleave(k) * 2
         if self.fused:
-            return _kernels.score(self.texture, flat, bases, self.refine_directions, rows, k).view(
-                n, k
-            )
-        simulated = _normalized_rows(
-            self._project(self.texture, flat, bases // 2, self.refine_directions)
-        )
+            return _kernels.score(self.texture, flat, bases, directions, rows, k).view(n, k)
+        simulated = _normalized_rows(self._project(self.texture, flat, bases // 2, directions))
         return torch.einsum("nkp,np->nk", simulated.view(n, k, -1), rows)
 
     def restart_static(self) -> None:
@@ -282,24 +314,69 @@ class LiveIndexer:
         score, entry = (search_rows @ self.dictionary).max(1)
         return self.phase_of[entry], self.rotations[entry], score
 
-    def refine(self, refine_rows: torch.Tensor, phase: torch.Tensor, g: torch.Tensor):
+    def refine(
+        self,
+        refine_rows: torch.Tensor,
+        phase: torch.Tensor,
+        g: torch.Tensor,
+        *,
+        steps=None,
+        directions=None,
+    ):
         """Each orientation *g* ``(N, 3, 3)`` refined against its pattern:
-        ``(g, score)``, the score being the last level's at the seed."""
-        n = len(g)
-        score = torch.zeros(n, device=self.device)
-        for step in self.refine_steps:
+        ``(g, score)``, the score being the last level's at the seed. *steps*
+        (radians) default to the indexer's, *directions* to its pattern center's."""
+        steps = self.refine_steps if steps is None else steps
+        directions = self.refine_directions if directions is None else directions
+        score = torch.zeros(len(g), device=self.device)
+        for step in steps:
             candidates = g[:, None] @ _rotation_matrices(self.stencil * step)
-            scores = self._scores(candidates, phase, refine_rows)
-            center, plus, minus = scores[:, :1], scores[:, 1::2], scores[:, 2::2]
-            curvature = plus - 2 * center + minus
-            # The vertex of the parabola through -1, 0, +1; where the three do not
-            # make a maximum, the better neighbor.
-            vertex = 0.5 * (minus - plus) / curvature.clamp_max(-_EPS)
-            fallback = torch.where(plus > minus, 1.0, -1.0) * (torch.maximum(plus, minus) > center)
-            offset = torch.where(curvature < 0, vertex.clamp(-1, 1), fallback)
-            g = g @ _rotation_matrices(offset * step)
-            score = center[:, 0]
+            scores = self._scores(candidates, phase, refine_rows, directions)
+            g = g @ _rotation_matrices(_parabola_offset(scores) * step)
+            score = scores[:, 0]
         return g, score
+
+    def refine_pattern_center(
+        self,
+        frames,
+        *,
+        patterns: int = PATTERN_CENTER_PATTERNS,
+        steps=PATTERN_CENTER_STEPS,
+        orientation_steps_deg=PATTERN_CENTER_ORIENTATION_STEPS_DEG,
+    ) -> tuple[float, float, float]:
+        """The pattern center that best fits the best-scored *patterns* of
+        *frames* ``(N, H, W)``, which the indexer then uses
+        (:meth:`set_pattern_center`).
+
+        A center moved along x or y looks to every pattern much like the sample
+        turned slightly, so the center is fitted with each orientation free: at
+        each candidate center every orientation is refined again
+        (*orientation_steps_deg*) and the candidate scored by the patterns' mean
+        score. A level scores the center and one step either side of it on each
+        axis and moves to each axis's parabola vertex, as :meth:`refine` does for
+        an orientation. The patterns should come from several grains: one
+        orientation alone cannot tell the center from a turn.
+        """
+        phase, g, score = self.index(frames)
+        best = torch.argsort(score, descending=True)[:patterns]
+        _, rows = self.prepare(torch.as_tensor(frames, device=self.device)[best])
+        phase, g = phase[best], g[best]
+        orientation_steps = tuple(math.radians(s) for s in orientation_steps_deg)
+        pc = torch.tensor(self.detector.pc, dtype=torch.float64)
+        for step in steps:
+            scores, refined = [], []
+            for offset in self.stencil.cpu().double():
+                directions = self._directions(pc + step * offset, self.refine_shape)
+                found, found_score = self.refine(
+                    rows, phase, g, steps=orientation_steps, directions=directions
+                )
+                scores.append(found_score.mean())
+                refined.append(found)
+            g = refined[0]
+            pc = pc + step * _parabola_offset(torch.stack(scores).double().cpu()[None])[0]
+        center = tuple(float(v) for v in pc)
+        self.set_pattern_center(center)
+        return center
 
     def index(self, frames):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score)``."""
