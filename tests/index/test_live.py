@@ -22,6 +22,7 @@ from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
 from de_ebsd.index.live import (
     DEFORMATION_MAX_STEP,
+    MIN_FRAMES_FOR_STATIC,
     LiveIndexer,
     _normalized_rows,
     _pick,
@@ -260,6 +261,30 @@ def test_the_static_background_divides_out(master, point_group, detector):
     even = indexer.corrected(bands)
     indexer.static = backscatter
     assert torch.allclose(indexer.corrected(backscatter * bands), even, atol=1e-5)
+
+
+def test_a_search_starts_the_static_background_and_a_single_crystal_blurs_it(
+    master, point_group, detector
+):
+    """A search's frames are the static background from a scan's first frame. One
+    crystal's frames all carry its band, so their mean does; blurred, it does not,
+    and there is no ghost."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    y, x = torch.meshgrid(torch.linspace(-1, 1, 64), torch.linspace(-1, 1, 64), indexing="ij")
+    backscatter = torch.exp(-(x**2 + (y - 0.3) ** 2) / 2.0)
+    band = torch.zeros(64, 64)
+    band[:, 31:33] = 0.5
+    frames = (backscatter * (1 + band)).expand(MIN_FRAMES_FOR_STATIC, 64, 64)
+    # away from the top and bottom, where the blur meets the edge
+    middle = (slice(16, 48), slice(31, 33))
+    indexer.restart_static(frames)
+    assert (indexer.static / backscatter - 1)[middle].min() > 0.45
+    indexer.restart_static(frames, blur=0.05)
+    assert (indexer.static / backscatter - 1)[middle].max() < 0.15
+    indexer.add_fits(torch.zeros(1, dtype=torch.int64), torch.eye(3)[None])
+    assert indexer.ghost is None
 
 
 def test_strain_from_a_reference_pattern(master, point_group, detector):

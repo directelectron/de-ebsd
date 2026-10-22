@@ -7,8 +7,9 @@ leave the device.
 
 1. **Prepare** (:meth:`LiveIndexer.prepare`): each frame averaged over the whole
    sensor down to the refine shape, divided by the scan's static background (the
-   running mean of its frames, :meth:`LiveIndexer.observe`), the per-pattern dynamic
-   background removed, then averaged again to the search shape.
+   running mean of its frames, :meth:`LiveIndexer.observe`, started from a search's
+   and blurred for a single crystal, :meth:`LiveIndexer.restart_static`), the
+   per-pattern dynamic background removed, then averaged again to the search shape.
 2. **Search** (:meth:`LiveIndexer.search`): one matrix product against every
    phase's dictionary at once. The dictionaries are the phases' dynamical master
    patterns projected over their fundamental zones, stacked into one matrix, so the
@@ -261,6 +262,7 @@ class LiveIndexer:
         self.sizes = [len(r) for r in rotations]
         self.set_pattern_center(detector.pc)
         self.static = None
+        self.static_blur = None
         self._static_sum = torch.zeros(self.refine_shape, device=self.device)
         self._static_count = 0
         self._fit_sum = torch.zeros(math.prod(self.refine_shape), device=self.device)
@@ -326,13 +328,25 @@ class LiveIndexer:
         simulated = _normalized_rows(self._project(self.texture, flat, bases // 2, directions))
         return torch.einsum("nkp,np->nk", simulated.view(n, k, -1), rows)
 
-    def restart_static(self) -> None:
-        """Forget the scan, for a new one: its static background and its ghost."""
+    def restart_static(self, frames=None, *, blur: float | None = None) -> None:
+        """Forget the scan, for a new one: its static background and its ghost.
+
+        *frames* from all over the same field, such as a search's, start the new
+        static background, so the scan's first patterns are divided by one that
+        holds no grain's bands rather than by the mean of its first few frames.
+
+        With *blur* (a Gaussian sigma, as a share of the pattern's width) the
+        static background is the frames' mean blurred, for a single crystal: its
+        frames all carry its bands, so their mean would divide them out. It then
+        has no ghost."""
         self.static = None
+        self.static_blur = blur
         self._static_sum.zero_()
         self._static_count = 0
         self._fit_sum.zero_()
         self._fit_count = 0
+        if frames is not None:
+            self.observe(frames)
 
     def _pooled(self, frames) -> torch.Tensor:
         t = torch.as_tensor(frames, device=self.device)
@@ -345,7 +359,10 @@ class LiveIndexer:
         self._static_sum += pooled.sum(0)
         self._static_count += len(pooled)
         if self._static_count >= MIN_FRAMES_FOR_STATIC:
-            self.static = self._static_sum / self._static_count
+            static = self._static_sum / self._static_count
+            if self.static_blur:
+                static = _gaussian_blur(static[None], self.static_blur * static.shape[-1], 4.0)[0]
+            self.static = static
 
     def _without_background(self, t: torch.Tensor) -> torch.Tensor:
         """*t* ``(N, H, W)`` divided by the static background, less each pattern's
@@ -496,6 +513,8 @@ class LiveIndexer:
     def add_fits(self, phase, g, center_maps=None) -> None:
         """Add the simulations of fitted orientations *g* ``(N, 3, 3)`` to the
         scan's :attr:`ghost`."""
+        if self.static_blur:
+            return
         if center_maps is not None:
             g = g @ center_maps
         fits = self._project(self.texture, g, phase, self.refine_directions)
@@ -512,7 +531,8 @@ class LiveIndexer:
         their negative. A simulation has no such ghost; fitted without it, a
         strain bends to match the ghost of the other grains, differently in each
         grain. :meth:`refine_deformation` leaves each pattern its own amount of
-        it instead.
+        it instead. A blurred static background (:meth:`restart_static`) has no
+        bands, so then there is no ghost.
         """
         if self.static is None or not self._fit_count:
             return None
