@@ -6,8 +6,8 @@ over patterns or phases -- and only each pattern's phase, orientation and score
 leave the device.
 
 1. **Prepare** (:meth:`LiveIndexer.prepare`): each frame averaged over the whole
-   sensor down to the refine shape, the scan's static background (the running
-   mean of its frames, :meth:`LiveIndexer.observe`) and the per-pattern dynamic
+   sensor down to the refine shape, divided by the scan's static background (the
+   running mean of its frames, :meth:`LiveIndexer.observe`), the per-pattern dynamic
    background removed, then averaged again to the search shape.
 2. **Search** (:meth:`LiveIndexer.search`): one matrix product against every
    phase's dictionary at once. The dictionaries are the phases' dynamical master
@@ -244,6 +244,8 @@ class LiveIndexer:
         self.static = None
         self._static_sum = torch.zeros(self.refine_shape, device=self.device)
         self._static_count = 0
+        self._fit_sum = torch.zeros(math.prod(self.refine_shape), device=self.device)
+        self._fit_count = 0
 
     def _directions(self, pc, shape) -> torch.Tensor:
         detector = replace(self.detector, pc=tuple(float(v) for v in pc), shape=shape)
@@ -310,6 +312,8 @@ class LiveIndexer:
         self.static = None
         self._static_sum.zero_()
         self._static_count = 0
+        self._fit_sum.zero_()
+        self._fit_count = 0
 
     def _pooled(self, frames) -> torch.Tensor:
         t = torch.as_tensor(frames, device=self.device)
@@ -325,8 +329,13 @@ class LiveIndexer:
             self.static = self._static_sum / self._static_count
 
     def _without_background(self, t: torch.Tensor) -> torch.Tensor:
-        """*t* ``(N, H, W)`` less the static background and each pattern's dynamic
-        one, at whatever shape it is."""
+        """*t* ``(N, H, W)`` divided by the static background, less each pattern's
+        dynamic one, at whatever shape it is.
+
+        Divided rather than less: the bands' contrast scales with the
+        backscattered intensity, so a pattern less its static background still
+        has its bands weighted by the bright middle of the screen, and that
+        weighting moves a band's center differently in every grain."""
         shape = tuple(t.shape[-2:])
         if self.static is not None:
             static = self.static
@@ -334,7 +343,7 @@ class LiveIndexer:
                 static = F.interpolate(
                     static[None, None], size=shape, mode="bilinear", align_corners=False
                 )[0, 0]
-            t = t - static
+            t = t / static.clamp_min(_EPS) - 1.0
         # The dynamic background is an eighth of the width wide, so it is found at a
         # quarter of the refine resolution and drawn back up: a full-size blur that
         # wide was most of the preparation's time.
@@ -465,6 +474,31 @@ class LiveIndexer:
         maps = [frame.T @ screen(pc) @ to_index for pc in np.asarray(pattern_centers, float)]
         return torch.as_tensor(np.stack(maps), device=self.device, dtype=torch.float32)
 
+    def add_fits(self, phase, g, center_maps=None) -> None:
+        """Add the simulations of fitted orientations *g* ``(N, 3, 3)`` to the
+        scan's :attr:`ghost`."""
+        if center_maps is not None:
+            g = g @ center_maps
+        fits = self._project(self.texture, g, phase, self.refine_directions)
+        self._fit_sum += _normalized_rows(fits).sum(0)
+        self._fit_count += len(g)
+
+    @property
+    def ghost(self) -> torch.Tensor | None:
+        """The scan's grains as the static background shows them: the normalized
+        mean simulation of the orientations fitted so far (:meth:`add_fits`).
+
+        The static background is the mean of the scan's frames, so it carries a
+        faint copy of every grain's bands, and a frame divided by it carries
+        their negative. A simulation has no such ghost; fitted without it, a
+        strain bends to match the ghost of the other grains, differently in each
+        grain. :meth:`refine_deformation` leaves each pattern its own amount of
+        it instead.
+        """
+        if self.static is None or not self._fit_count:
+            return None
+        return _normalized_rows(self._fit_sum[None])[0]
+
     def refine_deformation(
         self,
         refine_rows: torch.Tensor,
@@ -474,6 +508,7 @@ class LiveIndexer:
         iterations: int = DEFORMATION_ITERATIONS,
         step: float = DEFORMATION_STEP,
         center_maps: torch.Tensor | None = None,
+        ghost: torch.Tensor | None = None,
     ):
         """Each orientation *g* ``(N, 3, 3)`` refined together with its pattern's
         deviatoric strain: ``(g, strain, score)``, *g* the lattice's orientation,
@@ -491,6 +526,8 @@ class LiveIndexer:
 
         *g* should already be within a few tenths of a degree (:meth:`refine`).
         *center_maps* (:meth:`center_maps`) give each pattern its own center.
+        *ghost* (:attr:`ghost`) is taken out of the patterns and the simulations
+        alike, so every pattern may have any amount of it.
         """
         basis = _trace_free_basis(self.device)
         n, k = len(g), 1 + 2 * len(basis)
@@ -501,6 +538,17 @@ class LiveIndexer:
         offsets = torch.cat([offsets, -offsets[1:]])  # (17, 8): the fit, +each, -each
         damping = 1e-3 * torch.eye(8, device=self.device)
         p = torch.zeros(n, 8, device=self.device)
+        if ghost is not None:
+            refine_rows = _normalized_rows(refine_rows - (refine_rows @ ghost)[:, None] * ghost)
+
+        def on_ghost(simulated):
+            """Each simulation's component along the ghost. The simulations are
+            never taken off it: every product below is corrected instead, which
+            is one pass over them rather than several."""
+            if ghost is None:
+                return torch.zeros(simulated.shape[:-1], device=self.device)
+            return simulated @ ghost
+
         for _ in range(iterations):
             beta = torch.einsum("nkc,cij->nkij", p[:, None] + offsets, basis)
             candidates = g[:, None] @ (eye - beta)
@@ -513,23 +561,30 @@ class LiveIndexer:
                 self.refine_directions,
             )
             simulated = _normalized_rows(simulated).view(n, k, -1)
-            fit = simulated[:, 0]
+            along = on_ghost(simulated)
+            fit, fit_along = simulated[:, 0], along[:, :1]
             jacobian = (simulated[:, 1:9] - simulated[:, 9:]) / (2 * step)
-            # the pattern's contrast is free: the residual is against scale * fit
-            scale = (refine_rows * fit).sum(-1, keepdim=True)
+            jacobian_along = (along[:, 1:9] - along[:, 9:]) / (2 * step)
+            # the pattern's contrast is free: the residual is against scale * fit,
+            # both off the ghost (the patterns already are, so only the fit's
+            # length and the products with the Jacobian need correcting)
+            scale = (refine_rows * fit).sum(-1, keepdim=True) / (1 - fit_along**2)
             residual = refine_rows - scale * fit
             normal = torch.einsum("nkp,nlp->nkl", jacobian, jacobian)
+            normal = normal - jacobian_along[:, :, None] * jacobian_along[:, None, :]
             normal = normal + damping * normal.diagonal(dim1=-2, dim2=-1).mean(-1)[:, None, None]
-            gradient = torch.einsum("nkp,np->nk", jacobian, residual) / scale.clamp_min(_EPS)
+            gradient = (
+                torch.einsum("nkp,np->nk", jacobian, residual) + scale * jacobian_along * fit_along
+            ) / scale.clamp_min(_EPS)
             p = p + torch.linalg.solve(normal, gradient)
         beta = torch.einsum("nc,cij->nij", p, basis)
         final = g @ (eye - beta)
         if center_maps is not None:
             final = final @ center_maps
-        score = (
-            _normalized_rows(self._project(self.texture, final, phase, self.refine_directions))
-            * refine_rows
-        ).sum(-1)
+        simulated = _normalized_rows(
+            self._project(self.texture, final, phase, self.refine_directions)
+        )
+        score = (simulated * refine_rows).sum(-1) / (1 - on_ghost(simulated) ** 2).sqrt()
         rotation, strain = polar_parts(beta)
         return g @ rotation.transpose(-1, -2), strain, score
 
@@ -545,9 +600,9 @@ class LiveIndexer:
         differences from the reference, which should be strain-free, and only
         within its grain: the remap holds for lattice rotations of a few degrees.
         On a twin scan with a random 3e-3 strain at a 128 refine, the error relative
-        to a reference in each grain was 1.4e-3, against 8.4e-4 absolute from
+        to a reference in each grain was 1.7e-3, against 7.3e-4 absolute from
         :meth:`refine_deformation`; correlating regions against simulations
-        instead was 6-8e-3.
+        instead was 6e-3.
         """
         from de_ebsd.index.crosscorr import hrebsd
 
@@ -575,18 +630,20 @@ class LiveIndexer:
     def index_with_strain(self, frames, pattern_centers=None):
         """:meth:`index`, then each orientation refined together with its pattern's
         strain (:meth:`refine_deformation`): ``(phase, g, strain, score, entry)``.
-        *pattern_centers* ``(N, 3)``, one per frame, default to the indexer's."""
+        *pattern_centers* ``(N, 3)``, one per frame, default to the indexer's.
+
+        Each buffer's orientations join the scan's :attr:`ghost` before its
+        strains are fitted, as its frames joined the static background."""
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
         out = []
         for lo in range(0, len(frames), BATCH):
             search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
             phase, g, _, entry = self.search(search_rows)
             g, _ = self.refine(refine_rows, phase, g)
+            batch_maps = None if maps is None else maps[lo : lo + BATCH]
+            self.add_fits(phase, g, batch_maps)
             g, strain, score = self.refine_deformation(
-                refine_rows,
-                phase,
-                g,
-                center_maps=None if maps is None else maps[lo : lo + BATCH],
+                refine_rows, phase, g, center_maps=batch_maps, ghost=self.ghost
             )
             out.append((phase, g, strain, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))

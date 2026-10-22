@@ -195,6 +195,44 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     assert (score > 0.999).all(), score
 
 
+def test_the_static_ghost_bends_no_strain(master, point_group, detector):
+    """Unstrained patterns each carrying the negative of the scan's mean pattern, as
+    a frame divided by a static background made of the scan's own frames does: fitted
+    with the :attr:`~LiveIndexer.ghost`, their strain is zero; fitted without, the
+    ghost of the other grains is taken for strain."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    patterns = _normalized_rows(
+        indexer._project(indexer.texture, g, phase, indexer.refine_directions)
+    )
+    rows = _normalized_rows(patterns - 0.5 * patterns.mean(0))
+    indexer.static = torch.ones(indexer.refine_shape)
+    indexer.add_fits(phase, g)
+    _, with_ghost, score = indexer.refine_deformation(rows, phase, g, ghost=indexer.ghost)
+    _, without, _ = indexer.refine_deformation(rows, phase, g)
+    assert with_ghost.abs().max() < 1e-4, with_ghost.abs().max()
+    assert without.abs().max() > 5 * with_ghost.abs().max(), without.abs().max()
+    assert (score > 0.999).all(), score
+
+
+def test_the_static_background_divides_out(master, point_group, detector):
+    """Bands multiplied by the backscattered intensity, as on a real screen: divided
+    by a static background of that intensity, they are as if it were even."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    bands = 1.0 + 0.1 * torch.rand(3, 64, 64, generator=torch.Generator().manual_seed(0))
+    y, x = torch.meshgrid(torch.linspace(-1, 1, 64), torch.linspace(-1, 1, 64), indexing="ij")
+    backscatter = torch.exp(-(x**2 + (y - 0.3) ** 2) / 0.5)
+    indexer.static = torch.ones(64, 64)
+    even = indexer.corrected(bands)
+    indexer.static = backscatter
+    assert torch.allclose(indexer.corrected(backscatter * bands), even, atol=1e-5)
+
+
 def test_strain_from_a_reference_pattern(master, point_group, detector):
     """Patterns of one orientation with known strains, against an unstrained
     pattern of it: the strain comes back relative to that reference."""
