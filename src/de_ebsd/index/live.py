@@ -327,7 +327,7 @@ class LiveIndexer:
         return torch.einsum("nkp,np->nk", simulated.view(n, k, -1), rows)
 
     def restart_static(self) -> None:
-        """Forget the static background, for a new scan."""
+        """Forget the scan, for a new one: its static background and its ghost."""
         self.static = None
         self._static_sum.zero_()
         self._static_count = 0
