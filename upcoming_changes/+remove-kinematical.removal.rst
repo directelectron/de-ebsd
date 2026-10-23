@@ -1,0 +1,1 @@
+The geometry-only ``KinematicalBackend`` (``backend="kinematical"``) is removed, and ``MasterPatternSimulator`` now defaults to ``backend="bloch_prism"``, the accurate batched Bloch-wave solver; pass ``backend="bloch"`` for the one-direction-at-a-time float64 reference.

@@ -1,8 +1,9 @@
 """Master-pattern backends: how a set of incident directions becomes intensity.
 
 :class:`BlochWaveBackend` is the dynamical solver (Bethe-perturbed dynamical
-matrix, eigen-decomposition, depth integration); :class:`KinematicalBackend` is
-a fast geometry-only stand-in used to validate band positions.
+matrix, eigen-decomposition, depth integration) in float64, one direction at a
+time; :class:`~de_ebsd.diffraction.prism.BlochPrismBackend` is its batched GPU
+equivalent.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
 __all__ = [
     "DynamicalMatrix",
     "MasterPatternBackend",
-    "KinematicalBackend",
     "BlochWaveBackend",
     "build_dynamical_matrix",
     "classify_reflections",
@@ -172,55 +172,6 @@ class MasterPatternBackend(ABC):
         """Intensities (K,) for unit directions (K, 3). Called after prepare."""
 
 
-class KinematicalBackend(MasterPatternBackend):
-    """Kinematical band model: correct band geometry, approximate profiles.
-
-    Each allowed reflection paints a band of angular half-width equal to its
-    Bragg angle, weighted by ``|U_g|^2``, centered on its Kikuchi great circle.
-    This is a geometry-validation placeholder for the Bloch-wave backend: it
-    puts every band in the right place with a plausible relative weight but
-    does not reproduce dynamical band profiles or excess/deficiency effects.
-    """
-
-    name = "kinematical"
-
-    def __init__(self, max_reflections: int | None = None) -> None:
-        self.max_reflections = max_reflections
-        self._g_hat: torch.Tensor | None = None
-        self._sin_bragg: torch.Tensor | None = None
-        self._weight: torch.Tensor | None = None
-
-    def prepare(self, inputs: SimulationInputs) -> None:
-        sf = inputs.sf
-        refl = master_reflection_list(sf)
-        keep = ~refl.forbidden
-        hkl = refl.hkl[keep]
-        u_mod = refl.u_mod[keep]
-        g_len = refl.g[keep]
-        if self.max_reflections is not None:
-            hkl = hkl[: self.max_reflections]
-            u_mod = u_mod[: self.max_reflections]
-            g_len = g_len[: self.max_reflections]
-
-        g_cart = sf.crystal.g_cartesian(hkl)
-        g_hat = g_cart / np.linalg.norm(g_cart, axis=1, keepdims=True)
-        sin_bragg = 0.5 * sf.wavelength * g_len
-
-        dev, dt = inputs.device, inputs.dtype
-        self._g_hat = torch.as_tensor(g_hat, device=dev, dtype=dt)
-        self._sin_bragg = torch.as_tensor(sin_bragg, device=dev, dtype=dt)
-        self._weight = torch.as_tensor(u_mod**2, device=dev, dtype=dt)
-        self._weight = self._weight / self._weight.sum()
-
-    def intensities(self, directions: torch.Tensor) -> torch.Tensor:
-        if self._g_hat is None:
-            raise RuntimeError("call prepare() first")
-        # distance from the Kikuchi great circle, in units of the band half-width
-        t = (directions @ self._g_hat.T) / self._sin_bragg  # (K, G)
-        profile = torch.clamp(1.0 - t * t, min=0.0)
-        return profile @ self._weight
-
-
 def calc_lgh(
     a: np.ndarray,
     kn: float,
@@ -352,7 +303,6 @@ def resolve_backend(backend: str | MasterPatternBackend) -> MasterPatternBackend
     from de_ebsd.diffraction.prism import BlochPrismBackend  # deferred: prism imports this module
 
     named = {
-        "kinematical": KinematicalBackend,
         "bloch": BlochWaveBackend,
         "bloch_prism": BlochPrismBackend,
     }

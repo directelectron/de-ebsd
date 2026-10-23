@@ -1,7 +1,8 @@
 """PRISM-style Bloch backend: one eigen-decomposition reused across directions.
 
-Trades the per-direction dynamical matrix for a single shared solve, which is
-much faster for dense direction grids at some accuracy cost.
+Replaces the per-direction dynamical matrix with batched solves of the
+scattering matrix, much faster for dense direction grids and equal to
+:class:`~de_ebsd.diffraction.backends.BlochWaveBackend` in double precision.
 """
 
 from __future__ import annotations

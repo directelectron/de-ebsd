@@ -26,7 +26,6 @@ from de_ebsd.crystal import AtomSite, Crystal
 from de_ebsd.diffraction import (
     BetheParameters,
     BlochWaveBackend,
-    KinematicalBackend,
     MasterPatternBackend,
 )
 from de_ebsd.sim import (
@@ -47,7 +46,6 @@ __all__ = [
     "CrystalExplorer",
     "DepthDistribution",
     "EBSDDetector",
-    "KinematicalBackend",
     "MasterPattern",
     "MasterPatternBackend",
     "MasterPatternSimulator",
