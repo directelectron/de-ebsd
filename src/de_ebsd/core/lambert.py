@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.nn.functional as F
 
 SQRT_PI = math.sqrt(math.pi)
 SQRT_PI_HALF = math.sqrt(math.pi / 2.0)  # the half-edge L of the square
@@ -19,6 +20,7 @@ _TWO_OVER_SQRT_PI = 2.0 / SQRT_PI
 __all__ = [
     "SQRT_PI_HALF",
     "master_pattern_grid",
+    "sample_texture",
     "sphere_to_square",
     "square_to_sphere",
 ]
@@ -116,3 +118,26 @@ def master_pattern_grid(
     ys, xs = torch.meshgrid(coords, coords, indexing="ij")
     xy = torch.stack([xs, ys], dim=-1) * SQRT_PI_HALF
     return square_to_sphere(xy)
+
+
+def sample_texture(
+    texture: torch.Tensor, directions: torch.Tensor, phase: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Bilinear lookup of master patterns at unit *directions* ``(..., 3)``.
+
+    *texture* ``(1, 2 * phases, n, n)`` holds each phase's northern and southern
+    hemisphere as consecutive channels; *phase* (integer, broadcast against the
+    leading dimensions of *directions*) picks the phase, default the first. Edge
+    handling is ``grid_sample(align_corners=True, padding_mode="border")``,
+    identical to kikuchipy's interpolation. The hemisphere is selected by the
+    sign of ``z``. Returns the values ``(...)``.
+    """
+    lead = directions.shape[:-1]
+    square = sphere_to_square(directions.reshape(-1, 3)) / SQRT_PI_HALF
+    values = F.grid_sample(
+        texture, square.view(1, 1, -1, 2), mode="bilinear", align_corners=True, padding_mode="border"
+    ).view(texture.shape[1], *lead)
+    channel = (directions[..., 2] < 0).long()
+    if phase is not None:
+        channel = channel + 2 * phase
+    return values.gather(0, channel[None])[0]

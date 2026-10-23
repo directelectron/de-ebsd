@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING
 import h5py
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-from de_ebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
+from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.sim.detector import EBSDDetector
 
@@ -78,20 +77,8 @@ class MasterPattern:
         ``grid_sample(align_corners=True)``, identical to kikuchipy's
         interpolation. The hemisphere is selected by ``sign(z)``.
         """
-        i_e = self.energy_index(energy_kev)
-        shape = directions.shape[:-1]
-        v = directions.reshape(-1, 3).to(self.data.device, self.data.dtype)
-        p = v.shape[0]
-
-        lam = sphere_to_square(v) / SQRT_PI_HALF  # (P, 2) in [-1, 1]
-        grid = lam.view(1, 1, p, 2)
-
-        north = self.data[i_e, 0][None, None]
-        south = self.data[i_e, 1][None, None]
-        up = F.grid_sample(north, grid, mode="bilinear", align_corners=True, padding_mode="border")
-        lo = F.grid_sample(south, grid, mode="bilinear", align_corners=True, padding_mode="border")
-        values = torch.where(v[:, 2] >= 0, up.view(-1), lo.view(-1))
-        return values.reshape(shape)
+        directions = directions.to(self.data.device, self.data.dtype)
+        return sample_texture(self.data[self.energy_index(energy_kev)][None], directions)
 
     def project(
         self,
