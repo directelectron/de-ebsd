@@ -31,15 +31,24 @@ import de_ebsd as de
 
 device = "cpu"
 crystal = de.Crystal.from_parameters(
-    a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035,
+    a=0.35236,
+    space_group=225,
+    atoms=[("Ni", (0.0, 0.0, 0.0))],
+    debye_waller=0.0035,
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0, probe_diameter_nm=10.0)
 detector = de.EBSDDetector(
-    shape=(80, 100), pc=(0.45, 0.65, 0.60), sample_tilt=microscope.sample_tilt,
-    tilt=5.0, px_size=400.0,
+    shape=(80, 100),
+    pattern_center=(0.45, 0.65, 0.60),
+    sample_tilt=microscope.sample_tilt,
+    tilt=5.0,
+    px_size=400.0,
 )
 depth = de.DepthDistribution.single_energy(
-    microscope.energy_kev, thickness=40.0, depth_step=2.0, decay_length=15.0,
+    microscope.energy_kev,
+    thickness=40.0,
+    depth_step=2.0,
+    decay_length=15.0,
 )
 
 # %%
@@ -101,7 +110,12 @@ depth.show(energy_kev=microscope.energy_kev)
 # -----------------------------------------------------------------------------
 
 coarse_sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=100,
+    dmin=0.05,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 coarse_sim.structure_factors()
 fine_sim = coarse_sim.refine(npx=200)
@@ -142,8 +156,10 @@ assert torch.isfinite(relative_rms)
 print(f"Grid-change relative RMS difference: {relative_rms.item():.3%}")
 figure, axes = apl.subplots(1, 3, figsize=(900, 300))
 for ax, values, title in zip(
-    np.ravel(axes), (coarse_image, fine_image, difference),
-    ("npx = 100", "npx = 200", "Fine minus coarse (own contrast)"), strict=True,
+    np.ravel(axes),
+    (coarse_image, fine_image, difference),
+    ("npx = 100", "npx = 200", "Fine minus coarse (own contrast)"),
+    strict=True,
 ):
     panel = ax.imshow(values.detach().cpu().numpy(), cmap="gray", origin="upper")
     panel.set_title(title)

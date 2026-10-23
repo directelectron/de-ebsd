@@ -12,6 +12,7 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 from de_ebsd.crystal.structure_factors import StructureFactors, compute_structure_factors
 from de_ebsd.diffraction.backends import (
@@ -101,16 +102,16 @@ class MasterPatternSimulator:
         it is normalized). For cubic crystals Cartesian components coincide
         with lattice directions.
         """
-        sf = self.structure_factors()
+        structure_factors = self.structure_factors()
         if k is None:
-            return master_reflection_list(sf)
-        return classify_reflections(sf, _unit(k), self.bethe)
+            return master_reflection_list(structure_factors)
+        return classify_reflections(structure_factors, _unit(k), self.bethe)
 
     def dynamical_matrix(self, k) -> DynamicalMatrix:
         """The Bloch dynamical matrix (with Bethe corrections) for one beam."""
-        sf = self.structure_factors()
-        refl = classify_reflections(sf, _unit(k), self.bethe)
-        matrix = build_dynamical_matrix(sf, refl)
+        structure_factors = self.structure_factors()
+        refl = classify_reflections(structure_factors, _unit(k), self.bethe)
+        matrix = build_dynamical_matrix(structure_factors, refl)
         return DynamicalMatrix(matrix=matrix, hkl=refl.strong(), k=refl.k, reflections=refl)
 
     def compute(
@@ -156,7 +157,7 @@ class MasterPatternSimulator:
             calling thread, inside the loop, so it should be quick and never
             block; an exception raised in it stops the simulation.
         """
-        device = torch.device(device) if device is not None else torch.device("cpu")
+        device = resolve_device(device)
         backend = resolve_backend(self.backend)
 
         # depth-integrating backends need a Monte Carlo exit-depth profile; when
@@ -165,9 +166,12 @@ class MasterPatternSimulator:
         monte_carlo = self.monte_carlo
         if monte_carlo is None and backend.uses_depth_profile:
             monte_carlo = DepthDistribution.from_simulation(
-                self.crystal, self.energy_kev,
+                self.crystal,
+                self.energy_kev,
                 tilt_deg=self.microscope.sample_tilt,
-                n_electrons=mc_electrons, device=device, seed=0,
+                n_electrons=mc_electrons,
+                device=device,
+                seed=0,
             )
 
         # beam directions and the (energy-independent) symmetry fold
@@ -175,7 +179,8 @@ class MasterPatternSimulator:
         directions = grid.flat()
         if symmetry:
             reps, inverse = reduce_to_fundamental_sector(
-                directions, self.crystal.space_group, cache_key=self.npx)
+                directions, self.crystal.space_group, cache_key=self.npx
+            )
         else:
             reps, inverse = directions, None
         n = 2 * self.npx + 1
@@ -189,11 +194,20 @@ class MasterPatternSimulator:
         total, done = len(energies) * len(starts), 0
         maps = []
         for energy in energies:
-            sf = (self.structure_factors() if abs(energy - self.energy_kev) < 1e-9
-                  else compute_structure_factors(self.crystal, float(energy), self.dmin))
-            backend.prepare(SimulationInputs(
-                sf=sf, bethe=self.bethe, monte_carlo=monte_carlo, device=device, dtype=dtype,
-            ))
+            structure_factors = (
+                self.structure_factors()
+                if abs(energy - self.energy_kev) < 1e-9
+                else compute_structure_factors(self.crystal, float(energy), self.dmin)
+            )
+            backend.prepare(
+                SimulationInputs(
+                    structure_factors=structure_factors,
+                    bethe=self.bethe,
+                    monte_carlo=monte_carlo,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
             rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
             for start in starts:
                 stop = min(start + chunk_size, reps.shape[0])
@@ -255,9 +269,9 @@ class MasterPatternSimulator:
 
     def show_setup(self, detector=None):
         """Interactive geometry widget for this simulation's setup."""
-        from de_ebsd.viz.widgets import SetupWidget
+        from de_ebsd.viz.widgets import MicroscopeWidget
 
-        return SetupWidget.from_setup(
+        return MicroscopeWidget.from_setup(
             microscope=self.microscope, detector=detector, crystal=self.crystal
         )
 

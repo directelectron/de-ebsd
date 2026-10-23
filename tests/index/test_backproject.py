@@ -35,8 +35,13 @@ def _smooth_field(v: torch.Tensor) -> torch.Tensor:
     """
     nx, ny, nz = v[..., 0], v[..., 1], v[..., 2]
     return (
-        1.5 + 0.6 * nx + 0.3 * ny + 0.2 * nz
-        + 0.4 * nx * ny - 0.25 * (nx**2 - ny**2) + 0.15 * ny * nz
+        1.5
+        + 0.6 * nx
+        + 0.3 * ny
+        + 0.2 * nz
+        + 0.4 * nx * ny
+        - 0.25 * (nx**2 - ny**2)
+        + 0.15 * ny * nz
     )
 
 
@@ -58,7 +63,9 @@ def master() -> MasterPattern:
 
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
-    return EBSDDetector(shape=(180, 180), pc=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(
+        shape=(180, 180), pattern_center=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0
+    )
 
 
 @pytest.fixture(scope="module")
@@ -122,9 +129,7 @@ def test_fov_mask_matches_gnomonic_bounds(master, detector, directions):
     gn_y = comp[..., 1] / comp[..., 2]
     x_min, x_max, y_min, y_max = detector.gnomonic_bounds
     expected = (
-        (comp[..., 2] > 0)
-        & (gn_x >= x_min) & (gn_x <= x_max)
-        & (gn_y >= y_min) & (gn_y <= y_max)
+        (comp[..., 2] > 0) & (gn_x >= x_min) & (gn_x <= x_max) & (gn_y >= y_min) & (gn_y <= y_max)
     )
     assert torch.equal(mask > 0, expected)
 
@@ -178,10 +183,10 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     """Gradients flow into the pattern center and match central finite differences.
 
     This is the differentiability that enables joint PC refinement (I6): the whole
-    direction -> pixel map is autograd-differentiable in ``pc = (pcx, pcy, pcz)``.
+    direction -> pixel map is autograd-differentiable in ``pattern_center = (pcx, pcy, pcz)``.
     """
     pattern = master.project(detector, IDENTITY_Q, rescale=False)  # (1, H, W)
-    pc0 = torch.tensor(detector.pc, dtype=torch.float64)
+    initial_pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64)
     torch.manual_seed(1)
     weights = torch.randn(directions.shape[0], dtype=torch.float64)
     # Bilinear grid_sample has derivative kinks at integer pixel gridlines and at the
@@ -189,27 +194,30 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     # slope there. Restrict the functional to directions that sit in the *smooth
     # interior* of a bilinear cell so autograd and FD agree to floating point (the
     # kink itself is the bilinear scheme, not the pattern-center derivative).
-    col, row, in_fov = directions_to_pixels(directions, detector, pc0)
+    col, row, in_fov = directions_to_pixels(directions, detector, initial_pattern_center)
     margin = 0.05
     interior = (
         in_fov
-        & ((col - col.round()).abs() > margin) & ((row - row.round()).abs() > margin)
-        & (col > margin) & (col < detector.ncols - 1 - margin)
-        & (row > margin) & (row < detector.nrows - 1 - margin)
+        & ((col - col.round()).abs() > margin)
+        & ((row - row.round()).abs() > margin)
+        & (col > margin)
+        & (col < detector.ncols - 1 - margin)
+        & (row > margin)
+        & (row < detector.nrows - 1 - margin)
     )
     weights = (weights * interior.to(torch.float64)).detach()
 
-    def functional(pc):
-        s, _ = pattern_to_sphere(pattern, detector, directions, pc=pc)
+    def functional(pattern_center):
+        s, _ = pattern_to_sphere(pattern, detector, directions, pattern_center=pattern_center)
         return (s[0] * weights).sum()
 
-    pc = pc0.clone().requires_grad_(True)
-    functional(pc).backward()
-    grad = pc.grad
+    pattern_center = initial_pattern_center.clone().requires_grad_(True)
+    functional(pattern_center).backward()
+    grad = pattern_center.grad
 
     eps = 1e-6
     for k in range(3):
-        pp, pm = pc0.clone(), pc0.clone()
+        pp, pm = initial_pattern_center.clone(), initial_pattern_center.clone()
         pp[k] += eps
         pm[k] -= eps
         fd = (functional(pp) - functional(pm)).item() / (2 * eps)
@@ -242,6 +250,4 @@ def test_shape_validation(detector, directions):
     with pytest.raises(ValueError):
         pattern_to_sphere(torch.zeros(10, 10), detector, directions)
     with pytest.raises(ValueError):
-        pattern_to_sphere(
-            torch.zeros(detector.nrows, detector.ncols), detector, directions[:, :2]
-        )
+        pattern_to_sphere(torch.zeros(detector.nrows, detector.ncols), detector, directions[:, :2])

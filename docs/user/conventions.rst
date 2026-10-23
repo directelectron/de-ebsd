@@ -5,7 +5,7 @@ Units and conventions
 These are load-bearing. A master pattern is only comparable to EMsoft's or
 kikuchipy's because every one of them matches, so read this page before
 interpreting a number or feeding a de-ebsd array to another library.
-``DESIGN.md`` in the repository carries the same list alongside the reasoning.
+The design notes under :doc:`../dev/index` explain the reasoning behind them.
 
 Units
 =====

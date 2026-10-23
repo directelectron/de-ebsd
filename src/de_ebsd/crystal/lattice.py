@@ -1,6 +1,8 @@
 """Unit cells: lattice parameters, symmetry expansion, and metric tensors.
 
-Space-group symmetry operations come from :mod:`diffpy.structure`.
+Space-group symmetry operations come from :mod:`diffpy.structure`. The Cartesian
+crystal frame and the direct and reciprocal structure matrices follow EMsoft's
+``mod_crystallography.f90``.
 """
 
 from __future__ import annotations
@@ -455,8 +457,30 @@ def _expand_orbit(
 # ambiguous -- see `Crystal.from_cif`.
 _TWO_ORIGIN_GROUPS = frozenset(
     {
-        48, 50, 59, 68, 70, 85, 86, 88, 125, 126, 129, 130,
-        133, 134, 137, 138, 141, 142, 201, 203, 222, 224, 227, 228,
+        48,
+        50,
+        59,
+        68,
+        70,
+        85,
+        86,
+        88,
+        125,
+        126,
+        129,
+        130,
+        133,
+        134,
+        137,
+        138,
+        141,
+        142,
+        201,
+        203,
+        222,
+        224,
+        227,
+        228,
     }
 )
 

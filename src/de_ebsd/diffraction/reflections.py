@@ -1,4 +1,8 @@
-"""Reflection lists, excitation errors, and the strong/weak Bethe partition."""
+"""Reflection lists, excitation errors, and the strong/weak Bethe partition.
+
+Ports of EMsoft's ``Initialize_ReflectionList``, ``CalcsgDouble`` and
+``Apply_BethePotentials``.
+"""
 
 from __future__ import annotations
 
@@ -121,13 +125,13 @@ class ReflectionList:
         )
 
 
-def master_reflection_list(sf: StructureFactors) -> ReflectionList:
+def master_reflection_list(structure_factors: StructureFactors) -> ReflectionList:
     """All centering-allowed reflections with d >= dmin, sorted by ``|g|``."""
-    u_mod = np.abs(sf.ucg)
+    u_mod = np.abs(structure_factors.ucg)
     return ReflectionList(
-        hkl=sf.hkl,
-        g=sf.g,
-        d=sf.d,
+        hkl=structure_factors.hkl,
+        g=structure_factors.g,
+        d=structure_factors.d,
         u_mod=u_mod,
         forbidden=u_mod < _FORBIDDEN_TOL,
     )
@@ -184,9 +188,8 @@ def candidate_reflections(
 def partition_strong_weak(
     hkl: np.ndarray,
     sg: np.ndarray,
-    u_mod: np.ndarray,
     forbidden: np.ndarray,
-    sf: StructureFactors,
+    structure_factors: StructureFactors,
     bethe: BetheParameters,
 ) -> np.ndarray:
     """Classify candidate reflections as STRONG / WEAK / IGNORED.
@@ -213,8 +216,8 @@ def partition_strong_weak(
     status[0] = STRONG
 
     diff = hkl[:, None, :] - hkl[None, :, :]  # (N, N, 3)
-    u_diff = np.abs(sf.lookup(diff))  # (N, N)
-    inv_lambda = 1.0 / sf.wavelength
+    u_diff = np.abs(structure_factors.lookup(diff))  # (N, N)
+    inv_lambda = 1.0 / structure_factors.wavelength
 
     # rh(i, h) = |s_i| / lambda / |U_{g_i - g_h}|; forbidden difference
     # vectors are excluded from the minimum (EMsoft sets rh = 10000 there).

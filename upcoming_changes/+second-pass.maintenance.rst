@@ -1,0 +1,1 @@
+One implementation each of the rotation-vector conversion, the master-pattern lookup, the Levenberg-Marquardt damping schedule, device selection and the numerical floors; the version is read from ``de_ebsd.__version__``; the design notes moved into ``docs/dev``; NOTICE credits EMsoft, kikuchipy, orix and EMSphInx; the repository is formatted with ``ruff format``, checked in CI.

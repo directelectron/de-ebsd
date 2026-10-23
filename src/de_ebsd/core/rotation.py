@@ -9,11 +9,21 @@ projections agree with kikuchipy to numerical precision.
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import torch
 
-__all__ = ["quaternion_to_matrix", "rotate_vectors", "rotation_vector_to_matrix", "skew_matrix"]
+from de_ebsd.core.constants import DIVISION_FLOOR
 
-_EPS = 1e-12
+__all__ = [
+    "axis_angle_matrix",
+    "matrix_to_quaternion",
+    "quaternion_to_matrix",
+    "rotate_vectors",
+    "rotation_vector_to_matrix",
+    "skew_matrix",
+]
 
 
 def quaternion_to_matrix(q: torch.Tensor) -> torch.Tensor:
@@ -54,9 +64,76 @@ def rotation_vector_to_matrix(w: torch.Tensor) -> torch.Tensor:
     """
     k = skew_matrix(w)
     th2 = (w * w).sum(-1)  # (...,)
-    th = th2.clamp_min(_EPS).sqrt()
+    th = th2.clamp_min(DIVISION_FLOOR).sqrt()
     small = th2 < 1e-12
     a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
-    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(_EPS))
+    b = torch.where(
+        small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(DIVISION_FLOOR)
+    )
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
     return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)
+
+
+def axis_angle_matrix(axis: np.ndarray, angle_deg: float) -> np.ndarray:
+    """Rotation matrix about *axis* by *angle_deg* degrees (right-handed)."""
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    t = math.radians(float(angle_deg))
+    c, s = math.cos(t), math.sin(t)
+    x, y, z = axis
+    return np.array(
+        [
+            [c + x * x * (1 - c), x * y * (1 - c) - z * s, x * z * (1 - c) + y * s],
+            [y * x * (1 - c) + z * s, c + y * y * (1 - c), y * z * (1 - c) - x * s],
+            [z * x * (1 - c) - y * s, z * y * (1 - c) + x * s, c + z * z * (1 - c)],
+        ]
+    )
+
+
+def matrix_to_quaternion(matrix: np.ndarray) -> np.ndarray:
+    """Convert a proper 3x3 rotation matrix to scalar-first quaternion."""
+    r = np.asarray(matrix, dtype=np.float64)
+    if r.shape != (3, 3) or not np.isfinite(r).all():
+        raise ValueError("rotation matrix must be finite and have shape (3, 3)")
+    if not np.allclose(r.T @ r, np.eye(3), atol=2e-8) or np.linalg.det(r) <= 0:
+        raise ValueError("rotation matrix must be a proper rotation")
+    trace = float(np.trace(r))
+    if trace > 0:
+        s = 2.0 * math.sqrt(trace + 1.0)
+        q = np.array(
+            [0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s]
+        )
+    else:
+        i = int(np.argmax(np.diag(r)))
+        if i == 0:
+            s = 2.0 * math.sqrt(max(1.0 + r[0, 0] - r[1, 1] - r[2, 2], 0.0))
+            q = np.array(
+                [
+                    (r[2, 1] - r[1, 2]) / s,
+                    0.25 * s,
+                    (r[0, 1] + r[1, 0]) / s,
+                    (r[0, 2] + r[2, 0]) / s,
+                ]
+            )
+        elif i == 1:
+            s = 2.0 * math.sqrt(max(1.0 + r[1, 1] - r[0, 0] - r[2, 2], 0.0))
+            q = np.array(
+                [
+                    (r[0, 2] - r[2, 0]) / s,
+                    (r[0, 1] + r[1, 0]) / s,
+                    0.25 * s,
+                    (r[1, 2] + r[2, 1]) / s,
+                ]
+            )
+        else:
+            s = 2.0 * math.sqrt(max(1.0 + r[2, 2] - r[0, 0] - r[1, 1], 0.0))
+            q = np.array(
+                [
+                    (r[1, 0] - r[0, 1]) / s,
+                    (r[0, 2] + r[2, 0]) / s,
+                    (r[1, 2] + r[2, 1]) / s,
+                    0.25 * s,
+                ]
+            )
+    q = q / np.linalg.norm(q)
+    return q if q[0] >= 0 else -q

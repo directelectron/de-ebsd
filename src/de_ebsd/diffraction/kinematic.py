@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from de_ebsd.core.constants import electron_wavelength_nm
+from de_ebsd.core.rotation import matrix_to_quaternion
 
 __all__ = [
     "KinematicPattern",
@@ -88,11 +89,13 @@ class _DiffsimsElasticScatteringAdapter:
         self._occupancies = np.asarray([site.occupancy for site, _ in atoms], dtype=float)
         self._b_angstrom2 = np.asarray([site.debye_waller * 100 for site, _ in atoms])
         self._coeffs = np.asarray([parameters[site.element] for site, _ in atoms])
-        if (not np.isfinite(self._positions).all()
-                or not np.isfinite(self._occupancies).all()
-                or not np.isfinite(self._b_angstrom2).all()
-                or np.any((self._occupancies < 0) | (self._occupancies > 1))
-                or np.any(self._b_angstrom2 < 0)):
+        if (
+            not np.isfinite(self._positions).all()
+            or not np.isfinite(self._occupancies).all()
+            or not np.isfinite(self._b_angstrom2).all()
+            or np.any((self._occupancies < 0) | (self._occupancies > 1))
+            or np.any(self._b_angstrom2 < 0)
+        ):
             raise ValueError("atoms require finite positions, occupancy in [0, 1], and B >= 0")
 
     def elastic_intensities(self, hkl: np.ndarray, g_nm: np.ndarray) -> np.ndarray:
@@ -161,41 +164,6 @@ def _as_rotation_matrix(orientation: Any) -> np.ndarray:
     )
 
 
-def _matrix_to_quaternion(matrix: np.ndarray) -> np.ndarray:
-    """Convert a proper matrix to a scalar-first quaternion."""
-
-    m = np.asarray(matrix, dtype=np.float64)
-    trace = float(np.trace(m))
-    if trace > 0.0:
-        s = 2.0 * np.sqrt(trace + 1.0)
-        w = 0.25 * s
-        x = (m[2, 1] - m[1, 2]) / s
-        y = (m[0, 2] - m[2, 0]) / s
-        z = (m[1, 0] - m[0, 1]) / s
-    else:
-        i = int(np.argmax(np.diag(m)))
-        if i == 0:
-            s = 2.0 * np.sqrt(max(1.0 + m[0, 0] - m[1, 1] - m[2, 2], 0.0))
-            x = 0.25 * s
-            y = (m[0, 1] + m[1, 0]) / max(s, _GEOMETRY_TOL)
-            z = (m[0, 2] + m[2, 0]) / max(s, _GEOMETRY_TOL)
-            w = (m[2, 1] - m[1, 2]) / max(s, _GEOMETRY_TOL)
-        elif i == 1:
-            s = 2.0 * np.sqrt(max(1.0 + m[1, 1] - m[0, 0] - m[2, 2], 0.0))
-            x = (m[0, 1] + m[1, 0]) / max(s, _GEOMETRY_TOL)
-            y = 0.25 * s
-            z = (m[1, 2] + m[2, 1]) / max(s, _GEOMETRY_TOL)
-            w = (m[0, 2] - m[2, 0]) / max(s, _GEOMETRY_TOL)
-        else:
-            s = 2.0 * np.sqrt(max(1.0 + m[2, 2] - m[0, 0] - m[1, 1], 0.0))
-            x = (m[0, 2] + m[2, 0]) / max(s, _GEOMETRY_TOL)
-            y = (m[1, 2] + m[2, 1]) / max(s, _GEOMETRY_TOL)
-            z = 0.25 * s
-            w = (m[1, 0] - m[0, 1]) / max(s, _GEOMETRY_TOL)
-    q = np.array([w, x, y, z], dtype=np.float64)
-    return q / np.linalg.norm(q)
-
-
 def orientation_from_zone_axis(crystal: Any, uvw: Any, roll_deg: float = 0.0) -> np.ndarray:
     """Return the orientation that places direct-lattice direction ``uvw`` on +z.
 
@@ -234,7 +202,7 @@ def orientation_from_zone_axis(crystal: Any, uvw: Any, roll_deg: float = 0.0) ->
             [0.0, 0.0, 1.0],
         ]
     )
-    return _matrix_to_quaternion(base @ around_beam)
+    return matrix_to_quaternion(base @ around_beam)
 
 
 def _primitive_hkl(hkl: np.ndarray) -> tuple[int, int, int]:
@@ -341,10 +309,6 @@ class KinematicPatternModel:
     def band_normals(self) -> np.ndarray:
         return self._band_normals.copy()
 
-    @property
-    def band_hkl(self) -> np.ndarray:
-        return self._band_hkl.copy()
-
     def project(
         self,
         orientation: Any,
@@ -397,9 +361,9 @@ class KinematicPatternModel:
             transverse_norm = transverse_norm[front]
             # The spot position is set by the transverse Ewald intersection,
             # not by the off-sphere g_z of a finite-width rel-rod.
-            slopes = transverse / np.sqrt(
-                np.maximum(1.0 - transverse_norm**2, _GEOMETRY_TOL)
-            )[:, None]
+            slopes = (
+                transverse / np.sqrt(np.maximum(1.0 - transverse_norm**2, _GEOMETRY_TOL))[:, None]
+            )
             in_view = np.all(np.abs(slopes) <= bound + _GEOMETRY_TOL, axis=1)
             selected_idx = selected_idx[in_view]
             slopes = slopes[in_view]

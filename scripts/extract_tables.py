@@ -5,6 +5,7 @@ into a Python data module for de_ebsd. Faithful, no manual transcription.
 - Doyle-Turner/Smith-Burge scatfac(8,98) from mod_diffraction.f90
 - element symbols SY(98)
 """
+
 import re
 from pathlib import Path
 
@@ -29,7 +30,7 @@ def grab_symbols(text):
     i = text.index("SY(98)")
     j = text.index("(/", i)
     k = text.index("/)", j)
-    body = text[j + 2:k]
+    body = text[j + 2 : k]
     syms = re.findall(r"'([A-Za-z ]{1,2})'", body)
     return [s.strip() for s in syms]
 
@@ -49,9 +50,9 @@ assert len(scatfac) == 8 * 98, len(scatfac)
 
 # Fortran reshape is column-major: reshape((/...),(/4,98/)) -> element(r,c)
 # stored so first 4 entries are column 1 (=atom 1). So atom z uses entries [4z:4z+4].
-AA_rows = [AA[4 * z:4 * z + 4] for z in range(98)]  # AA_rows[z-1] = [a1..a4] for element z
-BB_rows = [BB[4 * z:4 * z + 4] for z in range(98)]
-SC_rows = [scatfac[8 * z:8 * z + 8] for z in range(98)]  # [a1..a4,b1..b4]
+AA_rows = [AA[4 * z : 4 * z + 4] for z in range(98)]  # AA_rows[z-1] = [a1..a4] for element z
+BB_rows = [BB[4 * z : 4 * z + 4] for z in range(98)]
+SC_rows = [scatfac[8 * z : 8 * z + 8] for z in range(98)]  # [a1..a4,b1..b4]
 
 out = Path(__file__).resolve().parents[1] / "src/de_ebsd/sim/data/scattering_tables.py"
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,7 @@ with out.open("w", encoding="utf-8") as f:
     f.write('"""\n\n')
     f.write("ELEMENT_SYMBOLS = [\n")
     for z in range(0, 98, 10):
-        f.write("    " + ", ".join(repr(s) for s in syms[z:z + 10]) + ",\n")
+        f.write("    " + ", ".join(repr(s) for s in syms[z : z + 10]) + ",\n")
     f.write("]\n\n")
 
     def dump(name, rows, ncol):

@@ -13,7 +13,8 @@ The money tests:
    forward-mode (``jvp``) pattern-center block match central finite differences on the
    smooth band master to a tight tolerance (the per-tile standardization derivative
    included).
-2. **Joint (R, pc) recovery** -- project known ``(R, pc)``, seed ~1 deg off with a
+2. **Joint (R, pattern_center) recovery** -- project known ``(R, pattern_center)``, seed ~1 deg off
+with a
    perturbed pattern center, and recover disorientation ``< 0.1`` deg *and* pattern-center
    error ``< 0.2x`` the seed's, batched over several general orientations.
 3. **Edge sampling picks edges** -- the selected samples have a higher mean ``|grad E|``
@@ -23,7 +24,8 @@ The money tests:
    the orientation better than a single global tile.
 5. **Speed knob monotonicity** -- more samples never hurt recovery, and the ``all_pixels``
    reference path agrees with a dense subsample.
-6. **Plumbing** -- ``refine_pc=False`` is orientation-only and returns no pattern center;
+6. **Plumbing** -- ``refine_pattern_center=False`` is orientation-only and returns no pattern
+center;
    numpy and torch, single and batched inputs; a CUDA-guarded path.
 
 fp64 on CPU at small sizes throughout -- exact-ish, fast, small.
@@ -38,15 +40,15 @@ from orix.quaternion import Rotation
 
 from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import refine_hr
 from de_ebsd.index.refine.highres import (
-    _ddc_dpc,
-    _residual_jacobian,
     _sobel_gradient_magnitude,
-    _standardize_tiled,
-    direction_cosines_from_pc,
+    direction_cosine_derivative,
+    direction_cosines_from_pattern_center,
     edge_importance_samples,
+    normalized_residual_jacobian,
+    standardize_tiled,
 )
 
 
@@ -59,7 +61,7 @@ def master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A realistic tilted detector with a generous field of view."""
-    return EBSDDetector(shape=(80, 80), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(80, 80), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 # general / asymmetric orientations (Bunge Euler, degrees)
@@ -90,17 +92,16 @@ def _seed(r_true: Rotation, deg: float, rng_seed: int) -> Rotation:
 # 0. the differentiable forward DC map reproduces the detector's own
 # --------------------------------------------------------------------------- #
 def test_direction_cosines_from_pc_matches_detector(detector):
-    """:func:`direction_cosines_from_pc` reproduces ``EBSDDetector.direction_cosines``."""
-    ref = detector.direction_cosines(dtype=torch.float64).reshape(
-        detector.nrows, detector.ncols, 3
-    )
+    """:func:`direction_cosines_from_pattern_center` reproduces
+    ``EBSDDetector.direction_cosines``."""
+    ref = detector.direction_cosines(dtype=torch.float64).reshape(detector.nrows, detector.ncols, 3)
     rr, cc = torch.meshgrid(
         torch.arange(detector.nrows, dtype=torch.float64),
         torch.arange(detector.ncols, dtype=torch.float64),
         indexing="ij",
     )
-    pc = torch.tensor(detector.pc, dtype=torch.float64)
-    mine = direction_cosines_from_pc(detector, pc, rr, cc)
+    pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64)
+    mine = direction_cosines_from_pattern_center(detector, pattern_center, rr, cc)
     assert torch.allclose(mine, ref, atol=1e-12)
 
 
@@ -111,7 +112,7 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     """FD-check the analytic residual Jacobian, orientation and pattern-center blocks.
 
     The orientation block is the cross-product form ``dc x (gM @ R)`` and the
-    pattern-center block is the forward-mode (``jvp``) ``q . d dc/d pc``, both pushed
+    pattern-center block is the forward-mode (``jvp``) ``q . d dc/d pattern_center``, both pushed
     through the per-tile standardization derivative. On the smooth master the analytic
     Jacobian must match central finite differences of the tiled residual tightly.
     """
@@ -126,18 +127,20 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     n_total = int(counts.shape[0])
     counts_ps = counts.index_select(0, tile_ids).to(dtype)
     e_raw = patterns.reshape(n_p, -1).gather(1, flat.long())
-    _, _, e_hat = _standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
+    _, _, e_hat = standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
 
-    # evaluate at a seed ~2 deg off and pc offset by +0.01 (a realistic coarse seed)
+    # evaluate at a seed ~2 deg off and pattern_center offset by +0.01 (a realistic coarse seed)
     q0 = quaternion_to_matrix(torch.as_tensor(np.asarray(r_true.data), dtype=dtype))
     rng = np.random.default_rng(3)
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
-    r_eval = q0 @ torch.matrix_exp(skew_matrix(math.radians(2.0) * axis))
-    pc_eval = torch.tensor(detector.pc, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
+    r_eval = q0 @ rotation_vector_to_matrix(math.radians(2.0) * axis)
+    pc_eval = (
+        torch.tensor(detector.pattern_center, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
+    )
 
-    def analytic(r_mat, pc):
-        dc = direction_cosines_from_pc(detector, pc, rows, cols).detach()
+    def analytic(r_mat, pattern_center):
+        dc = direction_cosines_from_pattern_center(detector, pattern_center, rows, cols).detach()
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
             m_raw = master.sample(v)
@@ -145,15 +148,15 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
         m = m_raw.detach()
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)
         dm_dw = torch.linalg.cross(dc, q, dim=-1)
-        ddc = _ddc_dpc(detector, pc, rows, cols)
+        ddc = direction_cosine_derivative(detector, pattern_center, rows, cols)
         dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc)
         g_raw = torch.cat([dm_dw, dm_dpc], dim=-1)
-        return _residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
+        return normalized_residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
 
-    def residual(r_mat, pc):
-        dc = direction_cosines_from_pc(detector, pc, rows, cols)
+    def residual(r_mat, pattern_center):
+        dc = direction_cosines_from_pattern_center(detector, pattern_center, rows, cols)
         m = master.sample(dc @ r_mat.transpose(-1, -2))
-        _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
+        _, _, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
         return e_hat - m_hat
 
     _, j_r = analytic(r_eval, pc_eval)  # (Np, K, 6)
@@ -162,8 +165,8 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     for k in range(3):  # orientation block via matrix_exp perturbation
         d = torch.zeros(n_p, 3, dtype=dtype)
         d[:, k] = eps
-        rp = residual(r_eval @ torch.matrix_exp(skew_matrix(d)), pc_eval)
-        rm = residual(r_eval @ torch.matrix_exp(skew_matrix(-d)), pc_eval)
+        rp = residual(r_eval @ rotation_vector_to_matrix(d), pc_eval)
+        rm = residual(r_eval @ rotation_vector_to_matrix(-d), pc_eval)
         j_fd[..., k] = (rp - rm) / (2 * eps)
     for k in range(3):  # pattern-center block via additive perturbation
         dp = torch.zeros(n_p, 3, dtype=dtype)
@@ -187,31 +190,38 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
 
 
 # --------------------------------------------------------------------------- #
-# 2. joint (R, pc) recovery -- the payoff
+# 2. joint (R, pattern_center) recovery -- the payoff
 # --------------------------------------------------------------------------- #
 def test_joint_orientation_and_pc_recovery(master, detector):
     """Recover a ~1 deg orientation error and a perturbed pattern center jointly.
 
-    Project at the true ``(R, pc)``, seed each orientation ~1 deg off with a pattern
+    Project at the true ``(R, pattern_center)``, seed each orientation ~1 deg off with a pattern
     center offset by +0.01 in every component, and assert the refined disorientation is
     ``< 0.1`` deg AND the refined pattern-center error is ``< 0.2x`` the seed's, for
     several general orientations refined in one batched call.
     """
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     patterns = master.project(detector, r_true, rescale=True)
 
     seed = _seed(r_true, 1.0, rng_seed=1)
     pc_seed = pc_true + 0.01
     seed_pc_err = float((pc_seed - pc_true).norm())
 
-    refined, score, pc_ref = refine_hr(
-        patterns, master, detector, seed, pc=pc_seed, refine_pc=True,
-        n_tiles=8, samples_per_tile=8, n_steps=25,
+    refined, score, refined_pattern_center = refine_hr(
+        patterns,
+        master,
+        detector,
+        seed,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_tiles=8,
+        samples_per_tile=8,
+        n_steps=25,
     )
-    refined_pc_err = float((pc_ref - pc_true).norm())
+    refined_pc_err = float((refined_pattern_center - pc_true).norm())
 
-    assert tuple(pc_ref.shape) == (3,)
+    assert tuple(refined_pattern_center.shape) == (3,)
     assert torch.isfinite(score).all()
     for i in range(r_true.size):
         d_seed = _dis(r_true[i], seed[i])
@@ -227,20 +237,27 @@ def test_joint_orientation_and_pc_recovery(master, detector):
 def test_joint_recovery_per_pattern_pc(master, detector):
     """A per-pattern ``(Np, 3)`` pattern center is accepted and refined per pattern."""
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:3]))
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     patterns = master.project(detector, r_true, rescale=True)
 
     seed = _seed(r_true, 1.0, rng_seed=5)
     pc_seed = pc_true[None].repeat(3, 1) + 0.01  # (3, 3) per-pattern seed
 
-    refined, score, pc_ref = refine_hr(
-        patterns, master, detector, seed, pc=pc_seed, refine_pc=True,
-        n_tiles=8, samples_per_tile=8, n_steps=25,
+    refined, score, refined_pattern_center = refine_hr(
+        patterns,
+        master,
+        detector,
+        seed,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_tiles=8,
+        samples_per_tile=8,
+        n_steps=25,
     )
-    assert tuple(pc_ref.shape) == (3, 3)
+    assert tuple(refined_pattern_center.shape) == (3, 3)
     for i in range(r_true.size):
         seed_err = float((pc_seed[i] - pc_true).norm())
-        refined_err = float((pc_ref[i] - pc_true).norm())
+        refined_err = float((refined_pattern_center[i] - pc_true).norm())
         assert refined_err < 0.2 * seed_err
         assert _dis(r_true[i], refined[i]) < 0.1
 
@@ -262,9 +279,7 @@ def test_edge_sampling_prefers_edges_and_spreads(master, detector):
     # importance sampling: the selected pixels are higher-gradient than a random pick
     sel_grad = grad.gather(1, flat.long()).mean()
     rng = np.random.default_rng(0)
-    rand_idx = torch.as_tensor(
-        rng.integers(0, grad.shape[1], size=flat.shape), dtype=torch.long
-    )
+    rand_idx = torch.as_tensor(rng.integers(0, grad.shape[1], size=flat.shape), dtype=torch.long)
     rand_grad = grad.gather(1, rand_idx).mean()
     assert float(sel_grad) > 1.5 * float(rand_grad), (
         f"selected mean |grad| {float(sel_grad):.4f} not >> random {float(rand_grad):.4f}"
@@ -303,14 +318,26 @@ def test_tiled_beats_global_under_intensity_ramp(master, detector):
     seed = _seed(r_true, 1.0, rng_seed=2)
     # tiled: many small tiles, each locally normalized (the ramp is ~flat within a tile)
     tiled, _ = refine_hr(
-        ramped, master, detector, seed, refine_pc=False,
-        n_tiles=16, samples_per_tile=8, n_steps=30,
+        ramped,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=16,
+        samples_per_tile=8,
+        n_steps=30,
     )
     # global: a single tile -> one mean/norm over the whole detector, which cannot remove
     # the spatially-varying ramp
     glob, _ = refine_hr(
-        ramped, master, detector, seed, refine_pc=False,
-        n_tiles=1, samples_per_tile=16 * 16 * 8, n_steps=30,
+        ramped,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=1,
+        samples_per_tile=16 * 16 * 8,
+        n_steps=30,
     )
     tiled_dis = np.array([_dis(r_true[i], tiled[i]) for i in range(r_true.size)])
     glob_dis = np.array([_dis(r_true[i], glob[i]) for i in range(r_true.size)])
@@ -332,12 +359,24 @@ def test_more_samples_do_not_hurt(master, detector):
     seed = _seed(r_true, 1.5, rng_seed=7)
 
     few, _ = refine_hr(
-        patterns, master, detector, seed, refine_pc=False,
-        n_tiles=6, samples_per_tile=2, n_steps=8,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=6,
+        samples_per_tile=2,
+        n_steps=8,
     )
     many, _ = refine_hr(
-        patterns, master, detector, seed, refine_pc=False,
-        n_tiles=6, samples_per_tile=16, n_steps=8,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=6,
+        samples_per_tile=16,
+        n_steps=8,
     )
     few_dis = np.array([_dis(r_true[i], few[i]) for i in range(r_true.size)])
     many_dis = np.array([_dis(r_true[i], many[i]) for i in range(r_true.size)])
@@ -352,12 +391,24 @@ def test_all_pixels_agrees_with_dense_sample(master, detector):
     seed = _seed(r_true, 1.0, rng_seed=9)
 
     dense, _ = refine_hr(
-        patterns, master, detector, seed, refine_pc=False,
-        n_tiles=8, samples_per_tile=32, n_steps=20,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=8,
+        samples_per_tile=32,
+        n_steps=20,
     )
     allpix, score = refine_hr(
-        patterns, master, detector, seed, refine_pc=False,
-        n_tiles=8, all_pixels=True, n_steps=20,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=8,
+        all_pixels=True,
+        n_steps=20,
     )
     for i in range(r_true.size):
         assert _dis(r_true[i], allpix[i]) < 0.1  # the reference path recovers truth
@@ -366,15 +417,16 @@ def test_all_pixels_agrees_with_dense_sample(master, detector):
 
 
 # --------------------------------------------------------------------------- #
-# 6. plumbing: refine_pc, numpy/torch, single/batched, device
+# 6. plumbing: refine_pattern_center, numpy/torch, single/batched, device
 # --------------------------------------------------------------------------- #
 def test_refine_pc_false_is_orientation_only(master, detector):
-    """``refine_pc=False`` returns just ``(rotation, score)`` and leaves ``pc`` untouched."""
+    """``refine_pattern_center=False`` returns just ``(rotation, score)`` and leaves
+    ``pattern_center`` untouched."""
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(detector, r_true, rescale=True)
     seed = _seed(r_true, 1.0, rng_seed=3)
 
-    out = refine_hr(patterns, master, detector, seed, refine_pc=False, n_steps=15)
+    out = refine_hr(patterns, master, detector, seed, refine_pattern_center=False, n_steps=15)
     assert len(out) == 2  # no pattern center in the result
     rotation, score = out
     assert isinstance(rotation, Rotation)
@@ -390,7 +442,9 @@ def test_single_and_numpy_input(master, detector):
     assert pattern.ndim == 2
     seed = _seed(r_true, 1.0, rng_seed=4)
 
-    refined, score = refine_hr(pattern, master, detector, seed, refine_pc=False, n_steps=15)
+    refined, score = refine_hr(
+        pattern, master, detector, seed, refine_pattern_center=False, n_steps=15
+    )
     assert refined.size == 1
     assert tuple(score.shape) == (1,)
     assert _dis(r_true[0], refined[0]) < 0.1
@@ -402,10 +456,12 @@ def test_batched_matches_single(master, detector):
     patterns = master.project(detector, r_true, rescale=True)
     seed = _seed(r_true, 1.0, rng_seed=6)
 
-    batched, score_b = refine_hr(patterns, master, detector, seed, refine_pc=False, n_steps=15)
+    batched, score_b = refine_hr(
+        patterns, master, detector, seed, refine_pattern_center=False, n_steps=15
+    )
     for i in range(r_true.size):
         single, score_s = refine_hr(
-            patterns[i], master, detector, seed[i], refine_pc=False, n_steps=15
+            patterns[i], master, detector, seed[i], refine_pattern_center=False, n_steps=15
         )
         assert _dis(batched[i], single[0]) < 1e-4  # independent per-pattern refinement
         assert float(score_s[0]) == pytest.approx(float(score_b[i]), abs=1e-6)
@@ -417,7 +473,7 @@ def test_shape_validation(master, detector):
     patterns = master.project(detector, r_true, rescale=True)
     wrong = Rotation.from_euler(np.deg2rad(_EULER_DEG[:1]))
     with pytest.raises(ValueError, match="rotations length"):
-        refine_hr(patterns, master, detector, wrong, refine_pc=False, n_steps=2)
+        refine_hr(patterns, master, detector, wrong, refine_pattern_center=False, n_steps=2)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -426,14 +482,20 @@ def test_cuda_path(master, detector):
     master_cuda = master.to("cuda")
     r_true = Rotation.from_euler(np.deg2rad([[123.0, 47.0, 205.0]]))
     pattern = master_cuda.project(detector, r_true, rescale=True)[0]
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     seed = _seed(r_true, 1.0, rng_seed=8)
 
-    refined, score, pc_ref = refine_hr(
-        pattern, master_cuda, detector, seed, pc=(pc_true + 0.01), refine_pc=True,
-        n_steps=25, device="cuda",
+    refined, score, refined_pattern_center = refine_hr(
+        pattern,
+        master_cuda,
+        detector,
+        seed,
+        pattern_center=(pc_true + 0.01),
+        refine_pattern_center=True,
+        n_steps=25,
+        device="cuda",
     )
     assert score.device.type == "cuda"
-    assert pc_ref.device.type == "cuda"
+    assert refined_pattern_center.device.type == "cuda"
     assert _dis(r_true[0], refined[0]) < 0.1
-    assert float((pc_ref.cpu() - pc_true).norm()) < 0.2 * float(0.01 * math.sqrt(3))
+    assert float((refined_pattern_center.cpu() - pc_true).norm()) < 0.2 * float(0.01 * math.sqrt(3))

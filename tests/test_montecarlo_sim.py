@@ -101,7 +101,8 @@ def test_material_properties_ni(ni_crystal):
 def test_material_properties_compound_averaging():
     """A binary (GaAs) exercises composition (number) averaging and density."""
     gaas = Crystal.from_parameters(
-        a=0.56533, space_group=216,
+        a=0.56533,
+        space_group=216,
         atoms=[("Ga", (0.0, 0.0, 0.0)), ("As", (0.25, 0.25, 0.25))],
     )
     mp = MaterialProperties.from_crystal(gaas)
@@ -196,8 +197,9 @@ def test_backscatter_yield_sanity(ni_crystal, si_crystal):
     def yield_at_tilt(mat, n=300):
         rng = np.random.default_rng(0)
         hits = sum(
-            simulate_trajectory(mat, 20.0, tilt_deg=70.0, e_min_kev=2.0,
-                                max_steps=400, rng=rng).backscattered
+            simulate_trajectory(
+                mat, 20.0, tilt_deg=70.0, e_min_kev=2.0, max_steps=400, rng=rng
+            ).backscattered
             for _ in range(n)
         )
         return hits / n
@@ -213,8 +215,14 @@ def test_backscatter_yield_sanity(ni_crystal, si_crystal):
 # --------------------------------------------------------------------------- #
 def test_from_simulation_returns_usable_distribution(ni_crystal):
     dd = DepthDistribution.from_simulation(
-        ni_crystal, 20.0, e_min_kev=15.0, e_bin_kev=1.0,
-        depth_step_nm=1.0, depth_max_nm=100.0, n_electrons=20_000, seed=0,
+        ni_crystal,
+        20.0,
+        e_min_kev=15.0,
+        e_bin_kev=1.0,
+        depth_step_nm=1.0,
+        depth_max_nm=100.0,
+        n_electrons=20_000,
+        seed=0,
     )
     assert isinstance(dd, DepthDistribution)
     assert dd.n_energies == 6 and dd.n_depths == 101  # 15..20 keV, 0..100 nm
@@ -235,8 +243,7 @@ def test_depth_distribution_deterministic(ni_crystal):
 
 def test_depth_profile_is_shallow_weighted(ni_crystal):
     """High-energy backscatter comes from shallow depths: the profile decays."""
-    dd = simulate_depth_distribution(ni_crystal, 20.0, e_min_kev=15.0,
-                                     n_electrons=40_000, seed=1)
+    dd = simulate_depth_distribution(ni_crystal, 20.0, e_min_kev=15.0, n_electrons=40_000, seed=1)
     top = dd.accum_z[-1, :, 0, 0]  # ~20 keV bin
     assert top.sum() > 0
     assert top[:5].sum() > top[20:].sum()  # concentrated near the surface
@@ -258,16 +265,23 @@ def test_vectorized_matches_scalar_yield(ni_crystal):
         scalar_hits += int(accepted)
     scalar_frac = scalar_hits / m
 
-    dd = simulate_depth_distribution(ni_crystal, 20.0, e_min_kev=15.0,
-                                     depth_max_nm=100.0, n_electrons=40_000, seed=3)
+    dd = simulate_depth_distribution(
+        ni_crystal, 20.0, e_min_kev=15.0, depth_max_nm=100.0, n_electrons=40_000, seed=3
+    )
     vec_frac = dd.accum_z.sum() / dd.n_total
     assert abs(vec_frac - scalar_frac) < 0.05  # agree within Monte Carlo noise
 
 
 def test_higher_energy_penetrates_deeper(ni_crystal):
     def mean_top_depth(energy_kev):
-        dd = simulate_depth_distribution(ni_crystal, energy_kev, e_min_kev=energy_kev - 5.0,
-                                         depth_max_nm=200.0, n_electrons=30_000, seed=5)
+        dd = simulate_depth_distribution(
+            ni_crystal,
+            energy_kev,
+            e_min_kev=energy_kev - 5.0,
+            depth_max_nm=200.0,
+            n_electrons=30_000,
+            seed=5,
+        )
         top = dd.accum_z[-1, :, 0, 0]
         z = np.arange(len(top)) * dd.depth_step
         return (z * top).sum() / top.sum()
@@ -283,14 +297,22 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     from de_ebsd.diffraction.backends import BlochWaveBackend, SimulationInputs
 
     dd = simulate_depth_distribution(
-        si_crystal, si_sf.energy_kev, e_min_kev=si_sf.energy_kev - 5.0,
-        n_electrons=8_000, seed=0,
+        si_crystal,
+        si_sf.energy_kev,
+        e_min_kev=si_sf.energy_kev - 5.0,
+        n_electrons=8_000,
+        seed=0,
     )
     backend = BlochWaveBackend()
-    backend.prepare(SimulationInputs(
-        sf=si_sf, bethe=BetheParameters(), monte_carlo=dd,
-        device=torch.device("cpu"), dtype=torch.float32,
-    ))
+    backend.prepare(
+        SimulationInputs(
+            structure_factors=si_sf,
+            bethe=BetheParameters(),
+            monte_carlo=dd,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+    )
     v = torch.randn(8, 3)
     v = v / v.norm(dim=-1, keepdim=True)
     inten = backend.intensities(v)
@@ -304,8 +326,19 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
 # --------------------------------------------------------------------------- #
 def _soft_yield(params, td, te_, n=8000, max_steps=300, seed=1):
     z, a, r, j = params
-    acc = soft_depth_histogram(z, a, r, j, 20.0, e_min_kev=15.0, n_electrons=n,
-                               max_steps=max_steps, tau_depth=td, tau_energy=te_, seed=seed)
+    acc = soft_depth_histogram(
+        z,
+        a,
+        r,
+        j,
+        20.0,
+        e_min_kev=15.0,
+        n_electrons=n,
+        max_steps=max_steps,
+        tau_depth=td,
+        tau_energy=te_,
+        seed=seed,
+    )
     return acc.sum() / n
 
 
@@ -321,8 +354,9 @@ def test_soft_histogram_approaches_hard_as_tau_shrinks():
     params = _tensors(mat)
     y_wide = float(_soft_yield(params, 2.0, 1.0, n=6000))
     y_narrow = float(_soft_yield(params, 0.3, 0.15, n=6000))
-    hard = simulate_depth_distribution(_ni_crystal(), 20.0, e_min_kev=15.0,
-                                       n_electrons=6000, seed=1)
+    hard = simulate_depth_distribution(
+        _ni_crystal(), 20.0, e_min_kev=15.0, n_electrons=6000, seed=1
+    )
     hard_yield = hard.accum_z.sum() / hard.n_total
     assert y_wide < hard_yield  # soft gates leak, underestimating the yield
     assert y_narrow > y_wide  # sharper gates -> closer to the hard limit
@@ -340,8 +374,10 @@ def test_soft_histogram_gradients_flow_to_all_params():
 def test_soft_histogram_gradient_matches_finite_difference():
     """Autograd d(yield)/d(density) matches common-random-number finite diff."""
     mat = _ni_material()
-    z, a, j = (torch.tensor(v, dtype=torch.float64)
-               for v in (mat.mean_z, mat.mean_a, mat.mean_ionization_kev))
+    z, a, j = (
+        torch.tensor(v, dtype=torch.float64)
+        for v in (mat.mean_z, mat.mean_a, mat.mean_ionization_kev)
+    )
 
     def yield_at(rho_val, want_grad):
         rho = torch.tensor(rho_val, dtype=torch.float64, requires_grad=want_grad)
@@ -408,9 +444,15 @@ def test_native_mc_matches_emsoft_accum_z():
     e_min = float(ref.energies_kev.min())
     e_bin = float(np.diff(ref.energies_kev)[0])
     native = simulate_depth_distribution(
-        crystal, float(ref.energies_kev.max()), e_min_kev=e_min, e_bin_kev=e_bin,
-        depth_step_nm=ref.depth_step, depth_max_nm=ref.depth_step * (ref.n_depths - 1),
-        n_electrons=200_000, tilt_deg=70.0, seed=0,
+        crystal,
+        float(ref.energies_kev.max()),
+        e_min_kev=e_min,
+        e_bin_kev=e_bin,
+        depth_step_nm=ref.depth_step,
+        depth_max_nm=ref.depth_step * (ref.n_depths - 1),
+        n_electrons=200_000,
+        tilt_deg=70.0,
+        seed=0,
     )
 
     def pearson(a, b):

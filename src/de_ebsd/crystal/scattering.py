@@ -23,11 +23,29 @@ _ATOMIC_NUMBER = {symbol: i + 1 for i, symbol in enumerate(ELEMENT_SYMBOLS)}
 
 # Abramowitz & Stegun table used by RIH2 for x * exp(-x) * Ei(x) at large x.
 _RIH2_TABLE = np.array(
-    [1.000000, 1.005051, 1.010206, 1.015472, 1.020852,
-     1.026355, 1.031985, 1.037751, 1.043662, 1.049726,
-     1.055956, 1.062364, 1.068965, 1.075780, 1.082830,
-     1.090140, 1.097737, 1.105647, 1.113894, 1.122497,
-     1.131470]
+    [
+        1.000000,
+        1.005051,
+        1.010206,
+        1.015472,
+        1.020852,
+        1.026355,
+        1.031985,
+        1.037751,
+        1.043662,
+        1.049726,
+        1.055956,
+        1.062364,
+        1.068965,
+        1.075780,
+        1.082830,
+        1.090140,
+        1.097737,
+        1.105647,
+        1.113894,
+        1.122497,
+        1.131470,
+    ]
 )
 
 
@@ -213,9 +231,7 @@ def _fphon(g: np.ndarray, ul: float, a: np.ndarray, b: np.ndarray) -> np.ndarray
     for j in range(4):
         out += a1[j] * a1[j] * (dewa * _ri1(b1[j], b1[j], g) - _ri2(b1[j], b1[j], g, ul))
         for i in range(j):
-            out += 2.0 * a1[j] * a1[i] * (
-                dewa * _ri1(b1[i], b1[j], g) - _ri2(b1[i], b1[j], g, ul)
-            )
+            out += 2.0 * a1[j] * a1[i] * (dewa * _ri1(b1[i], b1[j], g) - _ri2(b1[i], b1[j], g, ul))
     return out
 
 
@@ -235,18 +251,26 @@ def _fcore(g: np.ndarray, z: int, voltage_kv: float) -> np.ndarray:
     k2 = kappa * kappa
     o2 = omega * omega
 
-    x1 = omega / ((1.0 + o2) * np.sqrt(o2 + 4.0 * k2)) * np.log(
-        (omega + np.sqrt(o2 + 4.0 * k2)) / (2.0 * kappa)
+    x1 = (
+        omega
+        / ((1.0 + o2) * np.sqrt(o2 + 4.0 * k2))
+        * np.log((omega + np.sqrt(o2 + 4.0 * k2)) / (2.0 * kappa))
     )
-    x2 = 1.0 / np.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2) * np.log(
-        (1.0 + 2.0 * k2 + o2 + np.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2))
-        / (2.0 * kappa * np.sqrt(1.0 + k2))
+    x2 = (
+        1.0
+        / np.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2)
+        * np.log(
+            (1.0 + 2.0 * k2 + o2 + np.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2))
+            / (2.0 * kappa * np.sqrt(1.0 + k2))
+        )
     )
     x3_small = 1.0 / (4.0 * (1.0 + k2))
     big = omega > 1.0e-2
     omega_safe = np.where(big, omega, 1.0)
-    x3_big = 1.0 / (omega_safe * np.sqrt(o2 + 4.0 * (1.0 + k2))) * np.log(
-        (omega_safe + np.sqrt(o2 + 4.0 * (1.0 + k2))) / (2.0 * np.sqrt(1.0 + k2))
+    x3_big = (
+        1.0
+        / (omega_safe * np.sqrt(o2 + 4.0 * (1.0 + k2)))
+        * np.log((omega_safe + np.sqrt(o2 + 4.0 * (1.0 + k2))) / (2.0 * np.sqrt(1.0 + k2)))
     )
     x3 = np.where(big, x3_big, x3_small)
 

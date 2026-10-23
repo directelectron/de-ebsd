@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.index.preprocess import normalize_rows
 
 # orientations projected per chunk when building the dictionary, so a large
@@ -99,27 +100,18 @@ class DictionaryIndexer:
         if b > 1:
             h, w = self.detector.nrows, self.detector.ncols
             if h % b or w % b:
-                raise ValueError(
-                    f"match_binning {b} must divide the detector shape {(h, w)}"
-                )
+                raise ValueError(f"match_binning {b} must divide the detector shape {(h, w)}")
             self._match_detector = replace(self.detector, shape=(h // b, w // b))
         else:
             self._match_detector = self.detector
 
         self.point_group = self._resolve_point_group(master, point_group)
 
-        if device is not None:
-            self.device = torch.device(device)
-        else:
-            master_device = getattr(master, "device", None)
-            self.device = (
-                torch.device(master_device) if master_device is not None else torch.device("cpu")
-            )
+        self.device = resolve_device(device, getattr(master, "device", "cpu"))
 
         if dtype is None:
             has_tensor_cores = (
-                self.device.type == "cuda"
-                and torch.cuda.get_device_capability(self.device)[0] >= 7
+                self.device.type == "cuda" and torch.cuda.get_device_capability(self.device)[0] >= 7
             )
             dtype = torch.float16 if has_tensor_cores else torch.float32
         self.dtype = dtype
@@ -254,7 +246,7 @@ class DictionaryIndexer:
 
         Defaults to ``method="lm"``: the second-order refiner reaches the same
         sub-degree accuracy in ~10 steps rather than Adam's ~60. LM is
-        orientation-only, so ``refine_pc=True`` falls back to Adam. ``**kw`` is
+        orientation-only, so ``refine_pattern_center=True`` falls back to Adam. ``**kw`` is
         forwarded; ``device`` defaults to this indexer's.
         """
         from de_ebsd.index.refine.orientation import refine_orientation
@@ -330,13 +322,11 @@ class DictionaryIndexer:
             rows, cols = int(shape[0]), int(shape[1])
             if rows * cols != patt.shape[0]:
                 raise ValueError(
-                    f"shape {(rows, cols)} implies {rows * cols} patterns but got "
-                    f"{patt.shape[0]}"
+                    f"shape {(rows, cols)} implies {rows * cols} patterns but got {patt.shape[0]}"
                 )
         else:
             raise ValueError(
-                "patterns must be (rows, cols, H, W) or (N, H, W), got shape "
-                f"{tuple(patt.shape)}"
+                f"patterns must be (rows, cols, H, W) or (N, H, W), got shape {tuple(patt.shape)}"
             )
 
         n = rows * cols
@@ -350,7 +340,7 @@ class DictionaryIndexer:
             chunk = patt[start : start + bs].to(self.device)
             rot_c, qual_c = self.index(chunk)
             if refine:
-                rot_c, qual_c = self.refine(chunk, rotations=rot_c, n_iters=refine_iters)
+                rot_c, qual_c = self.refine(chunk, rotations=rot_c, n_iterations=refine_iters)
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c.detach().cpu())
         rotations = Rotation(np.concatenate(rot_chunks, axis=0))

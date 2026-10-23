@@ -1,0 +1,1 @@
+Removed ``SetupWidget`` (use ``MicroscopeWidget``, now also exported from ``de_ebsd``), ``StructureFactors.as_torch_lut``, ``KinematicPatternModel.band_hkl`` and ``Microscope.vacuum_wavelength``, none of which was used; ``orientation_from_zone_axis`` is no longer re-exported from ``de_ebsd.viz.explorer``.

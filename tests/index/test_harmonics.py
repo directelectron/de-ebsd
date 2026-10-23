@@ -101,9 +101,7 @@ def test_real_function_has_hermitian_spectrum():
         ell, m = int(degrees[c]), int(orders[c])
         c_neg = ell * ell + ell - m
         sign = (-1.0) ** abs(m)
-        assert a[c].conj().item() == pytest.approx(
-            (sign * a[c_neg]).item(), abs=1e-9, rel=1e-9
-        )
+        assert a[c].conj().item() == pytest.approx((sign * a[c_neg]).item(), abs=1e-9, rel=1e-9)
 
 
 def test_free_functions_match_plan_on_canonical_grid():
@@ -171,7 +169,7 @@ def test_autograd_inverse_matches_finite_differences():
 
     def functional(params):
         vals = plan.inverse(params.to(torch.complex128))
-        return (vals.real ** 2).sum()
+        return (vals.real**2).sum()
 
     p = base.clone().requires_grad_(True)
     functional(p).backward()

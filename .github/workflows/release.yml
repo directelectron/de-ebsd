@@ -3,8 +3,8 @@ name: Release
 # Fires when a version tag is pushed (after the Prepare Release PR is merged).
 #
 # Jobs:
-#   build    - refuse a tag that disagrees with the version in pyproject.toml
-#              and __init__.py; build wheel + sdist; check the metadata;
+#   build    - refuse a tag that disagrees with the version in __init__.py;
+#              build wheel + sdist; check the metadata;
 #              install the wheel into a clean env and import it
 #   publish  - upload to PyPI via OIDC trusted publishing (no API token)
 #   release  - create a GitHub Release with the dist files and changelog notes
@@ -40,10 +40,9 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          V=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           I=$(grep '^__version__ = ' src/de_ebsd/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
-          if [ "v$V" != "$TAG" ] || [ "$V" != "$I" ]; then
-            echo "::error::tag $TAG, pyproject.toml $V, __init__.py $I — they must all agree (run Prepare Release)"
+          if [ "v$I" != "$TAG" ]; then
+            echo "::error::tag $TAG, __init__.py $I -- they must agree (run Prepare Release)"
             exit 1
           fi
 

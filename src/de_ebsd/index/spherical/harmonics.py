@@ -13,6 +13,8 @@ import math
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
+
 __all__ = [
     "SphericalHarmonicTransform",
     "forward_sht",
@@ -31,9 +33,9 @@ def n_coefficients(bandwidth: int) -> int:
     return (bandwidth + 1) ** 2
 
 
-def lm_indices(bandwidth: int, device: torch.device | str | None = None) -> tuple[
-    torch.Tensor, torch.Tensor
-]:
+def lm_indices(
+    bandwidth: int, device: torch.device | str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Degree and order of each packed coefficient slot.
 
     Returns ``(degrees, orders)``, each a 1-D ``long`` tensor of length
@@ -102,16 +104,16 @@ def _normalized_alf(bandwidth: int, x: torch.Tensor, u: torch.Tensor) -> torch.T
         for ell in range(m + 2, L + 1):
             a = math.sqrt((2 * ell - 1) * (2 * ell + 1) / ((ell - m) * (ell + m)))
             b = math.sqrt(
-                (2 * ell + 1) * (ell + m - 1) * (ell - m - 1)
+                (2 * ell + 1)
+                * (ell + m - 1)
+                * (ell - m - 1)
                 / ((2 * ell - 3) * (ell - m) * (ell + m))
             )
             p[ell, m] = a * x * p[ell - 1, m] - b * p[ell - 2, m]
     return p
 
 
-def spherical_harmonics(
-    bandwidth: int, theta: torch.Tensor, phi: torch.Tensor
-) -> torch.Tensor:
+def spherical_harmonics(bandwidth: int, theta: torch.Tensor, phi: torch.Tensor) -> torch.Tensor:
     """Dense complex spherical-harmonic basis ``Y_lm`` on a grid.
 
     ``theta`` (``(N_theta,)`` colatitudes) and ``phi`` (``(N_phi,)`` azimuths) are
@@ -158,9 +160,7 @@ def forward_sht(
     return torch.einsum("...tp,ctp->...c", weighted, y.conj())
 
 
-def inverse_sht(
-    coeffs: torch.Tensor, theta: torch.Tensor, phi: torch.Tensor
-) -> torch.Tensor:
+def inverse_sht(coeffs: torch.Tensor, theta: torch.Tensor, phi: torch.Tensor) -> torch.Tensor:
     """Stateless inverse transform: coefficients ``a_lm`` -> samples on a grid.
 
     ``coeffs`` has shape ``(..., (L + 1) ** 2)``; the bandwidth is inferred from its
@@ -215,7 +215,7 @@ class SphericalHarmonicTransform:
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be a real floating type (float32 or float64)")
         self.bandwidth = int(bandwidth)
-        self.device = torch.device(device) if device is not None else torch.device("cpu")
+        self.device = resolve_device(device)
         self.dtype = dtype
         self.cdtype = torch.complex128 if dtype == torch.float64 else torch.complex64
 

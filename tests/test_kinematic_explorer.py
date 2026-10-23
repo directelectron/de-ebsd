@@ -12,9 +12,7 @@ from de_ebsd.diffraction.kinematic import (
 
 @pytest.fixture
 def silicon():
-    return Crystal.from_parameters(
-        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
-    )
+    return Crystal.from_parameters(a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))])
 
 
 def test_silicon_absence_and_shape(silicon):
@@ -101,7 +99,9 @@ def test_filtered_reflections_keep_their_own_intensities(silicon):
         lattice=Lattice(5.431, 5.431, 5.431, 90, 90, 90),
     )
     expected = get_kinematical_intensities(
-        structure, p.spot_hkl, silicon.g_length(p.spot_hkl) / 10,
+        structure,
+        p.spot_hkl,
+        silicon.g_length(p.spot_hkl) / 10,
         debye_waller_factors={"Si": 0.5},
     )
     expected /= 1 + (p.excitation_errors / 0.5) ** 2
@@ -127,7 +127,11 @@ def test_bragg_condition_for_positive_incident_beam():
 
 def test_skew_cell_keeps_mixed_index_reflections():
     c = Crystal.from_parameters(
-        a=0.5, b=0.5, c=0.05, gamma=10, atoms=[("Si", (0, 0, 0))],
+        a=0.5,
+        b=0.5,
+        c=0.05,
+        gamma=10,
+        atoms=[("Si", (0, 0, 0))],
     )
     model = KinematicPatternModel(c, dmin=0.1)
     assert 1 / c.g_length(np.array([[4, 4, 0]]))[0] > 0.1
@@ -140,12 +144,17 @@ def test_per_site_occupancy_and_debye_waller_are_preserved():
     from de_ebsd import AtomSite
     from de_ebsd.diffraction.kinematic import _DiffsimsElasticScatteringAdapter
 
-    c = Crystal.from_parameters(a=0.4, atoms=[
-        AtomSite("Si", (0, 0, 0), occupancy=0.5, debye_waller=0),
-        AtomSite("Si", (0.5, 0, 0), occupancy=0.25, debye_waller=0.008),
-    ])
+    c = Crystal.from_parameters(
+        a=0.4,
+        atoms=[
+            AtomSite("Si", (0, 0, 0), occupancy=0.5, debye_waller=0),
+            AtomSite("Si", (0.5, 0, 0), occupancy=0.25, debye_waller=0.008),
+        ],
+    )
     single = Crystal.from_parameters(
-        a=0.4, atoms=[("Si", (0, 0, 0))], debye_waller=0,
+        a=0.4,
+        atoms=[("Si", (0, 0, 0))],
+        debye_waller=0,
     )
     hkl = np.array([[1, 0, 0], [2, 0, 0]])
     g = c.g_length(hkl)

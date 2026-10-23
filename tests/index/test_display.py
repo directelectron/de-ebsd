@@ -36,9 +36,7 @@ _SCAN_EULER_DEG = np.array(
 
 @pytest.fixture(scope="module")
 def crystal():
-    return Crystal.from_parameters(
-        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
-    )
+    return Crystal.from_parameters(a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))])
 
 
 @pytest.fixture(scope="module")
@@ -48,7 +46,7 @@ def master(crystal):
 
 @pytest.fixture(scope="module")
 def detector():
-    return EBSDDetector(shape=(60, 60), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(60, 60), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 @pytest.fixture(scope="module")
@@ -141,7 +139,7 @@ def test_show_correlation_accepts_stack_and_torch():
 def test_show_refinement_real_history(indexer, scan_patterns, true_rotations):
     pytest.importorskip("anyplotlib")
     _, _, history = indexer.refine(
-        scan_patterns[:3], rotations=true_rotations[:3], n_iters=5, return_history=True
+        scan_patterns[:3], rotations=true_rotations[:3], n_iterations=5, return_history=True
     )
     assert history.shape == (5, 3)
     assert show_refinement(history).to_html()
@@ -149,5 +147,5 @@ def test_show_refinement_real_history(indexer, scan_patterns, true_rotations):
 
 def test_show_refinement_single_pattern():
     pytest.importorskip("anyplotlib")
-    history = np.linspace(0.6, 0.99, 12)  # 1-D (n_iters,) trajectory
+    history = np.linspace(0.6, 0.99, 12)  # 1-D (n_iterations,) trajectory
     assert show_refinement(history).to_html()

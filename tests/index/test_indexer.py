@@ -73,7 +73,7 @@ def master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A realistic tilted detector with a generous (~38%) field of view."""
-    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(90, 90), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 def _spot_field(
@@ -94,7 +94,7 @@ def _spot_field(
     """
     v = v.to(torch.float64)
     d = v @ poles.T
-    bands = (pamps * torch.exp(-(d / bwidth) ** 2)).sum(-1)
+    bands = (pamps * torch.exp(-((d / bwidth) ** 2))).sum(-1)
     ang = torch.arccos((v @ centers.T).clamp(-1.0, 1.0))  # angle to each spot center
     spots = (camps * torch.exp(-0.5 * (ang / cwidth) ** 2)).sum(-1)
     return bands + spots
@@ -133,7 +133,7 @@ def spot_master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector_partial() -> EBSDDetector:
     """A tilted detector with a partial (~35%) field of view for the bias test."""
-    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.25), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(90, 90), pattern_center=(0.5, 0.5, 0.25), sample_tilt=70.0, tilt=5.0)
 
 
 # eight known orientations (Bunge Euler, degrees) for the bright-spot money test
@@ -299,9 +299,7 @@ def test_device_and_dtype_plumbing_cpu(master, detector):
 
 def test_float32_master_propagates_dtype(master, detector):
     """A float32 master yields a float32 plan and a complex64 spectrum, and still indexes."""
-    master32 = MasterPattern(
-        data=master.data.to(torch.float32), energies_kev=master.energies_kev
-    )
+    master32 = MasterPattern(data=master.data.to(torch.float32), energies_kev=master.energies_kev)
     indexer = SphericalIndexer(master32, detector, bandwidth=BANDWIDTH, device="cpu")
     assert indexer.dtype == torch.float32
     assert indexer.sht.dtype == torch.float32
@@ -565,9 +563,7 @@ def test_energy_kev_selects_master_bin(detector):
     multi = MasterPattern(data=data, energies_kev=np.array([10.0, 20.0]))
 
     idx_default = SphericalIndexer(multi, detector, bandwidth=BANDWIDTH, device="cpu")
-    idx_low = SphericalIndexer(
-        multi, detector, bandwidth=BANDWIDTH, device="cpu", energy_kev=10.0
-    )
+    idx_low = SphericalIndexer(multi, detector, bandwidth=BANDWIDTH, device="cpu", energy_kev=10.0)
     assert idx_default.energy_kev is None
     assert idx_low.energy_kev == 10.0
 
