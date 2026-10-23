@@ -146,8 +146,12 @@ class MasterPatternSimulator:
         progress
             Called as ``progress(done, total)`` after each batch of beam
             directions, counting batches over all energies, so a caller can show
-            how far a long simulation has got. The Monte Carlo runs before the
-            first call.
+            how far a long simulation has got. At the default *chunk_size* a
+            master of any usual size is one batch per energy, so a single-energy
+            compute reports only its end. The Monte Carlo, the symmetry fold and
+            the first energy all run before the first call. It is called on the
+            calling thread, inside the loop, so it should be quick and never
+            block; an exception raised in it stops the simulation.
         """
         device = torch.device(device) if device is not None else torch.device("cpu")
         backend = resolve_backend(self.backend)

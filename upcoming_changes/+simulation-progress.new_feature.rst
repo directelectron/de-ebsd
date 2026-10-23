@@ -1,1 +1,0 @@
-``MasterPatternSimulator.compute`` takes a ``progress(done, total)`` callback, called after each batch of beam directions over all energies, so an application can show how far a long simulation has got.
