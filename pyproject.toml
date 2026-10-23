@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "de-ebsd"
-version = "0.1.0"
-description = "Differentiable, GPU-accelerated dynamical EBSD master-pattern simulation in PyTorch"
+dynamic = ["version"]
+description = "Differentiable, GPU-accelerated EBSD: dynamical master-pattern simulation, Monte Carlo transport, indexing, refinement and HR-EBSD, in PyTorch"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Carter Francis", email = "cartsfrancis@gmail.com" }]
 keywords = [
     "EBSD",
@@ -69,6 +69,9 @@ docs = [
     "pillow",
     "kikuchipy",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "de_ebsd.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

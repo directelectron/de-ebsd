@@ -1,0 +1,44 @@
+de-ebsd is licensed under the GNU General Public License, version 3 or later
+(see LICENSE). It builds on the work of others, credited here.
+
+EMsoft
+------
+The physics of the master-pattern simulation is ported from EMsoft
+(https://github.com/EMsoft-org/EMsoftOO; Callahan and De Graef, Modelling Simul.
+Mater. Sci. Eng. 21, 015003, 2013, and the EMsoft source by Marc De Graef and
+contributors). Specifically:
+
+  core/constants.py                      physical constants (mod_global.f90)
+  crystal/data/scattering_tables.py      Weickenmeier-Kohl and Doyle-Turner
+                                         coefficient tables, extracted from the
+                                         Fortran source (mod_others.f90,
+                                         mod_diffraction.f90)
+  crystal/scattering.py                  FSCATT / WKscatter
+  crystal/structure_factors.py           CalcUcg
+  crystal/lattice.py                     crystallographic structure matrices
+  diffraction/reflections.py             Initialize_ReflectionList, CalcsgDouble,
+                                         Apply_BethePotentials
+  diffraction/bethe.py                   Apply_BethePotentials
+  diffraction/backends.py                GetDynMat, CalcLgh, preCalcSgh
+  diffraction/kvectors.py                Calckvectors
+  sim/montecarlo/transport.py            the EMMC.cl scattering model
+  sim/montecarlo/depth.py                reader of EMsoft Monte Carlo HDF5 files
+
+EMsoft is distributed under its own license, which applies to the parts of it
+reproduced above; see the license file in the EMsoft repository. EMsoft output is
+used only as a validation reference, and de-ebsd does not call EMsoft at runtime.
+
+kikuchipy and orix
+------------------
+The detector geometry (sim/detector.py, core/geometry.py), the square-Lambert
+conventions (core/lambert.py) and the master-pattern interpolation follow
+kikuchipy (https://github.com/pyxem/kikuchipy, GPL-3.0-or-later) so that patterns
+agree with it pixel for pixel. Orientations, symmetry and crystal maps are orix's
+(https://github.com/pyxem/orix).
+
+EMSphInx
+--------
+The spherical-harmonic and SO(3) cross-correlation indexer follows Lenthe, Singh
+and De Graef, "A spherical harmonic transform approach to the indexing of
+electron back-scattered diffraction patterns", Ultramicroscopy 207, 112841
+(2019).
