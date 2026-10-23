@@ -189,13 +189,18 @@ def _fourier_shift(rois: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
     return torch.fft.ifft2(torch.fft.fft2(rois) * phase).real
 
 
-def _upsampled_peak(cps: torch.Tensor, upsample: int, radius: float = 2.5):
+def _upsampled_peak(cps: torch.Tensor, upsample: int, radius: float = 1.0):
     """Sub-pixel cross-correlation peak by local upsampled DFT.
 
     ``cps`` is the cross-power spectrum ``(B, r, r)``. Takes the integer peak of the
     inverse transform, then evaluates the inverse DFT on a ``1 / upsample`` grid
     within ``+-radius`` pixels of it by matrix multiply (after Guizar-Sicairos,
     Thurman & Fienup, 2008), which costs a small matmul rather than a padded FFT.
+
+    The integer peak is within half a pixel of the true one, so a radius of one
+    pixel is enough. The grid's cost goes as the radius squared: at 2.5 pixels and
+    an upsample of 50 it was most of :func:`hrebsd`'s time and 9-15 GB of memory
+    on 256 patterns of 36-64 regions.
 
     Returns ``(shift, peak)``: ``(B, 2)`` sub-pixel ``(drow, dcol)`` and ``(B,)``
     correlation peak height.
@@ -473,6 +478,7 @@ def hrebsd(
     bandpass: tuple[float, float] | None = None,
     whiten: float = 0.0,
     min_peak: float = 0.0,
+    batch: int = 256,
     device=None,
 ) -> HREBSDResult:
     """Deviatoric strain and lattice rotation relative to a reference pattern.
@@ -522,6 +528,9 @@ def hrebsd(
     min_peak
         Regions whose normalized cross-correlation falls below this are dropped from
         the fit. Regions are weighted by that correlation regardless.
+    batch
+        Patterns correlated at once, which bounds memory: it scales as
+        ``batch * grid**2 * roi_size**2``.
     device
         Defaults to the test patterns'.
 
@@ -529,11 +538,6 @@ def hrebsd(
     -------
     HREBSDResult
         Detector-frame tensors, the raw region shifts, and a per-point residual.
-
-    Notes
-    -----
-    Memory scales as ``N * grid**2 * roi_size**2``; on a large detector, map points
-    are best pushed through in modest batches.
     """
     patt = torch.as_tensor(patterns)
     device = patt.device if device is None else torch.device(device)
@@ -567,6 +571,44 @@ def hrebsd(
     pc = pc.expand(n, 3) if pc.shape[0] == 1 else pc
     pc_ref = pc_ref.expand(n, 3) if pc_ref.shape[0] == 1 else pc_ref
 
+    if n > batch:
+        parts = [
+            hrebsd(
+                patt[lo : lo + batch],
+                ref[lo : lo + batch],
+                detector,
+                pc[lo : lo + batch],
+                pc_ref[lo : lo + batch],
+                roi_size=roi_size,
+                grid=grid,
+                margin=margin,
+                upsample=upsample,
+                n_passes=n_passes,
+                bandpass=bandpass,
+                whiten=whiten,
+                min_peak=min_peak,
+                batch=batch,
+                device=device,
+            )
+            for lo in range(0, n, batch)
+        ]
+        return HREBSDResult(
+            **{
+                name: torch.cat([getattr(part, name) for part in parts])
+                for name in (
+                    "beta",
+                    "strain",
+                    "rotation",
+                    "rotation_vector",
+                    "shifts",
+                    "peak",
+                    "residual",
+                )
+            },
+            centers=parts[0].centers,
+            n_passes=n_passes,
+        )
+
     centers = torch.as_tensor(
         roi_centers(detector, grid, roi_size, margin), device=device, dtype=dtype
     ).round()
@@ -581,9 +623,7 @@ def hrebsd(
     shifts = peak = residual = None
     for _ in range(n_passes):
         ref_rois = _warped_rois(ref, detector, f_total, pc, pc_ref, centers, roi_size)
-        shifts, peak = _measure_shifts(
-            test_rois, ref_rois, win, upsample, mask, whiten=whiten
-        )
+        shifts, peak = _measure_shifts(test_rois, ref_rois, win, upsample, mask, whiten=whiten)
         # pixels -> gnomonic: both axes scale by 1 / nrows, y increasing upward
         q = torch.stack([shifts[..., 1], -shifts[..., 0]], dim=-1) / detector.nrows
         w = torch.where(peak >= min_peak, peak.clamp_min(0.0), torch.zeros_like(peak))

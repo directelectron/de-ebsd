@@ -383,6 +383,19 @@ def test_batched_and_frames(master, detector):
     assert abs(float(rot_s[0].norm() - res.rotation[0].norm())) < 1e-14
 
 
+def test_a_stack_in_batches_is_the_stack_at_once(master, detector):
+    """Correlated a pattern at a time, a stack gives what it gives all at once."""
+    ref = _render(master, detector)
+    betas = [_trace_free(1e-3 * _BETA), _trace_free(-2e-3 * _BETA), _trace_free(5e-4 * _BETA)]
+    stack = torch.stack(
+        [_render(master, detector, torch.eye(3, dtype=DT) + b) for b in betas], dim=0
+    )
+    whole, batched = _run(stack, ref, detector), _run(stack, ref, detector, batch=1)
+    assert torch.allclose(whole.beta, batched.beta, atol=1e-12)
+    assert torch.allclose(whole.residual, batched.residual, atol=1e-12)
+    assert batched.peak.shape == whole.peak.shape
+
+
 def test_pattern_center_difference_changes_the_geometry(master, detector):
     """``pc_ref`` is actually plumbed through the remap, not silently ignored."""
     pc = np.array(detector.pc, dtype=float)
