@@ -98,7 +98,7 @@ class MicroscopeWidget(_PortableWidget):
         if detector is not None:
             widget.has_detector = True
             widget.detector_rows, widget.detector_cols = detector.shape
-            widget.pcx, widget.pcy, widget.pcz = detector.pc
+            widget.pcx, widget.pcy, widget.pcz = detector.pattern_center
             widget.detector_tilt = detector.tilt
             widget.twist = detector.twist
             widget.px_size = detector.px_size
@@ -120,7 +120,7 @@ class MicroscopeWidget(_PortableWidget):
 
     def to_detector(self):
         return EBSDDetector(shape=(self.detector_rows, self.detector_cols),
-                            pc=(self.pcx, self.pcy, self.pcz), sample_tilt=self.sample_tilt,
+                            pattern_center=(self.pcx, self.pcy, self.pcz), sample_tilt=self.sample_tilt,
                             tilt=self.detector_tilt, azimuthal=self.azimuthal,
                             twist=self.twist, px_size=self.px_size)
 

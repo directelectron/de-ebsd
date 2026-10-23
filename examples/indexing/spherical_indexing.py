@@ -43,7 +43,7 @@ crystal = de.Crystal.from_parameters(
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(60, 80), pc=(0.45, 0.55, 0.60), tilt=5.0,
+    shape=(60, 80), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
     sample_tilt=microscope.sample_tilt, px_size=100.0,
 )
 depth = de.DepthDistribution.single_energy(
@@ -183,7 +183,7 @@ print(f"coarse: median {np.median(coarse_error):.3f} deg, max {coarse_error.max(
 # makes it monotone, so a seed is never made worse.
 
 refined, score, history = indexer.refine(
-    patterns, rotations=xmap.rotations, n_iters=60, lr=0.02, return_history=True,
+    patterns, rotations=xmap.rotations, n_iters=60, learning_rate=0.02, return_history=True,
 )
 show_refinement(history)
 

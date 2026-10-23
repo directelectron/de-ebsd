@@ -58,7 +58,7 @@ def master() -> MasterPattern:
 
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
-    return EBSDDetector(shape=(180, 180), pc=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(180, 180), pattern_center=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0)
 
 
 @pytest.fixture(scope="module")
@@ -178,10 +178,10 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     """Gradients flow into the pattern center and match central finite differences.
 
     This is the differentiability that enables joint PC refinement (I6): the whole
-    direction -> pixel map is autograd-differentiable in ``pc = (pcx, pcy, pcz)``.
+    direction -> pixel map is autograd-differentiable in ``pattern_center = (pcx, pcy, pcz)``.
     """
     pattern = master.project(detector, IDENTITY_Q, rescale=False)  # (1, H, W)
-    pc0 = torch.tensor(detector.pc, dtype=torch.float64)
+    initial_pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64)
     torch.manual_seed(1)
     weights = torch.randn(directions.shape[0], dtype=torch.float64)
     # Bilinear grid_sample has derivative kinks at integer pixel gridlines and at the
@@ -189,7 +189,7 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     # slope there. Restrict the functional to directions that sit in the *smooth
     # interior* of a bilinear cell so autograd and FD agree to floating point (the
     # kink itself is the bilinear scheme, not the pattern-center derivative).
-    col, row, in_fov = directions_to_pixels(directions, detector, pc0)
+    col, row, in_fov = directions_to_pixels(directions, detector, initial_pattern_center)
     margin = 0.05
     interior = (
         in_fov
@@ -199,17 +199,17 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     )
     weights = (weights * interior.to(torch.float64)).detach()
 
-    def functional(pc):
-        s, _ = pattern_to_sphere(pattern, detector, directions, pc=pc)
+    def functional(pattern_center):
+        s, _ = pattern_to_sphere(pattern, detector, directions, pattern_center=pattern_center)
         return (s[0] * weights).sum()
 
-    pc = pc0.clone().requires_grad_(True)
-    functional(pc).backward()
-    grad = pc.grad
+    pattern_center = initial_pattern_center.clone().requires_grad_(True)
+    functional(pattern_center).backward()
+    grad = pattern_center.grad
 
     eps = 1e-6
     for k in range(3):
-        pp, pm = pc0.clone(), pc0.clone()
+        pp, pm = initial_pattern_center.clone(), initial_pattern_center.clone()
         pp[k] += eps
         pm[k] -= eps
         fd = (functional(pp) - functional(pm)).item() / (2 * eps)

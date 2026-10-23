@@ -52,7 +52,7 @@ crystal.show()
 device = "cpu"
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(96, 128), pc=(0.45, 0.55, 0.60), tilt=5.0,
+    shape=(96, 128), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
     sample_tilt=microscope.sample_tilt, px_size=50.0,
 )
 depth = de.DepthDistribution.from_simulation(
@@ -62,7 +62,7 @@ depth = de.DepthDistribution.from_simulation(
     seed=7, device=device,
 )
 print(depth)
-print("Bruker PC:", detector.pc, "gnomonic bounds:", detector.gnomonic_bounds)
+print("Bruker PC:", detector.pattern_center, "gnomonic bounds:", detector.gnomonic_bounds)
 
 # %%
 # Inspect the simulation before computing

@@ -24,7 +24,7 @@ class EBSDDetector:
     ----------
     shape
         (n_rows, n_cols) in pixels.
-    pc
+    pattern_center
         Pattern center (PCx, PCy, PCz) in the Bruker convention.
     sample_tilt
         Sample tilt in degrees (usually set from ``Microscope.sample_tilt``).
@@ -41,7 +41,7 @@ class EBSDDetector:
     """
 
     shape: tuple[int, int] = (480, 480)
-    pc: tuple[float, float, float] = (0.5, 0.5, 0.5)
+    pattern_center: tuple[float, float, float] = (0.5, 0.5, 0.5)
     sample_tilt: float = 70.0
     tilt: float = 0.0
     azimuthal: float = 0.0
@@ -67,7 +67,7 @@ class EBSDDetector:
     @property
     def gnomonic_bounds(self) -> np.ndarray:
         """Detector bounds [x_min, x_max, y_min, y_max] in gnomonic coordinates."""
-        pcx, pcy, pcz = self.pc
+        pcx, pcy, pcz = self.pattern_center
         x_min = -self.aspect_ratio * pcx / pcz
         x_max = self.aspect_ratio * (1.0 - pcx) / pcz
         y_min = -(1.0 - pcy) / pcz
@@ -84,7 +84,7 @@ class EBSDDetector:
         """
         height = self.nrows * self.px_size / 1000.0
         width = self.ncols * self.px_size / 1000.0
-        x, y, z = self.pc
+        x, y, z = self.pattern_center
         corners = np.array([
             [-x * width, y * height, z * height],
             [(1 - x) * width, y * height, z * height],
@@ -98,7 +98,7 @@ class EBSDDetector:
     @property
     def pattern_center_sample_mm(self) -> np.ndarray:
         """Perpendicular foot from impact to screen, in sample coordinates."""
-        distance = self.pc[2] * self.nrows * self.px_size / 1000.0
+        distance = self.pattern_center[2] * self.nrows * self.px_size / 1000.0
         return distance * sample_to_detector_matrix(
             self.sample_tilt, self.tilt, self.azimuthal, self.twist
         )[2]
@@ -114,7 +114,7 @@ class EBSDDetector:
         ``_get_direction_cosines_for_fixed_pc``.
         """
         bounds = self.gnomonic_bounds
-        pcz = self.pc[2]
+        pcz = self.pattern_center[2]
         x_scale = (bounds[1] - bounds[0]) / self.ncols
         y_scale = (bounds[3] - bounds[2]) / self.nrows
 

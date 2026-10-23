@@ -46,7 +46,7 @@ crystal = de.Crystal.from_parameters(
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(60, 80), pc=(0.45, 0.55, 0.60), tilt=5.0,
+    shape=(60, 80), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
     sample_tilt=microscope.sample_tilt, px_size=100.0,
 )
 depth = de.DepthDistribution.single_energy(

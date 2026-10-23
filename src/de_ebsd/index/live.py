@@ -280,7 +280,7 @@ class LiveIndexer:
         self.rotations = torch.cat(rotations)
         self.phase_of = torch.cat(phases)
         self.sizes = [len(r) for r in rotations]
-        self.set_pattern_center(detector.pc)
+        self.set_pattern_center(detector.pattern_center)
         self.static = None
         self.static_blur = None
         self._static_sum = torch.zeros(self.refine_shape, device=self.device)
@@ -288,21 +288,21 @@ class LiveIndexer:
         self._fit_sum = torch.zeros(math.prod(self.refine_shape), device=self.device)
         self._fit_count = 0
 
-    def _directions(self, pc, shape) -> torch.Tensor:
-        detector = replace(self.detector, pc=tuple(float(v) for v in pc), shape=shape)
+    def _directions(self, pattern_center, shape) -> torch.Tensor:
+        detector = replace(self.detector, pattern_center=tuple(float(v) for v in pattern_center), shape=shape)
         return detector.direction_cosines(device=self.device)
 
-    def set_pattern_center(self, pc) -> None:
-        """Index at pattern center *pc* from now on: the dictionary is projected
+    def set_pattern_center(self, pattern_center) -> None:
+        """Index at pattern center *pattern_center* from now on: the dictionary is projected
         again, which takes milliseconds with the fused kernels.
 
         Each chunk of entries is written straight into the dictionary, and a new
         center overwrites the old one's in place: the dictionary is the largest
         thing on the device, and building it beside a copy of itself (or a list of
         its chunks) took two to three times its size."""
-        self.detector = replace(self.detector, pc=tuple(float(v) for v in pc))
-        self.search_directions = self._directions(pc, self.search_shape)
-        self.refine_directions = self._directions(pc, self.refine_shape)
+        self.detector = replace(self.detector, pattern_center=tuple(float(v) for v in pattern_center))
+        self.search_directions = self._directions(pattern_center, self.search_shape)
+        self.refine_directions = self._directions(pattern_center, self.refine_shape)
         shape = (len(self.search_directions), len(self.rotations))
         if self.dictionary is None or tuple(self.dictionary.shape) != shape:
             #: ``(pixels, entries)``, so the search's product reads it at full rate.
@@ -494,19 +494,19 @@ class LiveIndexer:
         _, rows = self.prepare(_pick(torch.as_tensor(frames, device=self.device), best))
         phase, g = phase[best], g[best]
         orientation_steps = tuple(math.radians(s) for s in orientation_steps_deg)
-        pc = torch.tensor(self.detector.pc, dtype=torch.float64)
+        pattern_center = torch.tensor(self.detector.pattern_center, dtype=torch.float64)
         for step in steps:
             scores, refined = [], []
             for offset in self.stencil.cpu().double():
-                directions = self._directions(pc + step * offset, self.refine_shape)
+                directions = self._directions(pattern_center + step * offset, self.refine_shape)
                 found, found_score = self.refine(
                     rows, phase, g, steps=orientation_steps, directions=directions
                 )
                 scores.append(found_score.mean())
                 refined.append(found)
             g = refined[0]
-            pc = pc + step * _parabola_offset(torch.stack(scores).double().cpu()[None])[0]
-        center = tuple(float(v) for v in pc)
+            pattern_center = pattern_center + step * _parabola_offset(torch.stack(scores).double().cpu()[None])[0]
+        center = tuple(float(v) for v in pattern_center)
         self.set_pattern_center(center)
         return center
 
@@ -526,11 +526,11 @@ class LiveIndexer:
 
         detector = replace(self.detector, shape=self.refine_shape)
 
-        def screen(pc):
+        def screen(pattern_center):
             # (col, row, 1) -> the unnormalized screen position, as direction_cosines
-            b = replace(detector, pc=tuple(float(v) for v in pc)).gnomonic_bounds
+            b = replace(detector, pattern_center=tuple(float(v) for v in pattern_center)).gnomonic_bounds
             x_scale, y_scale = (b[1] - b[0]) / detector.ncols, (b[3] - b[2]) / detector.nrows
-            z = float(pc[2])
+            z = float(pattern_center[2])
             return np.array(
                 [
                     [x_scale * z, 0.0, (b[0] + 0.5 * x_scale) * z],
@@ -542,8 +542,8 @@ class LiveIndexer:
         frame = sample_to_detector_matrix(
             detector.sample_tilt, detector.tilt, detector.azimuthal, detector.twist
         )
-        to_index = np.linalg.inv(screen(detector.pc)) @ frame
-        maps = [frame.T @ screen(pc) @ to_index for pc in np.asarray(pattern_centers, float)]
+        to_index = np.linalg.inv(screen(detector.pattern_center)) @ frame
+        maps = [frame.T @ screen(pattern_center) @ to_index for pattern_center in np.asarray(pattern_centers, float)]
         return torch.as_tensor(np.stack(maps), device=self.device, dtype=torch.float32)
 
     def add_fits(self, phase, g, center_maps=None) -> None:

@@ -97,7 +97,7 @@ class SphericalIndexer:
         self._wig_d = wigner_d(self.bandwidth, beta_grid)
 
         # normalizer terms, cached on the first normalize=True call; they depend only
-        # on the master and the fixed detector pc, so a variable pc must invalidate them
+        # on the master and the fixed detector pattern_center, so a variable pattern_center must invalidate them
         self._w_lm = None
         self._a_w = None
         self._denom_geo = None
@@ -205,11 +205,11 @@ class SphericalIndexer:
         self,
         patterns,
         rotations=None,
-        pc=None,
-        refine_pc=False,
+        pattern_center=None,
+        refine_pattern_center=False,
         n_iters=100,
-        lr=0.02,
-        pc_lr=None,
+        learning_rate=0.02,
+        pattern_center_learning_rate=None,
         keep_best=True,
         return_history=False,
     ):
@@ -221,8 +221,8 @@ class SphericalIndexer:
         ``rotations=None`` the seeds come from :meth:`index`, taking raw patterns
         straight to sharpened orientations.
 
-        ``pc`` defaults to ``detector.pc``; the remaining arguments pass through.
-        Returns ``(rotation, score)``, with ``pc`` appended when ``refine_pc`` and
+        ``pattern_center`` defaults to ``detector.pattern_center``; the remaining arguments pass through.
+        Returns ``(rotation, score)``, with ``pattern_center`` appended when ``refine_pattern_center`` and
         ``history`` when ``return_history``.
         """
         from de_ebsd.index.refine.orientation import refine_orientation
@@ -234,11 +234,11 @@ class SphericalIndexer:
             self.master,
             self.detector,
             rotations,
-            pc=pc,
-            refine_pc=refine_pc,
+            pattern_center=pattern_center,
+            refine_pattern_center=refine_pattern_center,
             n_iters=n_iters,
-            lr=lr,
-            pc_lr=pc_lr,
+            learning_rate=learning_rate,
+            pattern_center_learning_rate=pattern_center_learning_rate,
             directions=self._dirs,
             device=self.device,
             keep_best=keep_best,
@@ -336,7 +336,7 @@ class SphericalIndexer:
             rot_c, qual_c = self.index(chunk, normalize=normalize)
             if refine:
                 rot_c, qual_c = self.refine(
-                    chunk, rotations=rot_c, n_iters=refine_iters, lr=refine_lr
+                    chunk, rotations=rot_c, n_iters=refine_iters, learning_rate=refine_lr
                 )
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c)

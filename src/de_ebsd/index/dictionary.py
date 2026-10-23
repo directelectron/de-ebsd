@@ -254,7 +254,7 @@ class DictionaryIndexer:
 
         Defaults to ``method="lm"``: the second-order refiner reaches the same
         sub-degree accuracy in ~10 steps rather than Adam's ~60. LM is
-        orientation-only, so ``refine_pc=True`` falls back to Adam. ``**kw`` is
+        orientation-only, so ``refine_pattern_center=True`` falls back to Adam. ``**kw`` is
         forwarded; ``device`` defaults to this indexer's.
         """
         from de_ebsd.index.refine.orientation import refine_orientation

@@ -19,23 +19,23 @@ __all__ = ["directions_to_pixels", "pattern_to_sphere"]
 
 def _pc_components(
     detector: EBSDDetector,
-    pc: torch.Tensor | None,
+    pattern_center: torch.Tensor | None,
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if pc is None:
-        pc = torch.as_tensor(detector.pc, device=device, dtype=dtype)
+    if pattern_center is None:
+        pattern_center = torch.as_tensor(detector.pattern_center, device=device, dtype=dtype)
     else:
-        if pc.shape[-1] != 3:
-            raise ValueError(f"pc must have last dim 3, got shape {tuple(pc.shape)}")
-        pc = pc.to(device=device, dtype=dtype)
-    return pc[0], pc[1], pc[2]
+        if pattern_center.shape[-1] != 3:
+            raise ValueError(f"pattern_center must have last dim 3, got shape {tuple(pattern_center.shape)}")
+        pattern_center = pattern_center.to(device=device, dtype=dtype)
+    return pattern_center[0], pattern_center[1], pattern_center[2]
 
 
 def directions_to_pixels(
     directions: torch.Tensor,
     detector: EBSDDetector,
-    pc: torch.Tensor | None = None,
+    pattern_center: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Map sphere directions to fractional detector pixels (inverse of the DC map).
 
@@ -46,10 +46,10 @@ def directions_to_pixels(
         the gnomonic ratios are scale-invariant).
     detector
         The ``de_ebsd.sim`` :class:`~de_ebsd.sim.detector.EBSDDetector` geometry.
-    pc
+    pattern_center
         Optional pattern-center override ``(3,)`` (``pcx, pcy, pcz``). When supplied
         with ``requires_grad``, the returned pixel coordinates are differentiable in
-        the pattern center. Defaults to ``detector.pc``.
+        the pattern center. Defaults to ``detector.pattern_center``.
 
     Returns
     -------
@@ -64,7 +64,7 @@ def directions_to_pixels(
     device = directions.device
     om = sample_to_detector_tensor(detector, device, directions.dtype)
     dtype = directions.dtype
-    pcx, pcy, pcz = _pc_components(detector, pc, device, dtype)
+    pcx, pcy, pcz = _pc_components(detector, pattern_center, device, dtype)
 
     # detector-frame components d = (n . X_d, n . Y_d, n . Z_d) = directions @ Om.T
     comp = directions @ om.transpose(-2, -1)
@@ -97,7 +97,7 @@ def pattern_to_sphere(
     patterns: torch.Tensor,
     detector: EBSDDetector,
     directions: torch.Tensor,
-    pc: torch.Tensor | None = None,
+    pattern_center: torch.Tensor | None = None,
     padding_mode: str = "border",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Back-project detector ``patterns`` onto ``directions`` on the unit sphere.
@@ -119,10 +119,10 @@ def pattern_to_sphere(
     directions
         Target sphere directions ``(M, 3)`` in the sample/detector frame, e.g.
         ``SphericalHarmonicTransform.grid_directions().reshape(-1, 3)``.
-    pc
+    pattern_center
         Optional pattern-center override ``(3,)`` (``pcx, pcy, pcz``); pass a tensor
         with ``requires_grad`` to differentiate the samples in the pattern center
-        (I6 refinement). Defaults to ``detector.pc``.
+        (I6 refinement). Defaults to ``detector.pattern_center``.
     padding_mode
         ``grid_sample`` padding for directions that fall (just) outside the pixel
         grid; ``"border"`` (default) clamps to the edge. Off-FOV samples are flagged
@@ -134,7 +134,7 @@ def pattern_to_sphere(
         Sphere samples ``(..., M)`` (same leading dims and dtype as ``patterns``).
         Entries outside the field of view are the ``padding_mode`` read-off and
         should be excluded via ``mask``. Differentiable in ``patterns`` (and, via
-        ``pc``, in the pattern center).
+        ``pattern_center``, in the pattern center).
     mask
         Field-of-view weight ``(M,)`` in ``patterns``' dtype: ``1`` where the
         direction lands on the detector, ``0`` otherwise (the detector's gnomonic
@@ -150,7 +150,7 @@ def pattern_to_sphere(
 
     device = patterns.device
     dirs = directions.to(device=device, dtype=patterns.dtype)
-    col, row, in_fov = directions_to_pixels(dirs, detector, pc)
+    col, row, in_fov = directions_to_pixels(dirs, detector, pattern_center)
 
     # normalized sampling coordinates for grid_sample(align_corners=True):
     # col in [0, W-1] -> gx in [-1, 1]; row in [0, H-1] -> gy in [-1, 1]

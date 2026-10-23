@@ -73,7 +73,7 @@ def master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A realistic tilted detector with a generous (~38%) field of view."""
-    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(90, 90), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 def _spot_field(
@@ -133,7 +133,7 @@ def spot_master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector_partial() -> EBSDDetector:
     """A tilted detector with a partial (~35%) field of view for the bias test."""
-    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.25), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(90, 90), pattern_center=(0.5, 0.5, 0.25), sample_tilt=70.0, tilt=5.0)
 
 
 # eight known orientations (Bunge Euler, degrees) for the bright-spot money test

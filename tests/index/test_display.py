@@ -48,7 +48,7 @@ def master(crystal):
 
 @pytest.fixture(scope="module")
 def detector():
-    return EBSDDetector(shape=(60, 60), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(60, 60), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 @pytest.fixture(scope="module")

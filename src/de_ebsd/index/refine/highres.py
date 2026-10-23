@@ -21,9 +21,9 @@ _EPS = 1e-12
 
 
 def direction_cosines_from_pc(
-    detector, pc: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor
+    detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor
 ) -> torch.Tensor:
-    """Sample-frame direction cosines at pixels ``(row, col)``, differentiable in ``pc``.
+    """Sample-frame direction cosines at pixels ``(row, col)``, differentiable in ``pattern_center``.
 
     A ``grid_sample``-free rewrite of
     :meth:`~de_ebsd.sim.detector.EBSDDetector.direction_cosines` over an arbitrary
@@ -37,18 +37,18 @@ def direction_cosines_from_pc(
     rotated into the sample frame and normalized. Reproduces
     ``EBSDDetector.direction_cosines`` to ~1e-16.
 
-    ``pc`` is ``(..., 3)``, overriding ``detector.pc``, and broadcasts against the
+    ``pattern_center`` is ``(..., 3)``, overriding ``detector.pattern_center``, and broadcasts against the
     leading dims of the ``(..., K)`` fractional ``rows``/``cols``. Returns unit
     direction cosines ``(..., K, 3)``.
     """
     om = sample_to_detector_tensor(detector, rows.device, rows.dtype)
-    ray = detector_rays(detector, pc, rows, cols)  # (..., K, 3)
+    ray = detector_rays(detector, pattern_center, rows, cols)  # (..., K, 3)
     dc = ray @ om  # sample-frame ray (rows: v @ om, matching direction_cosines)
     return dc / dc.norm(dim=-1, keepdim=True).clamp_min(_EPS)
 
 
-def _ddc_dpc(detector, pc: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
-    p = pc.detach()
+def _ddc_dpc(detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+    p = pattern_center.detach()
 
     def f(pc_arg: torch.Tensor) -> torch.Tensor:
         return direction_cosines_from_pc(detector, pc_arg, rows, cols)
@@ -189,10 +189,10 @@ def _hr_lm_refine(
     tile_ids,
     counts,
     r0_mat,
-    pc0,
-    refine_pc,
+    initial_pattern_center,
+    refine_pattern_center,
     n_steps,
-    lam0,
+    damping,
     keep_best,
     device,
     dtype,
@@ -204,12 +204,12 @@ def _hr_lm_refine(
 
     n_p = r0_mat.shape[0]
     r_mat = r0_mat.clone()
-    pc = pc0.clone()
-    lam = torch.full((n_p,), float(lam0), device=device, dtype=dtype)
+    pattern_center = initial_pattern_center.clone()
+    damping = torch.full((n_p,), float(damping), device=device, dtype=dtype)
 
     # orientation-only: the pattern center never moves, so build its direction
     # cosines once instead of rebuilding them every step
-    dc_fixed = None if refine_pc else direction_cosines_from_pc(detector, pc0, rows, cols).detach()
+    dc_fixed = None if refine_pattern_center else direction_cosines_from_pc(detector, initial_pattern_center, rows, cols).detach()
 
     def _ncc(r_cur, pc_cur):
         dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
@@ -219,13 +219,13 @@ def _hr_lm_refine(
         _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
         return (e_hat * m_hat).sum(-1) / n_active
 
-    seed_score = _ncc(r0_mat, pc0).detach()
+    seed_score = _ncc(r0_mat, initial_pattern_center).detach()
     cur_score = seed_score.clone()
 
     for _ in range(n_steps):
         # (Np, K, 3); constant when the pattern center is fixed, so reuse the precompute
         dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
-            detector, pc, rows, cols
+            detector, pattern_center, rows, cols
         ).detach()
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
@@ -237,8 +237,8 @@ def _hr_lm_refine(
 
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)  # gM @ R -> (Np, K, 3)
         dm_dw = torch.linalg.cross(dc, q, dim=-1)  # dc x (gM @ R), (Np, K, 3)
-        if refine_pc:
-            ddc_dpc = _ddc_dpc(detector, pc, rows, cols)  # (Np, K, 3, 3)
+        if refine_pattern_center:
+            ddc_dpc = _ddc_dpc(detector, pattern_center, rows, cols)  # (Np, K, 3, 3)
             dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc_dpc)  # (Np, K, 3)
             g_raw = torch.cat([dm_dw, dm_dpc], dim=-1)  # (Np, K, 6)
         else:
@@ -249,25 +249,25 @@ def _hr_lm_refine(
             jtr = torch.einsum("pk,pki->pi", res, j_r)  # (Np, P)
             jtj = torch.einsum("pki,pkj->pij", j_r, j_r)  # (Np, P, P)
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
-            a = jtj + lam[:, None, None] * torch.diag_embed(diag)
+            a = jtj + damping[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, P)
             r_new = r_mat @ rotation_vector_to_matrix(delta[:, :3])
-            pc_new = pc + delta[:, 3:6] if refine_pc else pc
+            pc_new = pattern_center + delta[:, 3:6] if refine_pattern_center else pattern_center
             new_score = _ncc(r_new, pc_new)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,
             # and monotone by construction
             better = new_score > cur_score
             r_mat = torch.where(better[:, None, None], r_new, r_mat)
-            pc = torch.where(better[:, None], pc_new, pc)
-            lam = torch.where(better, (lam * 0.5).clamp_min(1e-6), (lam * 3.0).clamp_max(1e2))
+            pattern_center = torch.where(better[:, None], pc_new, pattern_center)
+            damping = torch.where(better, (damping * 0.5).clamp_min(1e-6), (damping * 3.0).clamp_max(1e2))
             cur_score = torch.where(better, new_score, cur_score)
 
     if keep_best:
         keep = (cur_score >= seed_score).reshape(-1)
         r_mat = torch.where(keep[:, None, None], r_mat, r0_mat)
-        pc = torch.where(keep[:, None], pc, pc0)
+        pattern_center = torch.where(keep[:, None], pattern_center, initial_pattern_center)
         cur_score = torch.maximum(cur_score, seed_score)
-    return r_mat, pc, cur_score
+    return r_mat, pattern_center, cur_score
 
 
 def refine_hr(
@@ -275,12 +275,12 @@ def refine_hr(
     master,
     detector,
     rotations,
-    pc=None,
-    refine_pc=True,
+    pattern_center=None,
+    refine_pattern_center=False,
     n_tiles=16,
     samples_per_tile=8,
     n_steps=15,
-    lm_lambda=1e-3,
+    damping=1e-3,
     keep_best=True,
     device=None,
     all_pixels=False,
@@ -291,7 +291,7 @@ def refine_hr(
 
     The sub-0.1-degree-capable path. Rather than touching every detector pixel, it
     importance-samples a few thousand band-edge points spread across a tile grid and
-    runs batched Levenberg-Marquardt on ``(R, pc)`` against the continuous master,
+    runs batched Levenberg-Marquardt on ``(R, pattern_center)`` against the continuous master,
     over an objective normalized per tile (robust to intensity ramps). The sample
     budget (``n_tiles``, ``samples_per_tile``) is the accuracy/speed knob.
 
@@ -305,11 +305,11 @@ def refine_hr(
         :class:`~de_ebsd.sim.detector.EBSDDetector` geometry.
     rotations
         Seed :class:`orix.quaternion.Rotation`, typically a coarse index result.
-    pc
-        ``None`` uses ``detector.pc``. A ``(3,)`` value shares one center across the
+    pattern_center
+        ``None`` uses ``detector.pattern_center``. A ``(3,)`` value shares one center across the
         stack; ``(Np, 3)`` gives a per-pattern center. Returned in the same shape.
-    refine_pc
-        Refine the pattern center jointly (6 DOF, default) and return it, or leave
+    refine_pattern_center
+        Refine the pattern center jointly (6 DOF) and return it, or (default) leave
         it untouched and refine orientation only (3 DOF).
     n_tiles, samples_per_tile
         Tiles per detector side and samples kept per tile; the defaults give
@@ -317,10 +317,10 @@ def refine_hr(
     n_steps
         Levenberg-Marquardt steps (default 15); second-order, so a coarse seed
         sharpens well inside this budget.
-    lm_lambda
+    damping
         Initial damping, adapted per pattern each step (x0.5 accepted, x3 rejected).
     keep_best
-        Never return a ``(R, pc)`` scoring below the seed, making refinement
+        Never return a ``(R, pattern_center)`` scoring below the seed, making refinement
         monotone.
     device
         Defaults to ``master.data.device``; otherwise everything is moved there.
@@ -345,8 +345,8 @@ def refine_hr(
     score : torch.Tensor
         Mean per-tile NCC per pattern, in ``[-1, 1]``; ``>=`` the seed when
         ``keep_best``.
-    pc : torch.Tensor
-        Only when ``refine_pc``: the refined pattern center, shaped like the input.
+    pattern_center : torch.Tensor
+        Only when ``refine_pattern_center``: the refined pattern center, shaped like the input.
     """
     device = master.data.device if device is None else torch.device(device)
     dtype = master.data.dtype
@@ -366,29 +366,29 @@ def refine_hr(
         raise ValueError(f"rotations length {q0.shape[0]} != number of patterns {n_p}")
     r0_mat = quaternion_to_matrix(q0).detach()  # (Np, 3, 3)
 
-    if pc is None:
-        pc_init = torch.as_tensor(detector.pc, device=device, dtype=dtype)
+    if pattern_center is None:
+        pc_init = torch.as_tensor(detector.pattern_center, device=device, dtype=dtype)
     else:
-        pc_init = torch.as_tensor(pc, device=device, dtype=dtype)
+        pc_init = torch.as_tensor(pattern_center, device=device, dtype=dtype)
     if pc_init.ndim == 1 and pc_init.shape[0] == 3:
         pc_shared = True
-        pc0 = pc_init[None].expand(n_p, 3).contiguous()
+        initial_pattern_center = pc_init[None].expand(n_p, 3).contiguous()
     elif pc_init.ndim == 2 and pc_init.shape == (n_p, 3):
         pc_shared = False
-        pc0 = pc_init.contiguous()
+        initial_pattern_center = pc_init.contiguous()
     else:
         raise ValueError(
-            f"pc must be (3,) shared or (Np, 3) per-pattern (Np={n_p}), got "
+            f"pattern_center must be (3,) shared or (Np, 3) per-pattern (Np={n_p}), got "
             f"{tuple(pc_init.shape)}"
         )
 
     # size the mini-batch from the dominant per-step working set -- a (bs, K, 3, 3)
-    # d dc/d pc block with pattern-center refinement, (bs, K, 3) without -- to ~256 MB
+    # d dc/d pattern_center block with pattern-center refinement, (bs, K, 3) without -- to ~256 MB
     k = int(n_tiles * n_tiles * samples_per_tile) if not all_pixels else patt[0].numel()
     if batch_size is not None:
         bs = int(batch_size)
     else:
-        per = k * (36 if refine_pc else 12)  # bytes/pattern of the dominant intermediate
+        per = k * (36 if refine_pattern_center else 12)  # bytes/pattern of the dominant intermediate
         if sample_by == "master":
             # the seed render also holds a (bs, H*W, 3) direction-cosine block
             per = max(per, int(detector.nrows) * int(detector.ncols) * 12)
@@ -414,7 +414,7 @@ def refine_hr(
             # the master is noise-free, so its gradient marks true band edges; the
             # experimental gradient adds ~0.5 deg of scatter on real patterns
             with torch.no_grad():
-                dc_full = direction_cosines_from_pc(detector, pc0[sl], full_rows, full_cols)
+                dc_full = direction_cosines_from_pc(detector, initial_pattern_center[sl], full_rows, full_cols)
                 sim = master.sample(dc_full @ r0_mat[sl].transpose(-1, -2))
                 sim = sim.to(device=device, dtype=dtype).reshape(-1, hh, ww)
             rows, cols, flat, tile_ids, counts = edge_importance_samples(
@@ -426,8 +426,8 @@ def refine_hr(
             )
         e_raw = p_chunk.reshape(p_chunk.shape[0], -1).gather(1, flat.long())
         rf, pf, sc = _hr_lm_refine(
-            master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], pc0[sl],
-            refine_pc, n_steps, lm_lambda, keep_best, device, dtype,
+            master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], initial_pattern_center[sl],
+            refine_pattern_center, n_steps, damping, keep_best, device, dtype,
         )
         r_parts.append(rf)
         pc_parts.append(pf)
@@ -439,7 +439,7 @@ def refine_hr(
     from orix.quaternion import Rotation
 
     rotation = Rotation.from_matrix(r_final.cpu().numpy())
-    if not refine_pc:
+    if not refine_pattern_center:
         return rotation, score
     pc_out = pc_final.mean(0) if pc_shared else pc_final
     return rotation, score, pc_out.detach()

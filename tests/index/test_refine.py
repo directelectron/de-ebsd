@@ -15,12 +15,12 @@ The money tests:
 2. **Sub-grid-cell from a deliberately-off seed** -- seed ~1 grid cell off truth and
    show it converges back to ``< 0.5`` deg (independent of the coarse index).
 3. **Pattern-center recovery** -- render at the true pattern center, seed a *perturbed*
-   one, ``refine_pc=True``, and assert the refined center is much closer to truth than
+   one, ``refine_pattern_center=True``, and assert the refined center is much closer to truth than
    the seed was (the I3 pattern-center gradient path, end to end).
 4. **Objective sanity** -- the NCC rises over iterations and the refined score is ``>=``
    the coarse seed's.
 5. **Plumbing** -- single ``(H, W)`` and batched inputs, dtype/device, and that
-   ``refine_pc=False`` leaves the pattern center untouched.
+   ``refine_pattern_center=False`` leaves the pattern center untouched.
 
 The synthetic band master + tilted detector are the I4 indexer fixtures (band fields
 have near-uniform local norm, so the coarse index is reliable and the NCC basin is
@@ -59,7 +59,7 @@ def master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A realistic tilted detector with a generous field of view."""
-    return EBSDDetector(shape=(90, 90), pc=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(shape=(90, 90), pattern_center=(0.5, 0.5, 0.20), sample_tilt=70.0, tilt=5.0)
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +97,7 @@ def test_refine_sharpens_coarse_orientation(master, detector, indexer):
     patterns = master.project(detector, r_true, rescale=True)  # (4, H, W)
 
     coarse, _ = indexer.index(patterns)
-    refined, score = indexer.refine(patterns, rotations=coarse, n_iters=100, lr=0.05)
+    refined, score = indexer.refine(patterns, rotations=coarse, n_iters=100, learning_rate=0.05)
 
     assert refined.size == r_true.size
     assert tuple(score.shape) == (r_true.size,)
@@ -119,7 +119,7 @@ def test_refine_index_then_refine_from_raw_patterns(master, detector, indexer):
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(detector, r_true, rescale=True)
 
-    refined, score = indexer.refine(patterns, n_iters=100, lr=0.05)
+    refined, score = indexer.refine(patterns, n_iters=100, learning_rate=0.05)
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.5
     assert torch.isfinite(score).all()
@@ -145,7 +145,7 @@ def test_refine_converges_from_off_seed(master, detector, indexer):
     for i in range(r_true.size):
         assert _dis(r_true[i], seed[i]) == pytest.approx(GRID_STEP_DEG, abs=1e-6)
 
-    refined, _ = indexer.refine(patterns, rotations=seed, n_iters=120, lr=0.05)
+    refined, _ = indexer.refine(patterns, rotations=seed, n_iters=120, learning_rate=0.05)
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.5
 
@@ -159,7 +159,7 @@ def test_refine_correct_seed_does_not_drift(master, detector, indexer):
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
     patterns = master.project(detector, r_true, rescale=True)
 
-    refined, score = indexer.refine(patterns, rotations=r_true, n_iters=100, lr=0.05)
+    refined, score = indexer.refine(patterns, rotations=r_true, n_iters=100, learning_rate=0.05)
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.3  # interpolation-limited, tiny
     assert float(score.min()) > 0.99
@@ -169,14 +169,14 @@ def test_refine_correct_seed_does_not_drift(master, detector, indexer):
 # 3. pattern-center recovery -- the I3 gradient path end to end
 # --------------------------------------------------------------------------- #
 def test_refine_recovers_perturbed_pattern_center(master):
-    """Seed a perturbed pattern center; ``refine_pc`` pulls it back toward truth.
+    """Seed a perturbed pattern center; ``refine_pattern_center`` pulls it back toward truth.
 
     Render at the true center, index/refine from a center offset by +0.02 in each of
     ``pcx, pcy, pcz``, and assert the refined center is far closer to truth than the
     seed (proving the pattern-center gradient path), with the orientation still recovered.
     """
     pc_true = (0.5, 0.5, 0.20)
-    det_true = EBSDDetector(shape=(90, 90), pc=pc_true, sample_tilt=70.0, tilt=5.0)
+    det_true = EBSDDetector(shape=(90, 90), pattern_center=pc_true, sample_tilt=70.0, tilt=5.0)
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(det_true, r_true, rescale=True)
 
@@ -186,17 +186,17 @@ def test_refine_recovers_perturbed_pattern_center(master):
 
     # seed the orientation by indexing with the (wrong) perturbed geometry
     det_seed = EBSDDetector(
-        shape=(90, 90), pc=tuple(pc_seed.tolist()), sample_tilt=70.0, tilt=5.0
+        shape=(90, 90), pattern_center=tuple(pc_seed.tolist()), sample_tilt=70.0, tilt=5.0
     )
     idx_seed = SphericalIndexer(master, det_seed, bandwidth=BANDWIDTH, device="cpu")
     coarse, _ = idx_seed.index(patterns)
 
-    refined, score, pc_ref = idx_seed.refine(
-        patterns, rotations=coarse, pc=pc_seed, refine_pc=True, n_iters=200, lr=0.05
+    refined, score, reference_pattern_center = idx_seed.refine(
+        patterns, rotations=coarse, pattern_center=pc_seed, refine_pattern_center=True, n_iters=200, learning_rate=0.05
     )
-    refined_err = float((pc_ref - pc_true_t).norm())
+    refined_err = float((reference_pattern_center - pc_true_t).norm())
 
-    assert tuple(pc_ref.shape) == (3,)
+    assert tuple(reference_pattern_center.shape) == (3,)
     assert refined_err < 0.25 * seed_err, (
         f"pattern center not recovered: seed err {seed_err:.4f} -> refined "
         f"{refined_err:.4f}"
@@ -207,11 +207,11 @@ def test_refine_recovers_perturbed_pattern_center(master):
 
 
 def test_refine_pc_false_leaves_pc_untouched(master, detector, indexer):
-    """``refine_pc=False`` returns just ``(rotation, score)`` -- no pattern center."""
+    """``refine_pattern_center=False`` returns just ``(rotation, score)`` -- no pattern center."""
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:1]))
     patterns = master.project(detector, r_true, rescale=True)
-    out = indexer.refine(patterns, refine_pc=False, n_iters=50)
-    assert len(out) == 2  # rotation, score -- pc not part of the result
+    out = indexer.refine(patterns, refine_pattern_center=False, n_iters=50)
+    assert len(out) == 2  # rotation, score -- pattern_center not part of the result
     rotation, score = out
     assert isinstance(rotation, Rotation)
     assert tuple(score.shape) == (1,)
@@ -231,7 +231,7 @@ def test_ncc_increases_over_iterations(master, detector, indexer):
     coarse, _ = indexer.index(patterns)
 
     refined, score, history = indexer.refine(
-        patterns, rotations=coarse, n_iters=100, lr=0.05, return_history=True
+        patterns, rotations=coarse, n_iters=100, learning_rate=0.05, return_history=True
     )
     assert tuple(history.shape) == (100, r_true.size)
     # history[0] is the coarse seed's NCC (w = 0); the objective rises overall
@@ -278,10 +278,10 @@ def test_batched_matches_single(master, detector, indexer):
     patterns = master.project(detector, r_true, rescale=True)
     coarse, _ = indexer.index(patterns)
 
-    refined_b, score_b = indexer.refine(patterns, rotations=coarse, n_iters=100, lr=0.05)
+    refined_b, score_b = indexer.refine(patterns, rotations=coarse, n_iters=100, learning_rate=0.05)
     for i in range(r_true.size):
         refined_s, score_s = indexer.refine(
-            patterns[i], rotations=coarse[i], n_iters=100, lr=0.05
+            patterns[i], rotations=coarse[i], n_iters=100, learning_rate=0.05
         )
         # independent per-pattern gradients: batched == single, to tight tolerance
         assert _dis(refined_b[i], refined_s[0]) < 1e-4
@@ -291,7 +291,7 @@ def test_batched_matches_single(master, detector, indexer):
 def test_per_pattern_pattern_center(master):
     """A per-pattern ``(Np, 3)`` pattern center is accepted and refined per pattern."""
     pc_true = (0.5, 0.5, 0.20)
-    det_true = EBSDDetector(shape=(90, 90), pc=pc_true, sample_tilt=70.0, tilt=5.0)
+    det_true = EBSDDetector(shape=(90, 90), pattern_center=pc_true, sample_tilt=70.0, tilt=5.0)
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(det_true, r_true, rescale=True)
 
@@ -300,13 +300,13 @@ def test_per_pattern_pattern_center(master):
     pc_true_t = torch.tensor(pc_true, dtype=torch.float64)
     pc_seed = pc_true_t[None].repeat(2, 1) + 0.015  # (2, 3) per-pattern seed
 
-    refined, score, pc_ref = idx.refine(
-        patterns, rotations=coarse, pc=pc_seed, refine_pc=True, n_iters=200, lr=0.05
+    refined, score, reference_pattern_center = idx.refine(
+        patterns, rotations=coarse, pattern_center=pc_seed, refine_pattern_center=True, n_iters=200, learning_rate=0.05
     )
-    assert tuple(pc_ref.shape) == (2, 3)
+    assert tuple(reference_pattern_center.shape) == (2, 3)
     for i in range(2):
         seed_err = float((pc_seed[i] - pc_true_t).norm())
-        refined_err = float((pc_ref[i] - pc_true_t).norm())
+        refined_err = float((reference_pattern_center[i] - pc_true_t).norm())
         assert refined_err < seed_err
         assert _dis(r_true[i], refined[i]) < 0.5
 
@@ -364,25 +364,25 @@ def test_refine_device_arg_is_honored_cuda(master, detector):
 # 6. stability -- the real-data (kikuchipy Ni) lesson
 # --------------------------------------------------------------------------- #
 def test_default_refine_lr_is_conservative():
-    """The default rotation ``lr`` stays small enough for real, shallow-basin data.
+    """The default rotation ``learning_rate`` stays small enough for real, shallow-basin data.
 
-    The divergence a too-large ``lr`` causes shows up only on *real* low-resolution
+    The divergence a too-large ``learning_rate`` causes shows up only on *real* low-resolution
     patterns: the synthetic band master's NCC basin is too deep to reproduce it (even
-    ``lr = 0.05`` converges on synthetic data, noise included), so this guards the value
-    directly. A regression to the old ``lr = 0.05`` -- which walked the seed off by ~18
-    deg on real kikuchipy Ni patterns while ``lr <= 0.02`` refined cleanly -- fails here.
+    ``learning_rate = 0.05`` converges on synthetic data, noise included), so this guards the value
+    directly. A regression to the old ``learning_rate = 0.05`` -- which walked the seed off by ~18
+    deg on real kikuchipy Ni patterns while ``learning_rate <= 0.02`` refined cleanly -- fails here.
     """
     import inspect
 
     for fn in (refine_orientation, SphericalIndexer.refine):
-        default_lr = inspect.signature(fn).parameters["lr"].default
+        default_lr = inspect.signature(fn).parameters["learning_rate"].default
         assert default_lr <= 0.02, (
-            f"{fn.__qualname__} default lr {default_lr} is too aggressive for real data"
+            f"{fn.__qualname__} default learning_rate {default_lr} is too aggressive for real data"
         )
 
 
 def test_refine_stable_under_moderate_noise(master, detector, indexer):
-    """With the default ``lr``, refinement converges on a noise-perturbed pattern.
+    """With the default ``learning_rate``, refinement converges on a noise-perturbed pattern.
 
     A behavioral check that additive noise does not make refinement diverge: the refined
     orientation lands near the truth and moves the coarse seed only a little (a small,
@@ -397,7 +397,7 @@ def test_refine_stable_under_moderate_noise(master, detector, indexer):
     patterns = clean + noise
     coarse = indexer.index(patterns)[0]
 
-    refined, score = indexer.refine(patterns, rotations=coarse, n_iters=100)  # default lr
+    refined, score = indexer.refine(patterns, rotations=coarse, n_iters=100)  # default learning_rate
     assert torch.isfinite(score).all()
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < GRID_STEP_DEG  # converges toward truth
@@ -407,7 +407,7 @@ def test_refine_stable_under_moderate_noise(master, detector, indexer):
 def test_keep_best_never_degrades_below_seed(master, detector, indexer):
     """``keep_best`` guarantees refinement is monotone: it never returns a worse fit.
 
-    Forced with an absurd ``lr`` that makes the optimizer overshoot and *degrade* the
+    Forced with an absurd ``learning_rate`` that makes the optimizer overshoot and *degrade* the
     NCC, ``keep_best=True`` reverts each such pattern to its coarse seed (so the score
     never drops below the seed's), while ``keep_best=False`` lets the degradation
     through. This is the guard that removes the stray refinement outliers seen on real
@@ -419,12 +419,12 @@ def test_keep_best_never_degrades_below_seed(master, detector, indexer):
     _, seed_score = indexer.refine(patterns, rotations=coarse, n_iters=0)  # seed NCC
 
     gated, s_gated = indexer.refine(
-        patterns, rotations=coarse, n_iters=30, lr=2.0, keep_best=True
+        patterns, rotations=coarse, n_iters=30, learning_rate=2.0, keep_best=True
     )
     ungated, s_ungated = indexer.refine(
-        patterns, rotations=coarse, n_iters=30, lr=2.0, keep_best=False
+        patterns, rotations=coarse, n_iters=30, learning_rate=2.0, keep_best=False
     )
-    # gated is never worse than the seed; the absurd lr degrades the ungated result
+    # gated is never worse than the seed; the absurd learning_rate degrades the ungated result
     assert torch.all(s_gated >= seed_score - 1e-6)
     assert torch.any(s_ungated < seed_score - 1e-3)
     # where the ungated run degraded, the gated run kept the seed orientation exactly
@@ -507,10 +507,10 @@ def test_lm_matches_adam_accuracy_in_far_fewer_steps(master, detector, indexer):
         patterns, master, detector, coarse, method="lm", n_iters=12
     )
     adam12, _ = refine_orientation(
-        patterns, master, detector, coarse, method="adam", n_iters=12, lr=0.05
+        patterns, master, detector, coarse, method="adam", n_iters=12, learning_rate=0.05
     )
     adam100, _ = refine_orientation(
-        patterns, master, detector, coarse, method="adam", n_iters=100, lr=0.05
+        patterns, master, detector, coarse, method="adam", n_iters=100, learning_rate=0.05
     )
 
     lm_dis, adam100_dis = [], []
@@ -582,9 +582,9 @@ def test_lm_and_adam_both_run_and_history(master, detector, indexer):
 
 
 def test_lm_refine_pc_falls_back_to_adam(master):
-    """``method="lm"`` with ``refine_pc=True`` falls back to Adam and still returns pc."""
+    """``method="lm"`` with ``refine_pattern_center=True`` falls back to Adam and still returns pattern_center."""
     pc_true = (0.5, 0.5, 0.20)
-    det_true = EBSDDetector(shape=(90, 90), pc=pc_true, sample_tilt=70.0, tilt=5.0)
+    det_true = EBSDDetector(shape=(90, 90), pattern_center=pc_true, sample_tilt=70.0, tilt=5.0)
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(det_true, r_true, rescale=True)
 
@@ -593,21 +593,21 @@ def test_lm_refine_pc_falls_back_to_adam(master):
     seed_err = float((pc_seed - pc_true_t).norm())
 
     det_seed = EBSDDetector(
-        shape=(90, 90), pc=tuple(pc_seed.tolist()), sample_tilt=70.0, tilt=5.0
+        shape=(90, 90), pattern_center=tuple(pc_seed.tolist()), sample_tilt=70.0, tilt=5.0
     )
     idx_seed = SphericalIndexer(master, det_seed, bandwidth=BANDWIDTH, device="cpu")
     coarse, _ = idx_seed.index(patterns)
 
-    # LM is orientation-only, so refine_pc=True must transparently use the Adam path --
+    # LM is orientation-only, so refine_pattern_center=True must transparently use the Adam path --
     # which still recovers both the orientation and the pattern center.
     out = refine_orientation(
-        patterns, master, det_seed, coarse, pc=pc_seed, refine_pc=True, method="lm",
-        directions=idx_seed._dirs, n_iters=200, lr=0.05, device="cpu",
+        patterns, master, det_seed, coarse, pattern_center=pc_seed, refine_pattern_center=True, method="lm",
+        directions=idx_seed._dirs, n_iters=200, learning_rate=0.05, device="cpu",
     )
-    assert len(out) == 3  # (rotation, score, pc) -- the pc IS returned
-    refined, score, pc_ref = out
-    assert tuple(pc_ref.shape) == (3,)
-    assert float((pc_ref - pc_true_t).norm()) < 0.25 * seed_err  # pc genuinely refined
+    assert len(out) == 3  # (rotation, score, pattern_center) -- the pattern_center IS returned
+    refined, score, reference_pattern_center = out
+    assert tuple(reference_pattern_center.shape) == (3,)
+    assert float((reference_pattern_center - pc_true_t).norm()) < 0.25 * seed_err  # pattern_center genuinely refined
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.5
 

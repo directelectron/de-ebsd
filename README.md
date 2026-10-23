@@ -63,7 +63,7 @@ sim.crystal.show()                     # real 3-D expanded crystal structure
 better = sim.refine(npx=1000, dmin=0.04)
 
 # project to a detector for a batch of orientations (orix Rotation):
-detector = de.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
+detector = de.EBSDDetector(shape=(480, 480), pattern_center=(0.5, 0.5, 0.6))
 patterns = master.project(detector, orientation=rotations)
 
 # interactive geometry widget in Jupyter (anywidget):

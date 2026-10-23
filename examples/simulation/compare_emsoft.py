@@ -176,7 +176,7 @@ comparison
 # additionally introduces a sampling/interpolation difference.
 
 detector = de.EBSDDetector(
-    shape=(96, 128), pc=(0.45, 0.55, 0.60), tilt=5.0,
+    shape=(96, 128), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
     sample_tilt=microscope.sample_tilt, azimuthal=microscope.azimuthal,
 )
 orientation = Rotation.from_euler([[35.0, 45.0, 10.0]], degrees=True)

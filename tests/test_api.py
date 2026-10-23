@@ -106,7 +106,7 @@ def test_master_metadata_carries_the_crystal_object(sim, master):
     assert master.metadata["crystal"] is sim.crystal
     assert phase_from_crystal(master.metadata["crystal"]).space_group.number == 227
 
-    detector = de.EBSDDetector(shape=(12, 16), pc=(0.5, 0.5, 0.6), sample_tilt=70.0)
+    detector = de.EBSDDetector(shape=(12, 16), pattern_center=(0.5, 0.5, 0.6), sample_tilt=70.0)
     indexer = DictionaryIndexer(master, detector, resolution=20.0, device="cpu")
     assert indexer.point_group.name == "m-3m"
 
@@ -141,7 +141,7 @@ def test_master_pattern_sampling_consistency(sim, master):
 
 
 def test_projection_shapes(master):
-    detector = de.EBSDDetector(shape=(32, 48), pc=(0.5, 0.5, 0.5))
+    detector = de.EBSDDetector(shape=(32, 48), pattern_center=(0.5, 0.5, 0.5))
     q = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.3, 0.2]])
     patterns = master.project(detector, q)
     assert patterns.shape == (2, 32, 48)
@@ -151,7 +151,7 @@ def test_projection_shapes(master):
 def test_projection_accepts_orix_rotation(master):
     orix_quaternion = pytest.importorskip("orix.quaternion")
     rotation = orix_quaternion.Rotation.random(3)
-    detector = de.EBSDDetector(shape=(16, 16), pc=(0.5, 0.5, 0.5))
+    detector = de.EBSDDetector(shape=(16, 16), pattern_center=(0.5, 0.5, 0.5))
     patterns = master.project(detector, rotation)
     assert patterns.shape == (3, 16, 16)
 

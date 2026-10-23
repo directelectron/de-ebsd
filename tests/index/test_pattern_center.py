@@ -11,19 +11,19 @@ equations are **summed over all patterns**.
 The money tests:
 
 1. **PC recovery** -- project ``N=24`` patterns at known orientations and a KNOWN true PC,
-   start from a WRONG ``pc0`` (off by 0.03 per component), and recover the shared PC to
+   start from a WRONG ``initial_pattern_center`` (off by 0.03 per component), and recover the shared PC to
    ``< 0.005`` (>= 6x better than the seed), on both a smooth and a sharper band master and
    several wrong-PC seeds.
 2. **Degeneracy contrast** -- fitting the PC from single patterns (``N=1``) is *erratic*
    (their errors scatter over 100x and the worst is several-fold worse than the ensemble),
    while the ``N=20`` ensemble is reliably accurate -- demonstrating the ensemble breaks the
    R--PC degeneracy.
-3. **Robustness** -- several wrong ``pc0`` seeds converge to the same PC;
+3. **Robustness** -- several wrong ``initial_pattern_center`` seeds converge to the same PC;
    ``refine_orientations=True`` (from perturbed seeds) and ``=False`` (from the true
    orientations) both recover it.
 4. **Workflow integration** -- after calibration, orientation-only
-   ``refine_hr(refine_pc=False, pc=<calibrated>)`` recovers the known orientations to
-   ``< 0.1`` deg, whereas at the wrong ``pc0`` it lands degrees off.
+   ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` recovers the known orientations to
+   ``< 0.1`` deg, whereas at the wrong ``initial_pattern_center`` it lands degrees off.
 5. **Plumbing** -- numpy and torch input agree; ``return_orientations``; the ``info`` diag
    fields; single ``(H, W)`` and batched ``(N, H, W)`` inputs; shape validation; a
    CUDA-guarded path.
@@ -61,7 +61,7 @@ def smooth_master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A tilted detector with a wide field of view (small pcz -> curved bands)."""
-    return EBSDDetector(shape=(72, 72), pc=(0.5, 0.5, 0.22), sample_tilt=70.0, tilt=8.0)
+    return EBSDDetector(shape=(72, 72), pattern_center=(0.5, 0.5, 0.22), sample_tilt=70.0, tilt=8.0)
 
 
 def _orientations(n: int, seed: int) -> Rotation:
@@ -90,28 +90,28 @@ def _dis(a: Rotation, b: Rotation) -> float:
 @pytest.mark.parametrize("which", ["sharp", "smooth"])
 @pytest.mark.parametrize("off", [(0.03, 0.03, 0.03), (-0.03, 0.02, -0.03)])
 def test_pc_recovery(which, off, master, smooth_master, detector):
-    """Recover a shared PC from a wrong ``pc0`` given N=24 patterns at known orientations.
+    """Recover a shared PC from a wrong ``initial_pattern_center`` given N=24 patterns at known orientations.
 
     Project 24 patterns at random orientations and the true PC, hand the routine the true
-    orientations and a ``pc0`` offset by 0.03 in every component, and assert the calibrated
+    orientations and a ``initial_pattern_center`` offset by 0.03 in every component, and assert the calibrated
     shared PC is within ``0.005`` of truth AND at least 6x closer than the seed -- on both a
     smooth and a sharper band master, for several wrong-PC seeds.
     """
     mp = master if which == "sharp" else smooth_master
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(24, seed=0)
     patterns = mp.project(detector, r_true, rescale=True)
 
-    pc0 = pc_true + torch.tensor(off, dtype=torch.float64)
-    seed_err = float((pc0 - pc_true).norm())
+    initial_pattern_center = pc_true + torch.tensor(off, dtype=torch.float64)
+    seed_err = float((initial_pattern_center - pc_true).norm())
 
-    pc_ref, info = determine_pattern_center(
-        patterns, mp, detector, r_true, pc0=pc0, n_rounds=8,
+    reference_pattern_center, info = determine_pattern_center(
+        patterns, mp, detector, r_true, pattern_center=initial_pattern_center, n_rounds=8,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
-    ref_err = float((pc_ref - pc_true).norm())
+    ref_err = float((reference_pattern_center - pc_true).norm())
 
-    assert tuple(pc_ref.shape) == (3,)
+    assert tuple(reference_pattern_center.shape) == (3,)
     assert ref_err < 0.005, f"{which} {off}: refined PC err {ref_err:.5f} not < 0.005"
     assert ref_err < seed_err / 6.0, (
         f"{which} {off}: seed err {seed_err:.4f} -> refined {ref_err:.5f} (< 6x better)"
@@ -133,20 +133,20 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
     it reliably. Noise-free, even a single pattern is solved exactly, so the noise is what
     this test is about.
     """
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     n = 20
     r_true = _orientations(n, seed=0)
     patterns = master.project(detector, r_true, rescale=True)
     g = torch.Generator().manual_seed(5)
     patterns = patterns + 0.3 * patterns.std() * torch.randn(
         patterns.shape, generator=g, dtype=patterns.dtype)
-    pc0 = pc_true + 0.03
+    initial_pattern_center = pc_true + 0.03
 
     single = np.array([
         float(
             (
                 determine_pattern_center(
-                    patterns[i:i + 1], master, detector, r_true[i:i + 1], pc0=pc0,
+                    patterns[i:i + 1], master, detector, r_true[i:i + 1], pattern_center=initial_pattern_center,
                     n_rounds=12, n_tiles=_NT, samples_per_tile=_SPT,
                 )[0]
                 - pc_true
@@ -155,7 +155,7 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
         for i in range(n)
     ])
     pc_ens, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=12,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=12,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     ens = float((pc_ens - pc_true).norm())
@@ -175,21 +175,21 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
 # 3. robustness -- many seeds agree; both orientation modes work
 # --------------------------------------------------------------------------- #
 def test_multiple_seeds_converge_to_same_pc(master, detector):
-    """Several different wrong ``pc0`` seeds converge to the same calibrated PC."""
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    """Several different wrong ``initial_pattern_center`` seeds converge to the same calibrated PC."""
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(24, seed=1)
     patterns = master.project(detector, r_true, rescale=True)
 
     seeds = [(0.03, 0.03, 0.03), (-0.03, -0.02, 0.03), (0.02, -0.03, -0.03)]
     refined = []
     for off in seeds:
-        pc_ref, _ = determine_pattern_center(
+        reference_pattern_center, _ = determine_pattern_center(
             patterns, master, detector, r_true,
-            pc0=pc_true + torch.tensor(off, dtype=torch.float64),
+            pattern_center=pc_true + torch.tensor(off, dtype=torch.float64),
             n_rounds=8, n_tiles=_NT, samples_per_tile=_SPT,
         )
-        refined.append(pc_ref)
-        assert float((pc_ref - pc_true).norm()) < 0.005
+        refined.append(reference_pattern_center)
+        assert float((reference_pattern_center - pc_true).norm()) < 0.005
     stack = torch.stack(refined)
     spread = float((stack - stack.mean(0)).norm(dim=-1).max())
     assert spread < 0.003, f"seeds disagree by {spread:.5f} (not a common PC)"
@@ -202,22 +202,22 @@ def test_refine_orientations_true_and_false_both_recover(master, detector):
     co-refines them; ``refine_orientations=False`` trusts the given (here true) orientations
     and fits the PC alone (which, at correct orientations, pins it near-exactly).
     """
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(24, seed=2)
     patterns = master.project(detector, r_true, rescale=True)
-    pc0 = pc_true + 0.03
+    initial_pattern_center = pc_true + 0.03
 
     # (a) coarse-perturbed seeds, orientations co-refined
     seed_r = _perturb(r_true, 1.0, seed=10)
     pc_a, _ = determine_pattern_center(
-        patterns, master, detector, seed_r, pc0=pc0, n_rounds=12, refine_orientations=True,
+        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, n_rounds=12, refine_orientations=True,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert float((pc_a - pc_true).norm()) < 0.003
 
     # (b) true orientations held fixed -> PC alone, near-exact
     pc_b, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=6, refine_orientations=False,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=6, refine_orientations=False,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert float((pc_b - pc_true).norm()) < 5e-4
@@ -230,30 +230,30 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
     """The downstream payoff: orientations refine to < 0.1 deg only at the calibrated PC.
 
     Calibrate the shared PC from coarse-seeded patterns, then run orientation-only
-    ``refine_hr(refine_pc=False, pc=<calibrated>)`` on the whole set: the disorientations
-    fall below 0.1 deg. Running the same refine at the original wrong ``pc0`` instead leaves
+    ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` on the whole set: the disorientations
+    fall below 0.1 deg. Running the same refine at the original wrong ``initial_pattern_center`` instead leaves
     them degrees off -- tying the calibration to its benefit.
     """
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     n = 24
     r_true = _orientations(n, seed=0)
     patterns = master.project(detector, r_true, rescale=True)
-    pc0 = pc_true + 0.03
+    initial_pattern_center = pc_true + 0.03
     seed_r = _perturb(r_true, 1.0, seed=20)
 
     pc_cal, rot_cal, info = determine_pattern_center(
-        patterns, master, detector, seed_r, pc0=pc0, n_rounds=18,
+        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, n_rounds=18,
         n_tiles=_NT, samples_per_tile=_SPT, return_orientations=True,
     )
     assert isinstance(rot_cal, Rotation) and rot_cal.size == n
     assert float((pc_cal - pc_true).norm()) < 8e-4  # tight enough for sub-0.1-deg orient
 
     good, _ = refine_hr(
-        patterns, master, detector, seed_r, pc=pc_cal, refine_pc=False,
+        patterns, master, detector, seed_r, pattern_center=pc_cal, refine_pattern_center=False,
         n_tiles=_NT, samples_per_tile=_SPT, n_steps=30,
     )
     bad, _ = refine_hr(
-        patterns, master, detector, seed_r, pc=pc0, refine_pc=False,
+        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, refine_pattern_center=False,
         n_tiles=_NT, samples_per_tile=_SPT, n_steps=30,
     )
     good_dis = np.array([_dis(r_true[i], good[i]) for i in range(n)])
@@ -263,7 +263,7 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
         f"orient refine at calibrated PC: max {good_dis.max():.4f} deg not < 0.1"
     )
     assert float(np.median(bad_dis)) > 1.0, (
-        f"orient refine at wrong pc0 unexpectedly good ({np.median(bad_dis):.3f} deg)"
+        f"orient refine at wrong initial_pattern_center unexpectedly good ({np.median(bad_dis):.3f} deg)"
     )
 
 
@@ -272,36 +272,36 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
 # --------------------------------------------------------------------------- #
 def test_numpy_and_torch_input_agree(master, detector):
     """A numpy pattern stack gives the same calibrated PC as the torch stack."""
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(12, seed=3)
     patterns = master.project(detector, r_true, rescale=True)
-    pc0 = pc_true + 0.02
+    initial_pattern_center = pc_true + 0.02
 
     pc_t, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=4,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=4,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     pc_n, _ = determine_pattern_center(
-        patterns.cpu().numpy(), master, detector, r_true, pc0=pc0, n_rounds=4,
+        patterns.cpu().numpy(), master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=4,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert torch.allclose(pc_t, pc_n, atol=1e-9)
 
 
 def test_return_orientations_and_info_fields(master, detector):
-    """``return_orientations`` yields ``(pc, Rotation, info)``; ``info`` reports the fit."""
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    """``return_orientations`` yields ``(pattern_center, Rotation, info)``; ``info`` reports the fit."""
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(16, seed=4)
     patterns = master.project(detector, r_true, rescale=True)
-    pc0 = pc_true + 0.03
+    initial_pattern_center = pc_true + 0.03
 
     out = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=6,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=6,
         n_tiles=_NT, samples_per_tile=_SPT, return_orientations=True,
     )
     assert len(out) == 3
-    pc_ref, rotation, info = out
-    assert tuple(pc_ref.shape) == (3,)
+    reference_pattern_center, rotation, info = out
+    assert tuple(reference_pattern_center.shape) == (3,)
     assert isinstance(rotation, Rotation) and rotation.size == 16
 
     assert set(info) == {"ncc", "ncc_seed", "pc_step", "pc_step_history", "n_rounds"}
@@ -312,9 +312,9 @@ def test_return_orientations_and_info_fields(master, detector):
     # converged: the last round moved the PC less than the first
     assert info["pc_step"] < info["pc_step_history"][0]
 
-    # without the flag, only (pc, info)
+    # without the flag, only (pattern_center, info)
     two = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=2,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=2,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert len(two) == 2 and tuple(two[0].shape) == (3,) and isinstance(two[1], dict)
@@ -324,23 +324,23 @@ def test_single_pattern_and_batch_shapes(master, detector):
     """A bare ``(H, W)`` input is accepted (N=1), as is a batched ``(N, H, W)`` stack."""
     r_true = _orientations(3, seed=5)
     patterns = master.project(detector, r_true, rescale=True)
-    pc0 = torch.tensor(detector.pc, dtype=torch.float64) + 0.02
+    initial_pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64) + 0.02
 
     pc_single, _ = determine_pattern_center(
-        patterns[0], master, detector, r_true[0], pc0=pc0, n_rounds=2,
+        patterns[0], master, detector, r_true[0], pattern_center=initial_pattern_center, n_rounds=2,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert tuple(pc_single.shape) == (3,)
 
     pc_batch, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pc0=pc0, n_rounds=2,
+        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=2,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
     assert tuple(pc_batch.shape) == (3,)
 
 
 def test_shape_validation(master, detector):
-    """A rotations/patterns length mismatch and a bad ``pc0`` shape both raise."""
+    """A rotations/patterns length mismatch and a bad ``initial_pattern_center`` shape both raise."""
     r_true = _orientations(4, seed=6)
     patterns = master.project(detector, r_true, rescale=True)
 
@@ -349,9 +349,9 @@ def test_shape_validation(master, detector):
             patterns, master, detector, _orientations(3, seed=6), n_rounds=1,
             n_tiles=_NT, samples_per_tile=_SPT,
         )
-    with pytest.raises(ValueError, match="pc0 must be"):
+    with pytest.raises(ValueError, match="pattern_center must be"):
         determine_pattern_center(
-            patterns, master, detector, r_true, pc0=torch.zeros(2), n_rounds=1,
+            patterns, master, detector, r_true, pattern_center=torch.zeros(2), n_rounds=1,
             n_tiles=_NT, samples_per_tile=_SPT,
         )
 
@@ -360,17 +360,17 @@ def test_shape_validation(master, detector):
 def test_cuda_path(master, detector):
     """Calibration runs on CUDA and returns the PC on the CUDA device."""
     master_cuda = master.to("cuda")
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(12, seed=7)
     patterns = master_cuda.project(detector, r_true, rescale=True)
-    pc0 = pc_true + 0.03
+    initial_pattern_center = pc_true + 0.03
 
-    pc_ref, info = determine_pattern_center(
-        patterns, master_cuda, detector, r_true, pc0=pc0, n_rounds=8,
+    reference_pattern_center, info = determine_pattern_center(
+        patterns, master_cuda, detector, r_true, pattern_center=initial_pattern_center, n_rounds=8,
         n_tiles=_NT, samples_per_tile=_SPT, device="cuda",
     )
-    assert pc_ref.device.type == "cuda"
-    assert float((pc_ref.cpu() - pc_true).norm()) < 0.005
+    assert reference_pattern_center.device.type == "cuda"
+    assert float((reference_pattern_center.cpu() - pc_true).norm()) < 0.005
 
 
 def test_a_sharp_master_is_reached_from_outside_its_basin(detector):
@@ -379,18 +379,18 @@ def test_a_sharp_master_is_reached_from_outside_its_basin(detector):
     blur schedule must still recover the PC -- and without it, it must not
     (otherwise this test is not testing the schedule)."""
     sharp = make_band_master(npx=200, width=0.012, n_bands=30, seed=3)
-    pc_true = torch.tensor(detector.pc, dtype=torch.float64)
+    pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(24, seed=0)
     patterns = sharp.project(detector, r_true, rescale=True)
-    pc0 = pc_true + torch.tensor((0.03, -0.03, 0.03), dtype=torch.float64)
+    initial_pattern_center = pc_true + torch.tensor((0.03, -0.03, 0.03), dtype=torch.float64)
 
-    pc_ref, info = determine_pattern_center(
-        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pc0=pc0, n_rounds=8,
+    reference_pattern_center, info = determine_pattern_center(
+        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pattern_center=initial_pattern_center, n_rounds=8,
         n_tiles=_NT, samples_per_tile=_SPT,
     )
-    assert float((pc_ref - pc_true).norm()) < 0.005, info
+    assert float((reference_pattern_center - pc_true).norm()) < 0.005, info
     pc_flat, _ = determine_pattern_center(
-        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pc0=pc0, n_rounds=8,
+        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pattern_center=initial_pattern_center, n_rounds=8,
         n_tiles=_NT, samples_per_tile=_SPT, blur=None,
     )
     assert float((pc_flat - pc_true).norm()) > 0.02

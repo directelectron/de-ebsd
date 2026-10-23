@@ -69,7 +69,7 @@ _EPS = 1e-12
 # ---------------------------------------------------------------------------
 
 
-def _pixels_from_ray(detector, pc: torch.Tensor, ray: torch.Tensor):
+def _pixels_from_ray(detector, pattern_center: torch.Tensor, ray: torch.Tensor):
     """The fractional ``(row, col)`` a ray lands on: the inverse of ``detector_rays``.
 
     ``col + 0.5 = ncols * pcx + nrows * pcz * (r1 / r3)`` and
@@ -78,7 +78,7 @@ def _pixels_from_ray(detector, pc: torch.Tensor, ray: torch.Tensor):
     in pixel coordinates -- the magnification-about-the-pattern-center that the
     moving-screen method exploits.
     """
-    pcx, pcy, pcz = pc[..., 0:1], pc[..., 1:2], pc[..., 2:3]
+    pcx, pcy, pcz = pattern_center[..., 0:1], pattern_center[..., 1:2], pattern_center[..., 2:3]
     inv_z = 1.0 / ray[..., 2]
     col = detector.ncols * pcx + detector.nrows * pcz * (ray[..., 0] * inv_z) - 0.5
     row = detector.nrows * pcy - detector.nrows * pcz * (ray[..., 1] * inv_z) - 0.5
@@ -266,13 +266,13 @@ def _measure_shifts(test_rois, ref_rois, win, upsample, mask=None, refine=True, 
 # ---------------------------------------------------------------------------
 
 
-def _design(detector, pc: torch.Tensor, centers: torch.Tensor):
+def _design(detector, pattern_center: torch.Tensor, centers: torch.Tensor):
     """Design matrix ``(N, M, 2, 8)`` for the trace-free shift equation.
 
     Free parameters are ``[b11, b12, b13, b21, b22, b23, b31, b32]`` with
     ``b33 = -(b11 + b22)``; rows are the gnomonic ``(qx, qy)`` of each region.
     """
-    ray = detector_rays(detector, pc, centers[:, 0], centers[:, 1])  # (N, M, 3)
+    ray = detector_rays(detector, pattern_center, centers[:, 0], centers[:, 1])  # (N, M, 3)
     x, y, z = ray[..., 0], ray[..., 1], ray[..., 2]
     o = torch.zeros_like(x)
     a9 = torch.stack(
@@ -316,7 +316,7 @@ def _solve_beta(a: torch.Tensor, q: torch.Tensor, w: torch.Tensor):
 # ---------------------------------------------------------------------------
 
 
-def _reference_grid(detector, f, pc, pc_ref, rows, cols):
+def _reference_grid(detector, f, pattern_center, reference_pattern_center, rows, cols):
     """Test-frame fractional pixels ``(N, K)`` -> ``(N, K, 2)`` grid into the reference.
 
     A feature at crystal direction ``r`` in the reference sits at ``F r`` once the
@@ -324,9 +324,9 @@ def _reference_grid(detector, f, pc, pc_ref, rows, cols):
     content at ``F^-1 r``. Leaving through the test pattern center and re-entering
     through the reference's also absorbs their pattern-center difference, exactly.
     """
-    ray = detector_rays(detector, pc, rows, cols)  # (N, K, 3)
+    ray = detector_rays(detector, pattern_center, rows, cols)  # (N, K, 3)
     ray_ref = torch.einsum("nij,nkj->nki", torch.linalg.inv(f), ray)
-    row_ref, col_ref = _pixels_from_ray(detector, pc_ref, ray_ref)
+    row_ref, col_ref = _pixels_from_ray(detector, reference_pattern_center, ray_ref)
     gx = 2.0 * (col_ref + 0.5) / detector.ncols - 1.0
     gy = 2.0 * (row_ref + 0.5) / detector.nrows - 1.0
     return torch.stack([gx, gy], dim=-1)
@@ -338,7 +338,7 @@ def _sample(ref: torch.Tensor, grid: torch.Tensor) -> torch.Tensor:
     )[:, 0]
 
 
-def _warped_rois(ref, detector, f, pc, pc_ref, centers, roi_size):
+def _warped_rois(ref, detector, f, pattern_center, reference_pattern_center, centers, roi_size):
     """Only the regions of the remapped reference, never the whole warped frame.
 
     On a 4k detector a full remap is ~17x the pixels this actually needs.
@@ -347,13 +347,13 @@ def _warped_rois(ref, detector, f, pc, pc_ref, centers, roi_size):
     rows, cols = _roi_pixels(centers, roi_size)  # (M, roi, roi)
     rr = rows.reshape(1, -1).expand(n, -1)
     cc = cols.reshape(1, -1).expand(n, -1)
-    grid = _reference_grid(detector, f, pc, pc_ref, rr, cc)
+    grid = _reference_grid(detector, f, pattern_center, reference_pattern_center, rr, cc)
     m = centers.shape[0]
     grid = grid.reshape(n, m * roi_size, roi_size, 2)
     return _sample(ref, grid).reshape(n, m, roi_size, roi_size)
 
 
-def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pc, pc_ref) -> torch.Tensor:
+def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pattern_center, reference_pattern_center) -> torch.Tensor:
     """Re-project a whole reference pattern into the deformed configuration.
 
     :func:`hrebsd` uses a region-only path internally; this is the full-frame version,
@@ -367,7 +367,7 @@ def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pc, pc_r
         Geometry, for the pixel <-> gnomonic conversion.
     f
         ``(N, 3, 3)`` deformation gradient in the detector frame.
-    pc, pc_ref
+    pattern_center, reference_pattern_center
         Test and reference pattern centers, ``(3,)`` or ``(N, 3)``.
 
     Returns
@@ -379,8 +379,8 @@ def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pc, pc_r
     device, dtype = reference.device, reference.dtype
     f = torch.as_tensor(f, device=device, dtype=dtype).reshape(-1, 3, 3)
     n = f.shape[0]
-    pc = torch.as_tensor(pc, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
-    pc_ref = torch.as_tensor(pc_ref, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
+    pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
+    reference_pattern_center = torch.as_tensor(reference_pattern_center, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
     ref = reference.reshape(-1, detector.nrows, detector.ncols)
     if ref.shape[0] == 1:
         ref = ref.expand(n, -1, -1)
@@ -389,7 +389,7 @@ def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pc, pc_r
     cols = torch.arange(detector.ncols, device=device, dtype=dtype)
     rr, cc = torch.meshgrid(rows, cols, indexing="ij")
     grid = _reference_grid(
-        detector, f, pc, pc_ref, rr.reshape(1, -1).expand(n, -1), cc.reshape(1, -1).expand(n, -1)
+        detector, f, pattern_center, reference_pattern_center, rr.reshape(1, -1).expand(n, -1), cc.reshape(1, -1).expand(n, -1)
     )
     return _sample(ref, grid.reshape(n, detector.nrows, detector.ncols, 2))
 
@@ -451,8 +451,8 @@ def hrebsd(
     patterns,
     reference,
     detector,
-    pc=None,
-    pc_ref=None,
+    pattern_center=None,
+    reference_pattern_center=None,
     *,
     roi_size: int = 128,
     grid: int = 8,
@@ -484,9 +484,9 @@ def hrebsd(
         measured *relative* to whatever state this pattern is in.
     detector
         :class:`~de_ebsd.sim.detector.EBSDDetector`, for the gnomonic geometry.
-    pc, pc_ref
+    pattern_center, reference_pattern_center
         Pattern center at the test and reference points, ``(3,)`` or ``(N, 3)``; both
-        default to ``detector.pc``. Passing them separately is worth doing over any
+        default to ``detector.pattern_center``. Passing them separately is worth doing over any
         appreciable scan -- a millimetre of travel moves the pattern center by
         several percent of the screen -- and the remap absorbs the difference.
     roi_size
@@ -548,12 +548,12 @@ def hrebsd(
     if n_passes < 1:
         raise ValueError("n_passes must be at least 1")
 
-    pc = detector.pc if pc is None else pc
-    pc_ref = pc if pc_ref is None else pc_ref
-    pc = torch.as_tensor(pc, device=device, dtype=dtype).reshape(-1, 3)
-    pc_ref = torch.as_tensor(pc_ref, device=device, dtype=dtype).reshape(-1, 3)
-    pc = pc.expand(n, 3) if pc.shape[0] == 1 else pc
-    pc_ref = pc_ref.expand(n, 3) if pc_ref.shape[0] == 1 else pc_ref
+    pattern_center = detector.pattern_center if pattern_center is None else pattern_center
+    reference_pattern_center = pattern_center if reference_pattern_center is None else reference_pattern_center
+    pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype).reshape(-1, 3)
+    reference_pattern_center = torch.as_tensor(reference_pattern_center, device=device, dtype=dtype).reshape(-1, 3)
+    pattern_center = pattern_center.expand(n, 3) if pattern_center.shape[0] == 1 else pattern_center
+    reference_pattern_center = reference_pattern_center.expand(n, 3) if reference_pattern_center.shape[0] == 1 else reference_pattern_center
 
     if n > batch:
         parts = [
@@ -561,8 +561,8 @@ def hrebsd(
                 patt[lo : lo + batch],
                 ref[lo : lo + batch],
                 detector,
-                pc[lo : lo + batch],
-                pc_ref[lo : lo + batch],
+                pattern_center[lo : lo + batch],
+                reference_pattern_center[lo : lo + batch],
                 roi_size=roi_size,
                 grid=grid,
                 margin=margin,
@@ -599,14 +599,14 @@ def hrebsd(
     win = _window(roi_size, device, dtype)
     mask = _spectral_mask(roi_size, bandpass, device, dtype)
     test_rois = _extract(patt, centers, roi_size)  # fixed; the test never moves
-    # shifts are measured in the test frame, so the design matrix uses the test pc
-    a = _design(detector, pc, centers)
+    # shifts are measured in the test frame, so the design matrix uses the test pattern_center
+    a = _design(detector, pattern_center, centers)
 
     eye = torch.eye(3, device=device, dtype=dtype).expand(n, 3, 3)
     f_total = eye.clone()
     shifts = peak = residual = None
     for _ in range(n_passes):
-        ref_rois = _warped_rois(ref, detector, f_total, pc, pc_ref, centers, roi_size)
+        ref_rois = _warped_rois(ref, detector, f_total, pattern_center, reference_pattern_center, centers, roi_size)
         shifts, peak = _measure_shifts(test_rois, ref_rois, win, upsample, mask, whiten=whiten)
         # pixels -> gnomonic: both axes scale by 1 / nrows, y increasing upward
         q = torch.stack([shifts[..., 1], -shifts[..., 0]], dim=-1) / detector.nrows

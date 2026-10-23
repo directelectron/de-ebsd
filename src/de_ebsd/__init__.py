@@ -14,7 +14,7 @@ patterns back to orientations and :mod:`~de_ebsd.viz` drawing everything::
     sim = de.MasterPatternSimulator(crystal, microscope, npx=200, dmin=0.1)
     master = sim.compute(device="cuda")
 
-    detector = de.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
+    detector = de.EBSDDetector(shape=(480, 480), pattern_center=(0.5, 0.5, 0.6))
     patterns = master.project(detector, orientation=rotation)  # orix Rotation
 """
 

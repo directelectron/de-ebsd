@@ -63,13 +63,13 @@ def determine_pattern_center(
     master,
     detector,
     rotations,
-    pc0=None,
+    pattern_center=None,
     n_rounds: int = 5,
     n_tiles: int = 16,
     samples_per_tile: int = 8,
     refine_orientations: bool = True,
     n_steps_pc: int = 10,
-    lam0: float = 1e-3,
+    damping: float = 1e-3,
     keep_best: bool = True,
     device=None,
     return_orientations: bool = False,
@@ -83,7 +83,7 @@ def determine_pattern_center(
     Levenberg-Marquardt step on the 3-parameter PC whose normal equations are
     accumulated over all patterns. That ensemble accumulation is what breaks the
     single-pattern R--PC degeneracy. Calibrate once, then refine the full scan at the
-    fixed PC with ``refine_hr(refine_pc=False, pc=<calibrated pc>)``.
+    fixed PC with ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated pattern_center>)``.
 
     Parameters
     ----------
@@ -93,12 +93,12 @@ def determine_pattern_center(
         parameters. The raw sampled values are used.
     master, detector
         The continuous :class:`de_ebsd.sim.MasterPattern` and the
-        :class:`~de_ebsd.sim.detector.EBSDDetector` geometry. ``detector.pc`` is
-        used only when ``pc0`` is ``None``.
+        :class:`~de_ebsd.sim.detector.EBSDDetector` geometry. ``detector.pattern_center`` is
+        used only when ``pattern_center`` is ``None``.
     rotations
         Per-pattern seed orientations, e.g. from coarse indexing.
-    pc0
-        Starting shared pattern center ``(3,)``; ``None`` uses ``detector.pc``.
+    pattern_center
+        Starting shared pattern center ``(3,)``; ``None`` uses ``detector.pattern_center``.
     n_rounds
         Alternating (orientation, shared-PC) rounds.
     n_tiles, samples_per_tile
@@ -109,7 +109,7 @@ def determine_pattern_center(
         the input ``rotations`` fixed and fit only the PC.
     n_steps_pc
         Levenberg-Marquardt steps on the shared PC per round.
-    lam0
+    damping
         Initial LM damping, adapted each step (x0.5 accepted, x3 rejected) and
         carried across rounds. Also seeds the inner orientation refinement.
     keep_best
@@ -129,7 +129,7 @@ def determine_pattern_center(
 
     Returns
     -------
-    pc : torch.Tensor
+    pattern_center : torch.Tensor
         The calibrated shared pattern center ``(3,)``.
     rotations : orix.quaternion.Rotation
         Only when ``return_orientations``: the orientations at the calibrated PC.
@@ -155,13 +155,14 @@ def determine_pattern_center(
         raise ValueError(f"rotations length {q0.shape[0]} != number of patterns {n_p}")
     r_mat = quaternion_to_matrix(q0).detach()  # (N, 3, 3)
 
-    if pc0 is None:
-        pc = torch.as_tensor(detector.pc, device=device, dtype=dtype)
-    else:
-        pc = torch.as_tensor(pc0, device=device, dtype=dtype)
-    if tuple(pc.shape) != (3,):
-        raise ValueError(f"pc0 must be a shared 3-vector (3,), got shape {tuple(pc.shape)}")
-    pc = pc.clone()
+    if pattern_center is None:
+        pattern_center = detector.pattern_center
+    pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype)
+    if tuple(pattern_center.shape) != (3,):
+        raise ValueError(
+            f"pattern_center must be a shared 3-vector (3,), got shape {tuple(pattern_center.shape)}"
+        )
+    pattern_center = pattern_center.clone()
 
     # fixed band-edge samples + per-tile normalization, computed once (patterns never move)
     rows, cols, flat, tile_ids, counts = edge_importance_samples(
@@ -183,12 +184,12 @@ def determine_pattern_center(
     def _total(r_cur: torch.Tensor, pc_vec: torch.Tensor) -> torch.Tensor:
         return _ncc_per_pattern(r_cur, pc_vec).sum()
 
-    ncc_seed = float(_ncc_per_pattern(r_mat, pc).mean())
+    ncc_seed = float(_ncc_per_pattern(r_mat, pattern_center).mean())
 
-    best_pc = pc.clone()
+    best_pc = pattern_center.clone()
     best_r = r_mat.clone()
-    best_total = _total(r_mat, pc)
-    lam = float(lam0)
+    best_total = _total(r_mat, pattern_center)
+    damping = float(damping)
     pc_step_history: list[float] = []
     blur = tuple(blur) if blur else (0.0,)
 
@@ -202,34 +203,34 @@ def determine_pattern_center(
 
         # 1. orientation block -- refine each pattern at the current shared PC (well-posed)
         if refine_orientations:
-            pc_bc = pc[None].expand(n_p, 3).contiguous()
+            pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
             r_mat, _, _ = _hr_lm_refine(
                 seen, detector, rows, cols, e_raw, tile_ids, counts, r_mat, pc_bc,
-                False, n_steps_orient, lam0, keep_best, device, dtype,
+                False, n_steps_orient, damping, keep_best, device, dtype,
             )
 
         # 2. shared-PC block -- LM on the 3-vector, normal equations summed over all
         # patterns; jointly with the orientations when those are refined, so the PC
         # step already accounts for how each orientation would compensate it
-        pc_before = pc.clone()
-        pc, r_mat, lam = _shared_pc_lm(
-            seen, detector, rows, cols, r_mat, pc, e_hat, tile_ids, counts_ps, n_total,
-            lam, n_steps_pc, _seen_total, device, dtype,
+        pc_before = pattern_center.clone()
+        pattern_center, r_mat, damping = _shared_pc_lm(
+            seen, detector, rows, cols, r_mat, pattern_center, e_hat, tile_ids, counts_ps, n_total,
+            damping, n_steps_pc, _seen_total, device, dtype,
             joint=refine_orientations,
         )
-        pc_step_history.append(float((pc - pc_before).norm()))
+        pc_step_history.append(float((pattern_center - pc_before).norm()))
 
         # judged on the sharp master, so a blurred round cannot claim "best"
-        total = _total(r_mat, pc)
+        total = _total(r_mat, pattern_center)
         if bool(total > best_total):
-            best_total, best_pc, best_r = total, pc.clone(), r_mat.clone()
+            best_total, best_pc, best_r = total, pattern_center.clone(), r_mat.clone()
 
     if keep_best:
-        pc, r_mat = best_pc, best_r
+        pattern_center, r_mat = best_pc, best_r
 
-    pc = pc.detach()
+    pattern_center = pattern_center.detach()
     info = {
-        "ncc": float(_ncc_per_pattern(r_mat, pc).mean()),
+        "ncc": float(_ncc_per_pattern(r_mat, pattern_center).mean()),
         "ncc_seed": ncc_seed,
         "pc_step": pc_step_history[-1] if pc_step_history else 0.0,
         "pc_step_history": pc_step_history,
@@ -239,8 +240,8 @@ def determine_pattern_center(
         from orix.quaternion import Rotation
 
         rotation = Rotation.from_matrix(r_mat.cpu().numpy())
-        return pc, rotation, info
-    return pc, info
+        return pattern_center, rotation, info
+    return pattern_center, info
 
 
 def _shared_pc_lm(
@@ -249,12 +250,12 @@ def _shared_pc_lm(
     rows,
     cols,
     r_mat,
-    pc,
+    pattern_center,
     e_hat,
     tile_ids,
     counts_ps,
     n_total,
-    lam,
+    damping,
     n_steps,
     total_fn,
     device,
@@ -270,10 +271,10 @@ def _shared_pc_lm(
     way it is when the two blocks are refined in turn.
     """
     n_p = r_mat.shape[0]
-    cur_total = total_fn(r_mat, pc)
+    cur_total = total_fn(r_mat, pattern_center)
 
     for _ in range(n_steps):
-        pc_bc = pc[None].expand(n_p, 3).contiguous()
+        pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
         dc = direction_cosines_from_pc(detector, pc_bc, rows, cols).detach()  # (N, K, 3)
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
@@ -298,10 +299,10 @@ def _shared_pc_lm(
             jtj = torch.einsum("pki,pkj->pij", j_r, j_r)  # per pattern, (N, P, P)
             if joint:
                 a = jtj[:, :3, :3]
-                a = a + lam * torch.diag_embed(torch.diagonal(a, dim1=-2, dim2=-1).clamp_min(1e-9))
+                a = a + damping * torch.diag_embed(torch.diagonal(a, dim1=-2, dim2=-1).clamp_min(1e-9))
                 b = jtj[:, :3, 3:]  # (N, 3, 3) orientation-PC coupling
                 c = jtj[:, 3:, 3:].sum(0)
-                c = c + lam * torch.diag_embed(torch.diagonal(c).clamp_min(1e-9))
+                c = c + damping * torch.diag_embed(torch.diagonal(c).clamp_min(1e-9))
                 a_inv_b = torch.linalg.solve(a, b)
                 a_inv_g = torch.linalg.solve(a, jtr[:, :3, None])[..., 0]
                 schur = c - torch.einsum("pji,pjk->ik", b, a_inv_b)
@@ -312,15 +313,15 @@ def _shared_pc_lm(
             else:
                 jtr, jtj = jtr.sum(0), jtj.sum(0)  # summed over patterns
                 diag = torch.diagonal(jtj).clamp_min(1e-9)
-                a = jtj + lam * torch.diag_embed(diag)  # Marquardt (scale-invariant) damping
+                a = jtj + damping * torch.diag_embed(diag)  # Marquardt (scale-invariant) damping
                 delta_pc = -torch.linalg.solve(a, jtr)  # (3,)
                 r_new = r_mat
-            pc_new = pc + delta_pc
+            pc_new = pattern_center + delta_pc
             new_total = total_fn(r_new, pc_new)
             if bool(new_total > cur_total):
-                pc, r_mat = pc_new, r_new
+                pattern_center, r_mat = pc_new, r_new
                 cur_total = new_total
-                lam = max(lam * 0.5, _LAM_MIN)
+                damping = max(damping * 0.5, _LAM_MIN)
             else:
-                lam = min(lam * 3.0, _LAM_MAX)
-    return pc, r_mat, lam
+                damping = min(damping * 3.0, _LAM_MAX)
+    return pattern_center, r_mat, damping

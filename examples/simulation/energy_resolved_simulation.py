@@ -82,7 +82,7 @@ master.show(projection="sphere", energy_kev=20.0, texture_height=128, n_grid=64)
 # and a consistent energy-integration convention.
 
 detector = de.EBSDDetector(
-    shape=(80, 100), pc=(0.48, 0.58, 0.62), sample_tilt=microscope.sample_tilt, tilt=5.0,
+    shape=(80, 100), pattern_center=(0.48, 0.58, 0.62), sample_tilt=microscope.sample_tilt, tilt=5.0,
 )
 orientation = Rotation.from_euler([[35.0, 45.0, 10.0]], degrees=True)
 patterns = torch.stack([

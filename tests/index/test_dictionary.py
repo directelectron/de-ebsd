@@ -112,7 +112,7 @@ def master(crystal, point_group) -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """A tilted detector with a generous field of view."""
-    return EBSDDetector(shape=(70, 70), pc=(0.5, 0.5, 0.5), sample_tilt=70.0, tilt=0.0)
+    return EBSDDetector(shape=(70, 70), pattern_center=(0.5, 0.5, 0.5), sample_tilt=70.0, tilt=0.0)
 
 
 @pytest.fixture(scope="module")

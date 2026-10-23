@@ -50,7 +50,7 @@ def master(point_group):
 
 @pytest.fixture(scope="module")
 def detector():
-    return EBSDDetector(shape=(64, 64), pc=(0.5, 0.4, 0.55), sample_tilt=70.0, tilt=0.0)
+    return EBSDDetector(shape=(64, 64), pattern_center=(0.5, 0.4, 0.55), sample_tilt=70.0, tilt=0.0)
 
 
 def _known():
@@ -109,10 +109,10 @@ def test_a_new_pattern_center_rebuilds_the_dictionary_in_place(master, point_gro
     building a second one beside it, and gives what building it fresh would."""
     indexer = _small_indexer(master, point_group, detector, device="cpu")
     where = indexer.dictionary.data_ptr()
-    moved = tuple(v + 0.02 for v in detector.pc)
+    moved = tuple(v + 0.02 for v in detector.pattern_center)
     indexer.set_pattern_center(moved)
     assert indexer.dictionary.data_ptr() == where
-    fresh = _small_indexer(master, point_group, replace(detector, pc=moved), device="cpu")
+    fresh = _small_indexer(master, point_group, replace(detector, pattern_center=moved), device="cpu")
     assert torch.allclose(indexer.dictionary, fresh.dictionary)
 
 
@@ -174,20 +174,20 @@ def test_pattern_center_is_refined_from_the_patterns(master, point_group, detect
     stays within 0.0002 of the truth (``PATTERN_CENTER_STEPS``)."""
     patterns = master.project(detector, _known())
     found = []
-    for start in (detector.pc, tuple(v + 0.006 for v in detector.pc)):
+    for start in (detector.pattern_center, tuple(v + 0.006 for v in detector.pattern_center)):
         indexer = LiveIndexer(
             [master],
             [point_group],
-            replace(detector, pc=start),
+            replace(detector, pattern_center=start),
             resolution=10.0,
             refine_shape=(64, 64),
             refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
             device="cpu",
         )
         found.append(indexer.refine_pattern_center(patterns))
-        assert indexer.detector.pc == found[-1]
+        assert indexer.detector.pattern_center == found[-1]
     assert np.allclose(found[0], found[1], atol=0.001), found
-    assert np.allclose(found[1], detector.pc, atol=0.005), found
+    assert np.allclose(found[1], detector.pattern_center, atol=0.005), found
 
 
 @fused
@@ -228,7 +228,7 @@ def test_center_maps_move_the_directions_to_another_center(master, point_group, 
     (m,) = indexer.center_maps([other])
     moved = indexer.refine_directions @ m.T
     moved = moved / moved.norm(dim=-1, keepdim=True)
-    expected = replace(detector, pc=other, shape=indexer.refine_shape).direction_cosines()
+    expected = replace(detector, pattern_center=other, shape=indexer.refine_shape).direction_cosines()
     assert torch.allclose(moved, expected, atol=1e-5)
 
 

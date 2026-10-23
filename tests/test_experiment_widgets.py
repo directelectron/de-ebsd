@@ -31,7 +31,7 @@ def test_probe_footprint_and_roundtrip():
 
 
 def test_detector_physical_geometry_matches_projection():
-    detector = EBSDDetector(shape=(4, 6), pc=(.45, .55, .6), px_size=400,
+    detector = EBSDDetector(shape=(4, 6), pattern_center=(.45, .55, .6), px_size=400,
                             sample_tilt=57.4, tilt=22.7, azimuthal=13, twist=9)
     corners = detector.corners_sample_mm
     assert np.linalg.norm(corners[1] - corners[0]) == pytest.approx(2.4)
@@ -53,7 +53,7 @@ def test_browser_geometry_matches_python(angles):
     if node is None:
         pytest.skip("Node is optional; required only for renderer geometry parity")
     sigma, tilt, azimuth, twist = angles
-    detector = EBSDDetector(shape=(80, 100), pc=(.45, .55, .6), px_size=400,
+    detector = EBSDDetector(shape=(80, 100), pattern_center=(.45, .55, .6), px_size=400,
                             sample_tilt=sigma, tilt=tilt, azimuthal=azimuth, twist=twist)
     widget = detector.show()
     state = {key: getattr(widget, key) for key in (
