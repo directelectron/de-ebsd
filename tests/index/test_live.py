@@ -18,7 +18,7 @@ from test_dictionary import _KNOWN_EULER_DEG, _symmetric_band_master
 from de_ebsd import EBSDDetector
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.crystal import Crystal
-from de_ebsd.index import _kernels
+from de_ebsd.index import _kernels, live
 from de_ebsd.index.io import phase_from_crystal
 from de_ebsd.index.live import (
     DEFORMATION_MAX_STEP,
@@ -80,6 +80,67 @@ def test_round_trip_recovers_known_orientations(master, point_group, detector):
     assert (indexer.phase_of[entry] == phase).all()
     assert np.max(error) < 0.3, error
     assert (score > 0.95).all(), score
+
+
+def _small_indexer(master, point_group, detector, **kwargs):
+    return LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), **kwargs
+    )
+
+
+def test_a_search_in_chunks_finds_what_one_product_finds(
+    master, point_group, detector, monkeypatch
+):
+    """Scored a few entries at a time, with a ragged last chunk, the search picks
+    the entries and scores that one product over the whole dictionary does."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    search_rows, _ = indexer.prepare(master.project(detector, _known()))
+    whole_score, whole_entry = (search_rows @ indexer.dictionary).max(1)
+    monkeypatch.setattr(live, "SEARCH_CHUNK", 10)
+    assert indexer.dictionary.shape[1] % 10 != 0
+    _, _, score, entry = indexer.search(search_rows)
+    assert torch.equal(entry, whole_entry)
+    assert torch.allclose(score, whole_score)
+
+
+def test_a_new_pattern_center_rebuilds_the_dictionary_in_place(master, point_group, detector):
+    """A center change overwrites the dictionary where it is, rather than
+    building a second one beside it, and gives what building it fresh would."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    where = indexer.dictionary.data_ptr()
+    moved = tuple(v + 0.02 for v in detector.pc)
+    indexer.set_pattern_center(moved)
+    assert indexer.dictionary.data_ptr() == where
+    fresh = _small_indexer(master, point_group, replace(detector, pc=moved), device="cpu")
+    assert torch.allclose(indexer.dictionary, fresh.dictionary)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="a float16 product needs CUDA")
+def test_a_half_precision_dictionary_indexes_as_a_single_precision_one(
+    master, point_group, detector
+):
+    """The dictionary in float16 is half the size and seeds the same entries: the
+    search only picks seeds, which the refine then takes from."""
+    master = master.to("cuda")
+    patterns = master.project(detector, _known())
+    found = {}
+    for dtype in (torch.float32, torch.float16):
+        indexer = _small_indexer(
+            master,
+            point_group,
+            detector,
+            refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
+            device="cuda",
+            dtype=dtype,
+        )
+        assert indexer.dictionary.dtype == dtype
+        found[dtype] = indexer.index(patterns)
+    assert torch.equal(found[torch.float16][3], found[torch.float32][3])
+    found_rotations = Rotation.from_matrix(found[torch.float16][1].cpu().numpy())
+    error = Orientation(found_rotations, point_group).angle_with(
+        Orientation(_known(), point_group), degrees=True
+    )
+    assert np.max(error) < 0.3, error
 
 
 def test_refine_moves_a_seed_toward_its_orientation(master, point_group, detector):

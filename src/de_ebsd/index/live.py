@@ -13,7 +13,8 @@ leave the device.
 2. **Search** (:meth:`LiveIndexer.search`): one matrix product against every
    phase's dictionary at once. The dictionaries are the phases' dynamical master
    patterns projected over their fundamental zones, stacked into one matrix, so the
-   best entry gives the phase and a seed orientation together.
+   best entry gives the phase and a seed orientation together; a low symmetry's
+   large dictionary is scored a chunk of entries at a time.
 3. **Refine** (:meth:`LiveIndexer.refine`): a local dictionary around each seed --
    the seed and the six rotations of one step about each axis -- projected from the
    master on the fly at the refine shape. A parabola through each axis's three
@@ -85,6 +86,12 @@ PATTERN_CENTER_PATTERNS = 256
 #: Patterns per batched step, which bounds the largest intermediate: the refine's
 #: (patterns, 7, pixels, 3) sample directions.
 BATCH = 256
+
+#: Dictionary entries scored at a time by :meth:`LiveIndexer.search`, which bounds
+#: its scores at (patterns, this): 64 MB for a batch. A cubic phase's 3° dictionary
+#: (30,443 entries) is one chunk; a triclinic one's (729,000) would otherwise
+#: score into 750 MB per batch.
+SEARCH_CHUNK = 65_536
 
 #: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. On the twin
 #: scans of :data:`REFINE_STEPS_DEG`, rendered with a known random strain of 1e-3 and
@@ -219,6 +226,12 @@ class LiveIndexer:
         :data:`SEARCH_BLUR_DEG`.
     device
         Defaults to the first master's.
+    dtype
+        The search dictionary's. ``None`` picks float16 on GPUs with tensor cores
+        (compute capability 7.0 and up) and float32 elsewhere: Pascal multiplies
+        float16 at 1/64 of its float32 rate, and a CPU has no float16 product. Half
+        precision halves the dictionary, which is what grows with low symmetry; the
+        search only picks seeds, so the refine sets the accuracy either way.
     """
 
     def __init__(
@@ -233,12 +246,20 @@ class LiveIndexer:
         refine_steps_deg=REFINE_STEPS_DEG,
         search_blur_deg: float = SEARCH_BLUR_DEG,
         device=None,
+        dtype=None,
     ) -> None:
         from orix.sampling import get_sample_fundamental
 
         if len(masters) != len(point_groups):
             raise ValueError("one point group per master")
         self.device = torch.device(device) if device is not None else masters[0].device
+        if dtype is None:
+            tensor_cores = (
+                self.device.type == "cuda" and torch.cuda.get_device_capability(self.device)[0] >= 7
+            )
+            dtype = torch.float16 if tensor_cores else torch.float32
+        self.dtype = dtype
+        self.dictionary = None
         self.detector = detector
         self.search_shape = tuple(search_shape)
         self.refine_shape = tuple(refine_shape)
@@ -274,12 +295,21 @@ class LiveIndexer:
 
     def set_pattern_center(self, pc) -> None:
         """Index at pattern center *pc* from now on: the dictionary is projected
-        again, which takes milliseconds with the fused kernels."""
+        again, which takes milliseconds with the fused kernels.
+
+        Each chunk of entries is written straight into the dictionary, and a new
+        center overwrites the old one's in place: the dictionary is the largest
+        thing on the device, and building it beside a copy of itself (or a list of
+        its chunks) took two to three times its size."""
         self.detector = replace(self.detector, pc=tuple(float(v) for v in pc))
         self.search_directions = self._directions(pc, self.search_shape)
         self.refine_directions = self._directions(pc, self.refine_shape)
-        entries = [
-            _normalized_rows(
+        shape = (len(self.search_directions), len(self.rotations))
+        if self.dictionary is None or tuple(self.dictionary.shape) != shape:
+            #: ``(pixels, entries)``, so the search's product reads it at full rate.
+            self.dictionary = torch.empty(shape, device=self.device, dtype=self.dtype)
+        for lo in range(0, len(self.rotations), BATCH * 8):
+            entries = _normalized_rows(
                 self._project(
                     self.search_texture,
                     self.rotations[lo : lo + BATCH * 8],
@@ -287,10 +317,7 @@ class LiveIndexer:
                     self.search_directions,
                 )
             )
-            for lo in range(0, len(self.rotations), BATCH * 8)
-        ]
-        #: ``(pixels, entries)``, contiguous so the search's product runs at full rate.
-        self.dictionary = torch.cat(entries).T.contiguous()
+            self.dictionary[:, lo : lo + len(entries)] = entries.T
 
     def _project(
         self,
@@ -406,8 +433,18 @@ class LiveIndexer:
 
     def search(self, search_rows: torch.Tensor):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
-        *entry* indexing :attr:`rotations` (every phase's entries, in phase order)."""
-        score, entry = (search_rows @ self.dictionary).max(1)
+        *entry* indexing :attr:`rotations` (every phase's entries, in phase order).
+
+        The dictionary is scored :data:`SEARCH_CHUNK` entries at a time, keeping
+        each pattern's best so far, so the scores never outgrow one chunk."""
+        rows = search_rows.to(self.dtype)
+        score = torch.full((len(rows),), -math.inf, device=self.device)
+        entry = torch.zeros(len(rows), dtype=torch.int64, device=self.device)
+        for lo in range(0, self.dictionary.shape[1], SEARCH_CHUNK):
+            chunk_score, chunk_entry = (rows @ self.dictionary[:, lo : lo + SEARCH_CHUNK]).max(1)
+            better = chunk_score.float() > score
+            score = torch.where(better, chunk_score.float(), score)
+            entry = torch.where(better, chunk_entry + lo, entry)
         return self.phase_of[entry], self.rotations[entry], score, entry
 
     def refine(
