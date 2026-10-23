@@ -163,4 +163,6 @@ def linkcode_resolve(domain, info):
         line = inspect.getsourcelines(obj)[1]
     except (TypeError, OSError, ValueError):
         return None
-    return f"https://github.com/directelectron/de-ebsd/blob/{_REVISION}/src/{path.as_posix()}#L{line}"
+    return (
+        f"https://github.com/directelectron/de-ebsd/blob/{_REVISION}/src/{path.as_posix()}#L{line}"
+    )
