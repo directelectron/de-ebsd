@@ -46,8 +46,8 @@ crystal    = de.Crystal.from_parameters(
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 sim        = de.MasterPatternSimulator(
     crystal, microscope, npx=500, dmin=0.05, bethe=de.BetheParameters(),
-    backend="bloch_prism",   # batched GPU dynamical solve; "bloch" = exact
-    #                          float64 reference, "kinematical" = geometry only
+    backend="bloch_prism",   # the default: batched dynamical solve; "bloch" is
+    #                          the one-direction-at-a-time float64 reference
 )
 
 # every stage is inspectable (all figures render through anyplotlib):
@@ -160,7 +160,6 @@ and kikuchipy's. The deeper reasoning lives in [DESIGN.md](DESIGN.md),
 | Monte Carlo exit-depth statistics: EMsoft HDF5 reader + `single_energy` fallback | implemented, tested |
 | Detector direction cosines (kikuchipy parity), master-pattern projection | implemented, tested |
 | Native anyplotlib displays, host-neutral phase overview, microscope editor | implemented, tested |
-| Kinematical backend (band geometry; validation placeholder) | implemented, tested |
 | Bloch-wave backend: eigendecomposition + `CalcLgh` depth integration (`bloch`) | implemented, tested |
 | Scattering-matrix (PRISM) GPU backend, exact vs `bloch` (`bloch_prism`) | implemented, tested |
 | Native electron Monte Carlo (EMsoft-independent depth/energy stats) | implemented, validated vs EMsoft `accum_z` |
@@ -186,9 +185,7 @@ needs a local EMsoft `Si_MC.h5` reference run (not redistributed here) -- point
 Dynamical backend results: **Si r = 1.0000** at native npx-500 against
 `Si_MC.h5`, and **Ni r = 1.00000** against a fresh matched-settings EMsoft master
 (the "Ni 0.93" was a Bethe-default / reference-provenance artifact, not physics --
-see [BENCHMARKS.md](BENCHMARKS.md)). The kinematical placeholder
-(`--backend kinematical`) scores Ni 0.64 / Si 0.47 -- band positions align
-(frame and Lambert conventions correct) but band profiles do not.
+see [BENCHMARKS.md](BENCHMARKS.md)).
 
 That npx-500 Si master (~2 million directions) computes in **~10 s** (fp32) /
 ~16 s (fp64) on a Pascal TITAN X with `bloch_prism`, or ~181 s with the

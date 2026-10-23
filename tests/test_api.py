@@ -124,7 +124,7 @@ def test_compute_master_pattern(sim, master):
     assert master.data.shape == (1, 2, n, n)
     assert master.npx == sim.npx
     assert torch.all(torch.isfinite(master.data))
-    assert master.metadata["backend"] == "kinematical"
+    assert master.metadata["backend"] == "bloch_prism"
     # centrosymmetric intensity: south hemisphere is the inverted north
     north = master.data[0, 0]
     south = master.data[0, 1]
@@ -162,7 +162,7 @@ def test_save_load_round_trip(master, tmp_path):
     loaded = de.MasterPattern.load(path)
     assert torch.allclose(loaded.data, master.data.cpu())
     assert np.allclose(loaded.energies_kev, master.energies_kev)
-    assert loaded.metadata["backend"] == "kinematical"
+    assert loaded.metadata["backend"] == "bloch_prism"
 
 
 def test_refine_reuses_structure_factors(sim):
