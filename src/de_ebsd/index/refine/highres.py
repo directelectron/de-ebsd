@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
+from de_ebsd.index.refine.levenberg import adapt_damping
 
 __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
 
@@ -259,7 +260,7 @@ def _hr_lm_refine(
             better = new_score > cur_score
             r_mat = torch.where(better[:, None, None], r_new, r_mat)
             pattern_center = torch.where(better[:, None], pc_new, pattern_center)
-            damping = torch.where(better, (damping * 0.5).clamp_min(1e-6), (damping * 3.0).clamp_max(1e2))
+            damping = adapt_damping(damping, better)
             cur_score = torch.where(better, new_score, cur_score)
 
     if keep_best:
