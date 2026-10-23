@@ -16,10 +16,18 @@ import math
 from typing import Any
 
 import numpy as np
+import torch
 
+from de_ebsd.core.rotation import axis_angle_matrix, matrix_to_quaternion, quaternion_to_matrix
+from de_ebsd.diffraction.kinematic import orientation_from_zone_axis
+from de_ebsd.viz.camera import band_path, camera_angles, camera_direction, camera_frame
 from de_ebsd.viz.figures import apl
 
-__all__ = ["CrystalExplorer", "orientation_from_zone_axis"]
+__all__ = ["CrystalExplorer"]
+
+def _quaternion_to_matrix(q: np.ndarray) -> np.ndarray:
+    return quaternion_to_matrix(torch.as_tensor(q, dtype=torch.float64)).numpy()
+
 
 _IDENTITY = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
@@ -39,174 +47,6 @@ def _as_quaternion(value: Any) -> np.ndarray:
     q = q / norm
     # A single sign makes programmatic comparisons and widget state stable.
     return q if q[0] >= 0 else -q
-
-
-def _quaternion_to_matrix(q: np.ndarray) -> np.ndarray:
-    a, b, c, d = q
-    return np.array(
-        [
-            [a * a + b * b - c * c - d * d, 2 * (b * c - a * d), 2 * (b * d + a * c)],
-            [2 * (b * c + a * d), a * a - b * b + c * c - d * d, 2 * (c * d - a * b)],
-            [2 * (b * d - a * c), 2 * (c * d + a * b), a * a - b * b - c * c + d * d],
-        ],
-        dtype=np.float64,
-    )
-
-
-def _matrix_to_quaternion(matrix: np.ndarray) -> np.ndarray:
-    """Convert a proper 3x3 rotation matrix to scalar-first quaternion."""
-    r = np.asarray(matrix, dtype=np.float64)
-    if r.shape != (3, 3) or not np.isfinite(r).all():
-        raise ValueError("rotation matrix must be finite and have shape (3, 3)")
-    if not np.allclose(r.T @ r, np.eye(3), atol=2e-8) or np.linalg.det(r) <= 0:
-        raise ValueError("rotation matrix must be a proper rotation")
-    trace = float(np.trace(r))
-    if trace > 0:
-        s = 2.0 * math.sqrt(trace + 1.0)
-        q = np.array(
-            [0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s]
-        )
-    else:
-        i = int(np.argmax(np.diag(r)))
-        if i == 0:
-            s = 2.0 * math.sqrt(max(1.0 + r[0, 0] - r[1, 1] - r[2, 2], 0.0))
-            q = np.array(
-                [
-                    (r[2, 1] - r[1, 2]) / s,
-                    0.25 * s,
-                    (r[0, 1] + r[1, 0]) / s,
-                    (r[0, 2] + r[2, 0]) / s,
-                ]
-            )
-        elif i == 1:
-            s = 2.0 * math.sqrt(max(1.0 + r[1, 1] - r[0, 0] - r[2, 2], 0.0))
-            q = np.array(
-                [
-                    (r[0, 2] - r[2, 0]) / s,
-                    (r[0, 1] + r[1, 0]) / s,
-                    0.25 * s,
-                    (r[1, 2] + r[2, 1]) / s,
-                ]
-            )
-        else:
-            s = 2.0 * math.sqrt(max(1.0 + r[2, 2] - r[0, 0] - r[1, 1], 0.0))
-            q = np.array(
-                [
-                    (r[1, 0] - r[0, 1]) / s,
-                    (r[0, 2] + r[2, 0]) / s,
-                    (r[1, 2] + r[2, 1]) / s,
-                    0.25 * s,
-                ]
-            )
-    return _as_quaternion(q)
-
-
-def _axis_angle(axis: np.ndarray, angle_deg: float) -> np.ndarray:
-    axis = np.asarray(axis, dtype=np.float64)
-    axis = axis / np.linalg.norm(axis)
-    t = math.radians(float(angle_deg))
-    c, s = math.cos(t), math.sin(t)
-    x, y, z = axis
-    return np.array(
-        [
-            [c + x * x * (1 - c), x * y * (1 - c) - z * s, x * z * (1 - c) + y * s],
-            [y * x * (1 - c) + z * s, c + y * y * (1 - c), y * z * (1 - c) - x * s],
-            [z * x * (1 - c) - y * s, z * y * (1 - c) + x * s, c + z * z * (1 - c)],
-        ]
-    )
-
-
-def _direction_frame(direction: np.ndarray, roll_deg: float = 0.0) -> np.ndarray:
-    """Build R with R[:, 2] equal to *direction* and a deterministic roll."""
-    n = np.asarray(direction, dtype=np.float64).reshape(3)
-    if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-12:
-        raise ValueError("zone axis must be a finite, non-zero 3-vector")
-    n = n / np.linalg.norm(n)
-    ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    ex = ref - np.dot(ref, n) * n
-    ex /= np.linalg.norm(ex)
-    ey = np.cross(n, ex)
-    base = np.column_stack([ex, ey, n])
-    # Positive roll rotates the sample x direction toward sample y on screen.
-    return _axis_angle(n, float(roll_deg)) @ base
-
-
-def _fallback_orientation_from_zone_axis(crystal, uvw, roll_deg: float = 0.0) -> np.ndarray:
-    """Return a scalar-first sample-to-crystal quaternion for a direct zone axis.
-
-    ``uvw`` is interpreted in the direct lattice basis, so this also works for
-    non-cubic cells.  The resulting orientation maps sample/beam ``+z`` onto
-    the Cartesian crystal direction ``u a + v b + w c``.
-    """
-    uvw = np.asarray(uvw, dtype=np.float64)
-    if uvw.size != 3:
-        raise ValueError("zone axis must have shape (3,)")
-    uvw = uvw.reshape(3)
-    if not np.isfinite(uvw).all() or np.linalg.norm(uvw) < 1e-12:
-        raise ValueError("zone axis must be a finite, non-zero 3-vector")
-    basis = np.asarray(crystal.direct_structure_matrix, dtype=np.float64)
-    if basis.shape != (3, 3) or not np.isfinite(basis).all():
-        raise ValueError("crystal direct_structure_matrix must be finite with shape (3, 3)")
-    direction = basis @ uvw
-    return _matrix_to_quaternion(_direction_frame(direction, roll_deg))
-
-
-def orientation_from_zone_axis(crystal, uvw, roll_deg: float = 0.0) -> np.ndarray:
-    """Return the shared physics-layer zone-axis quaternion convention."""
-    try:
-        from de_ebsd.diffraction.kinematic import orientation_from_zone_axis as helper
-    except (ImportError, AttributeError):
-        helper = None
-    if helper is not None:
-        return _as_quaternion(helper(crystal, uvw, roll_deg=roll_deg))
-    return _fallback_orientation_from_zone_axis(crystal, uvw, roll_deg)
-
-
-def _camera_direction(azimuth: float, elevation: float) -> np.ndarray:
-    """Near-facing sphere direction for anyplotlib's Plot3D camera convention."""
-    a, e = np.deg2rad([float(azimuth), float(elevation)])
-    return np.array([math.cos(e) * math.sin(a), -math.cos(e) * math.cos(a), math.sin(e)])
-
-
-def _camera_angles(direction: np.ndarray) -> tuple[float, float]:
-    n = np.asarray(direction, dtype=float) / np.linalg.norm(direction)
-    return float(np.rad2deg(np.arctan2(n[0], -n[1]))), float(
-        np.rad2deg(np.arcsin(np.clip(n[2], -1, 1)))
-    )
-
-
-def _camera_frame(azimuth: float, elevation: float) -> np.ndarray:
-    """The exact right/up/facing basis used by anyplotlib's Plot3D renderer."""
-    a, e = np.deg2rad([float(azimuth), float(elevation)])
-    ca, sa, ce, se = np.cos(a), np.sin(a), np.cos(e), np.sin(e)
-    facing = np.array([ce * sa, -ce * ca, se])
-    right = np.array([ca, sa, 0.0])
-    up = np.array([-se * sa, se * ca, ce])
-    return np.column_stack([right, up, facing])
-
-
-def _band_path(normals: np.ndarray) -> np.ndarray:
-    """Pack reciprocal-plane great circles into a dense native point path.
-
-    Plot3D has one connected line primitive and no pen-lift/NaN contract.  A
-    fine point cloud preserves each great circle without drawing false chords
-    between unrelated planes.
-    """
-    normals = np.asarray(normals, dtype=float).reshape(-1, 3)
-    rings = []
-    t = np.linspace(0.0, 2.0 * np.pi, 256)
-    for normal in normals:
-        n = normal / max(np.linalg.norm(normal), 1e-15)
-        if not np.isfinite(n).all():
-            continue
-        ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        u = ref - np.dot(ref, n) * n
-        u /= max(np.linalg.norm(u), 1e-15)
-        v = np.cross(n, u)
-        rings.append(np.cos(t)[:, None] * u + np.sin(t)[:, None] * v)
-    if not rings:
-        return np.zeros((2, 3), dtype=float)
-    return np.concatenate(rings, axis=0)
 
 
 class CrystalExplorer:
@@ -361,11 +201,11 @@ class CrystalExplorer:
         normals = np.asarray(
             getattr(self.model, "band_normals", np.empty((0, 3))), dtype=float
         ).reshape(-1, 3)
-        band_path = _band_path(normals)
+        band_path_points = band_path(normals)
         self._sphere_artist = self._sphere_ax.scatter3d(
-            band_path[:, 0],
-            band_path[:, 1],
-            band_path[:, 2],
+            band_path_points[:, 0],
+            band_path_points[:, 1],
+            band_path_points[:, 2],
             color="#48d1cc",
             point_size=1.4,
             bounds=((-1, 1),) * 3,
@@ -420,8 +260,8 @@ class CrystalExplorer:
         return frac @ np.asarray(self.crystal.direct_structure_matrix, dtype=float).T
 
     def _apply_tilts(self):
-        rx = _axis_angle(np.array([1.0, 0.0, 0.0]), self._tilt_x_deg)
-        ry = _axis_angle(np.array([0.0, 1.0, 0.0]), self._tilt_y_deg)
+        rx = axis_angle_matrix(np.array([1.0, 0.0, 0.0]), self._tilt_x_deg)
+        ry = axis_angle_matrix(np.array([0.0, 1.0, 0.0]), self._tilt_y_deg)
         return self._base_orientation_matrix @ rx @ ry
 
     @property
@@ -433,7 +273,7 @@ class CrystalExplorer:
             return
         self._updating = True
         try:
-            self._orientation = _matrix_to_quaternion(self._apply_tilts())
+            self._orientation = matrix_to_quaternion(self._apply_tilts())
             self._last_result = self.model.project(
                 self._orientation,
                 semiangle_deg=self._semiangle_deg,
@@ -569,7 +409,7 @@ class CrystalExplorer:
         # directly and fold it into the authoritative orientation, clearing
         # the two convenience tilt offsets so changing roll cannot move +z.
         delta = roll_deg - getattr(self, "_roll_deg_before", 0.0)
-        self._orientation = _matrix_to_quaternion(_axis_angle(beam, delta) @ matrix)
+        self._orientation = matrix_to_quaternion(axis_angle_matrix(beam, delta) @ matrix)
         self._base_orientation = self._orientation.copy()
         self._tilt_x_deg = self._tilt_y_deg = 0.0
         self._roll_deg_before = roll_deg
@@ -611,7 +451,7 @@ class CrystalExplorer:
             normals = np.asarray(
                 getattr(self.model, "band_normals", np.empty((0, 3))), dtype=float
             ).reshape(-1, 3)
-            path = _band_path(normals)
+            path = band_path(normals)
             self._sphere_artist.set_data(path[:, 0], path[:, 1], path[:, 2])
         self._recompute()
         return self
@@ -682,7 +522,7 @@ class CrystalExplorer:
         return self
 
     def _set_camera_for_beam(self, beam):
-        self._camera = _camera_angles(beam)
+        self._camera = camera_angles(beam)
         if self._sphere_artist is not None:
             self._sphere_artist.set_view(*self._camera)
 
@@ -694,9 +534,9 @@ class CrystalExplorer:
         if az is None or el is None or not np.isfinite([az, el]).all():
             return
         self._camera = (float(az), float(el))
-        beam = _camera_direction(float(az), float(el))
-        self._base_orientation = _matrix_to_quaternion(
-            _axis_angle(beam, self._roll_deg) @ _camera_frame(float(az), float(el))
+        beam = camera_direction(float(az), float(el))
+        self._base_orientation = matrix_to_quaternion(
+            axis_angle_matrix(beam, self._roll_deg) @ camera_frame(float(az), float(el))
         )
         self._zone_axis = None
         self._tilt_x_deg = self._tilt_y_deg = 0.0
