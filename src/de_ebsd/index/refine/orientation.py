@@ -12,8 +12,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
+from de_ebsd.index.refine.levenberg import adapt_damping
 
 __all__ = ["refine_orientation"]
 
@@ -102,14 +103,14 @@ def _lm_refine(
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
             a = jtj + damping[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, 3)
-            r_new = r_mat @ torch.matrix_exp(skew_matrix(delta))
+            r_new = r_mat @ rotation_vector_to_matrix(delta)
             m_new = master.sample(dirs @ r_new.transpose(-1, -2)).to(device=device, dtype=dtype)
             new_score = _masked_ncc(e, m_new, mask)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,
             # and monotone by construction
             better = new_score > cur_score
             r_mat = torch.where(better[:, None, None], r_new, r_mat)
-            damping = torch.where(better, (damping * 0.5).clamp_min(1e-6), (damping * 3.0).clamp_max(1e2))
+            damping = adapt_damping(damping, better)
             cur_score = torch.where(better, new_score, cur_score)
 
     refined_score = cur_score
@@ -306,7 +307,7 @@ def refine_orientation(
             e = _backproject(patt, detector, dirs, pc_param, per_pattern)[0]
         else:
             e = e_fixed
-        d_r = torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
+        d_r = rotation_vector_to_matrix(w)  # (Np, 3, 3)
         r = r0_mat @ d_r  # right-compose: R = R0 . dR(w)
         v = dirs @ r.transpose(-1, -2)  # (Np, M, 3) = R n, matching project
         m_r = master.sample(v).to(device=device, dtype=dtype)  # (Np, M)
@@ -326,7 +327,7 @@ def refine_orientation(
 
     with torch.no_grad():
         refined_score = _score().detach()
-        r_ref = r0_mat @ torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
+        r_ref = r0_mat @ rotation_vector_to_matrix(w)  # (Np, 3, 3)
         if keep_best:
             # keep the coarse seed where refinement did not raise the NCC. Under
             # refine_pattern_center the gate reverts only the orientation, so seed_score (taken

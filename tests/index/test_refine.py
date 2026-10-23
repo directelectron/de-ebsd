@@ -36,7 +36,7 @@ from orix.quaternion import Rotation
 
 from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import refine_orientation
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.refine.orientation import (
@@ -462,7 +462,7 @@ def test_lm_analytic_jacobian_matches_finite_differences(master, detector):
     rng = np.random.default_rng(3)
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
-    r_eval = q0 @ torch.matrix_exp(skew_matrix(math.radians(2.0) * axis))
+    r_eval = q0 @ rotation_vector_to_matrix(math.radians(2.0) * axis)
 
     _, j_r, _ = _lm_residual_jacobian(master, dirs, r_eval, e_hat, device, dtype)
 
@@ -476,8 +476,8 @@ def test_lm_analytic_jacobian_matches_finite_differences(master, detector):
     for k in range(3):
         d = torch.zeros(n_p, 3, dtype=dtype)
         d[:, k] = eps
-        r_plus = residual(r_eval @ torch.matrix_exp(skew_matrix(d)))
-        r_minus = residual(r_eval @ torch.matrix_exp(skew_matrix(-d)))
+        r_plus = residual(r_eval @ rotation_vector_to_matrix(d))
+        r_minus = residual(r_eval @ rotation_vector_to_matrix(-d))
         j_fd[..., k] = (r_plus - r_minus) / (2 * eps)
 
     rel = (j_r - j_fd).abs() / j_fd.abs().clamp_min(1e-9)

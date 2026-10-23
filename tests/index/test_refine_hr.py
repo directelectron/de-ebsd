@@ -38,7 +38,7 @@ from orix.quaternion import Rotation
 
 from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import refine_hr
 from de_ebsd.index.refine.highres import (
     _ddc_dpc,
@@ -133,7 +133,7 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     rng = np.random.default_rng(3)
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
-    r_eval = q0 @ torch.matrix_exp(skew_matrix(math.radians(2.0) * axis))
+    r_eval = q0 @ rotation_vector_to_matrix(math.radians(2.0) * axis)
     pc_eval = torch.tensor(detector.pattern_center, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
 
     def analytic(r_mat, pattern_center):
@@ -162,8 +162,8 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     for k in range(3):  # orientation block via matrix_exp perturbation
         d = torch.zeros(n_p, 3, dtype=dtype)
         d[:, k] = eps
-        rp = residual(r_eval @ torch.matrix_exp(skew_matrix(d)), pc_eval)
-        rm = residual(r_eval @ torch.matrix_exp(skew_matrix(-d)), pc_eval)
+        rp = residual(r_eval @ rotation_vector_to_matrix(d), pc_eval)
+        rm = residual(r_eval @ rotation_vector_to_matrix(-d), pc_eval)
         j_fd[..., k] = (rp - rm) / (2 * eps)
     for k in range(3):  # pattern-center block via additive perturbation
         dp = torch.zeros(n_p, 3, dtype=dtype)

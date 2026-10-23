@@ -38,8 +38,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from de_ebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.lambert import sample_texture
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.preprocess import _gaussian_blur, normalize_rows
 
@@ -162,17 +162,6 @@ def _parabola_offset(scores: torch.Tensor) -> torch.Tensor:
     vertex = 0.5 * (minus - plus) / curvature.clamp_max(-_EPS)
     fallback = torch.where(plus > minus, 1.0, -1.0) * (torch.maximum(plus, minus) > center)
     return torch.where(curvature < 0, vertex.clamp(-1, 1), fallback.to(scores.dtype))
-
-
-def _rotation_matrices(w: torch.Tensor) -> torch.Tensor:
-    """Rotation vectors ``(..., 3)`` in radians as matrices ``(..., 3, 3)``."""
-    theta = w.norm(dim=-1, keepdim=True)
-    k = w / theta.clamp_min(1e-12)
-    skew = skew_matrix(k)
-    s = torch.sin(theta)[..., None]
-    c = torch.cos(theta)[..., None]
-    eye = torch.eye(3, device=w.device, dtype=w.dtype).expand_as(skew)
-    return eye + s * skew + (1 - c) * (skew @ skew)
 
 
 def _trace_free_basis(device) -> torch.Tensor:
@@ -330,16 +319,7 @@ class LiveIndexer:
         if self.fused:
             return _kernels.project(texture, rotations, phases * 2, directions)
         v = torch.einsum("mij,pj->mpi", rotations, directions)
-        square = sphere_to_square(v.reshape(-1, 3)) / SQRT_PI_HALF
-        values = F.grid_sample(
-            texture,
-            square.view(1, 1, -1, 2),
-            mode="bilinear",
-            align_corners=True,
-            padding_mode="border",
-        ).view(texture.shape[1], *v.shape[:2])
-        channel = phases[:, None] * 2 + (v[..., 2] < 0)
-        return values.gather(0, channel[None])[0]
+        return sample_texture(texture, v, phases[:, None])
 
     def _scores(
         self, candidates: torch.Tensor, phases: torch.Tensor, rows: torch.Tensor, directions
@@ -462,9 +442,9 @@ class LiveIndexer:
         directions = self.refine_directions if directions is None else directions
         score = torch.zeros(len(g), device=self.device)
         for step in steps:
-            candidates = g[:, None] @ _rotation_matrices(self.stencil * step)
+            candidates = g[:, None] @ rotation_vector_to_matrix(self.stencil * step)
             scores = self._scores(candidates, phase, refine_rows, directions)
-            g = g @ _rotation_matrices(_parabola_offset(scores) * step)
+            g = g @ rotation_vector_to_matrix(_parabola_offset(scores) * step)
             score = scores[:, 0]
         return g, score
 
