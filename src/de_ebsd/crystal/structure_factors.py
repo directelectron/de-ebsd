@@ -2,7 +2,8 @@
 
 Sums Weickenmeier-Kohl form factors over the symmetry-expanded basis. Provides
 the numpy path (:func:`compute_structure_factors`) used by the Bloch-wave
-backend and a differentiable lookup (:func:`differentiable_ucg_lut`).
+backend and a differentiable lookup (:func:`differentiable_ucg_lut`). Follows
+EMsoft ``CalcUcg`` (Weickenmeier-Kohl branch).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import C_PI, DWWK, PREF_COEF, PREG, SWK, electron_wavelength_nm
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 from de_ebsd.crystal.scattering import atomic_number, wk_scattering_factor
 from de_ebsd.crystal.scattering_torch import wk_scattering_factor_torch
@@ -81,12 +83,6 @@ class StructureFactors:
             raise IndexError(f"|hkl| exceeds the lookup range 2*hmax = {2 * self.hmax}")
         idx = hkl + 2 * self.hmax
         return self.ucg_lut[idx[..., 0], idx[..., 1], idx[..., 2]]
-
-    def as_torch_lut(
-        self, device: torch.device | str | None = None, dtype: torch.dtype = torch.complex64
-    ) -> torch.Tensor:
-        """The lookup table as a torch tensor for the dynamical solver."""
-        return torch.as_tensor(self.ucg_lut, dtype=dtype, device=device)
 
     def families(self, n: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Group the reflection list by ``|g|``; representative hkl, g, and U_g.
@@ -181,11 +177,11 @@ def compute_structure_factors(
     for site, positions in zip(crystal.sites, crystal.positions, strict=True):
         z = atomic_number(site.element)
         ul = float(np.sqrt(site.debye_waller * DWWK))
-        sf = wk_scattering_factor(z, g_unique, ul, energy_kev, absorption=absorption)
-        sf = sf[inverse] * site.occupancy
+        structure_factors = wk_scattering_factor(z, g_unique, ul, energy_kev, absorption=absorption)
+        structure_factors = structure_factors[inverse] * site.occupancy
         phase = np.exp(-2j * np.pi * (hkl_box @ positions.T)).sum(axis=1)
-        ff += phase * sf.real
-        gg += phase * sf.imag
+        ff += phase * structure_factors.real
+        gg += phase * structure_factors.imag
 
     if absorption:
         ucg = pre * (ff + 1j * gg)
@@ -253,7 +249,7 @@ def differentiable_ucg_lut(
     ``d(intensity)/d(crystal parameter)``. Lattice gradients (through ``g``)
     remain a further step.
     """
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     hmax = _hmax_for_dmin(crystal, dmin)
     m = 2 * hmax
     rng = np.arange(-m, m + 1)
@@ -269,8 +265,9 @@ def differentiable_ucg_lut(
     if positions is None:
         positions = [torch.as_tensor(p, device=dev, dtype=torch.float64) for p in crystal.positions]
     if occupancies is None:
-        occupancies = [torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64)
-                       for s in crystal.sites]
+        occupancies = [
+            torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64) for s in crystal.sites
+        ]
     dw = debye_waller if debye_waller is not None else [None] * len(crystal.sites)
 
     ucg = torch.zeros(len(hkl_box), device=dev, dtype=dtype)
@@ -283,7 +280,8 @@ def differentiable_ucg_lut(
         else:  # torch WK amplitude, differentiable in the Debye-Waller factor
             ul = torch.sqrt(b.to(dev, torch.float64) * DWWK)
             f_unique = wk_scattering_factor_torch(
-                z, g_unique_t, ul, energy_kev, absorption=absorption)
+                z, g_unique_t, ul, energy_kev, absorption=absorption
+            )
             f_t = f_unique.to(dtype)[inverse_t]
         # structure-factor phase sum over the site's atoms (differentiable in pos)
         phase = torch.exp(-2j * np.pi * (hkl_t @ pos.to(dev, torch.float64).T)).sum(dim=1)

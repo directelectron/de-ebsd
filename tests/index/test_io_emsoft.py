@@ -196,7 +196,9 @@ def test_loaded_master_feeds_index_scan(synthetic_file):
 
     path, _, _ = synthetic_file
     m = master_from_emsoft(path, device="cpu")
-    detector = EBSDDetector(shape=(12, 12), pc=(0.5, 0.5, 0.55), sample_tilt=70.0, tilt=0.0)
+    detector = EBSDDetector(
+        shape=(12, 12), pattern_center=(0.5, 0.5, 0.55), sample_tilt=70.0, tilt=0.0
+    )
 
     # a tiny 2x2 scan: project a few orientations off the loaded master itself
     # (no singleton axis, so orix keeps the 2-D CrystalMap shape).

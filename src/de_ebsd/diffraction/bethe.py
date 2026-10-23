@@ -1,4 +1,8 @@
-"""Bethe potential cutoffs that split reflections into strong/weak/ignored."""
+"""Bethe potential cutoffs that split reflections into strong/weak/ignored.
+
+The scheme is EMsoft's ``Apply_BethePotentials``; the defaults here differ from
+EMsoft's own (4 / 8 / 50) and must be matched to compare against it.
+"""
 
 from __future__ import annotations
 

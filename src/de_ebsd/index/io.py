@@ -51,9 +51,7 @@ def phase_from_crystal(crystal):
 
     name = getattr(crystal, "name", None) or _crystal_name(crystal)
 
-    lattice = Lattice(
-        crystal.a, crystal.b, crystal.c, crystal.alpha, crystal.beta, crystal.gamma
-    )
+    lattice = Lattice(crystal.a, crystal.b, crystal.c, crystal.alpha, crystal.beta, crystal.gamma)
     atoms = []
     for site in getattr(crystal, "sites", ()):  # asymmetric unit
         atoms.append(

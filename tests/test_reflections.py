@@ -55,8 +55,9 @@ def test_excitation_errors_batched_shape(si_sf):
 
 
 def test_classification_structure(si_sf):
-    refl = classify_reflections(si_sf, np.array([0.4, 0.1, 1.0]) / np.linalg.norm([0.4, 0.1, 1.0]),
-                                BetheParameters())
+    refl = classify_reflections(
+        si_sf, np.array([0.4, 0.1, 1.0]) / np.linalg.norm([0.4, 0.1, 1.0]), BetheParameters()
+    )
     # first entry is the incident beam, always strong, sg = 0
     assert np.all(refl.hkl[0] == 0)
     assert refl.status[0] == STRONG

@@ -24,8 +24,14 @@ def test_metric_tensors_are_inverse(si_crystal):
 def test_structure_matrix_consistent_with_metric():
     """dsm^T dsm must equal the direct metric tensor, also for triclinic cells."""
     crystal = Crystal.from_parameters(
-        a=0.4, b=0.5, c=0.6, alpha=80.0, beta=95.0, gamma=105.0,
-        space_group=1, atoms=[("C", (0.0, 0.0, 0.0))],
+        a=0.4,
+        b=0.5,
+        c=0.6,
+        alpha=80.0,
+        beta=95.0,
+        gamma=105.0,
+        space_group=1,
+        atoms=[("C", (0.0, 0.0, 0.0))],
     )
     dsm = crystal.direct_structure_matrix
     assert np.allclose(dsm.T @ dsm, crystal.direct_metric, atol=1e-12)

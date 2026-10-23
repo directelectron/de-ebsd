@@ -58,11 +58,13 @@ def test_to_uint8_rgb():
 
 def test_setup_widget_round_trip():
     pytest.importorskip("anywidget")
-    from de_ebsd.viz.widgets import SetupWidget
+    from de_ebsd.viz.widgets import MicroscopeWidget
 
     microscope = de.Microscope(energy=15e3, sample_tilt=68.0)
-    detector = de.EBSDDetector(shape=(240, 320), pc=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)
-    widget = SetupWidget.from_setup(microscope=microscope, detector=detector)
+    detector = de.EBSDDetector(
+        shape=(240, 320), pattern_center=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0
+    )
+    widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
 
     assert widget.energy_kev == pytest.approx(15.0)
     assert widget.sample_tilt == pytest.approx(68.0)
@@ -74,7 +76,7 @@ def test_setup_widget_round_trip():
     det2 = widget.to_detector()
     assert scope2.sample_tilt == pytest.approx(71.5)
     assert scope2.energy == pytest.approx(15e3)
-    assert det2.pc[2] == pytest.approx(0.62)
+    assert det2.pattern_center[2] == pytest.approx(0.62)
     assert det2.shape == (240, 320)
 
 
@@ -112,15 +114,19 @@ def test_compact_microscope_widget_round_trip():
 
     microscope = de.Microscope(energy=18e3, sample_tilt=69.0, azimuthal=2.5)
     detector = de.EBSDDetector(
-        shape=(256, 384), pc=(0.42, 0.58, 0.61), tilt=4.0, px_size=0.75,
-        sample_tilt=69.0, azimuthal=2.5,
+        shape=(256, 384),
+        pattern_center=(0.42, 0.58, 0.61),
+        tilt=4.0,
+        px_size=0.75,
+        sample_tilt=69.0,
+        azimuthal=2.5,
     )
     widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
     assert widget.energy_kev == pytest.approx(18.0)
     assert widget.px_size == pytest.approx(0.75)
     widget.pcz = 0.66
     assert widget.to_microscope().energy == pytest.approx(18e3)
-    assert widget.to_detector().pc[2] == pytest.approx(0.66)
+    assert widget.to_detector().pattern_center[2] == pytest.approx(0.66)
 
 
 def test_sampling_sphere_show():

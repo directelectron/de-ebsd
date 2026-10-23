@@ -680,7 +680,6 @@ array = [
 
 [[package]]
 name = "de-ebsd"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyplotlib" },

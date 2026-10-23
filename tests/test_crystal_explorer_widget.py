@@ -8,7 +8,8 @@ import pytest
 anyplotlib = pytest.importorskip("anyplotlib")
 
 from de_ebsd.crystal.lattice import Crystal
-from de_ebsd.viz.explorer import CrystalExplorer, orientation_from_zone_axis
+from de_ebsd.diffraction.kinematic import orientation_from_zone_axis
+from de_ebsd.viz.explorer import CrystalExplorer
 
 
 class _Model:

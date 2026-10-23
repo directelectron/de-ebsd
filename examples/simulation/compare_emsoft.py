@@ -89,8 +89,13 @@ print("Shared EMsoft depth distribution:", depth)
 device = "cpu"
 npx = reference.npx
 simulator = de.MasterPatternSimulator(
-    crystal, microscope, npx=npx, dmin=dmin,
-    bethe=bethe, monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=npx,
+    dmin=dmin,
+    bethe=bethe,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 started = perf_counter()
 simulated = simulator.compute(device=device, dtype=torch.float64, chunk_size=512).to("cpu")
@@ -152,15 +157,20 @@ print(f"Both hemispheres, joint normalization: r={correlation(our_maps, ref_maps
 comparison, axes = apl.subplots(2, 3, figsize=(1000, 650))
 residual_limit = max(float(residual.abs().max()), 1e-12)
 for i, hemisphere in enumerate(("north", "south")):
-    for j, (values, title) in enumerate((
-        (normalized_reference[i], "EMsoft"),
-        (normalized_simulation[i], "de-ebsd"),
-        (residual[i], "de-ebsd minus EMsoft"),
-    )):
+    for j, (values, title) in enumerate(
+        (
+            (normalized_reference[i], "EMsoft"),
+            (normalized_simulation[i], "de-ebsd"),
+            (residual[i], "de-ebsd minus EMsoft"),
+        )
+    ):
         limit = residual_limit if j == 2 else 3.0
         panel = axes[i, j].imshow(
-            values.numpy(), origin="lower", cmap="coolwarm" if j == 2 else "gray",
-            vmin=-limit, vmax=limit,
+            values.numpy(),
+            origin="lower",
+            cmap="coolwarm" if j == 2 else "gray",
+            vmin=-limit,
+            vmax=limit,
         )
         panel.set_title(f"{hemisphere}: {title}")
 comparison
@@ -176,8 +186,11 @@ comparison
 # additionally introduces a sampling/interpolation difference.
 
 detector = de.EBSDDetector(
-    shape=(96, 128), pc=(0.45, 0.55, 0.60), tilt=5.0,
-    sample_tilt=microscope.sample_tilt, azimuthal=microscope.azimuthal,
+    shape=(96, 128),
+    pattern_center=(0.45, 0.55, 0.60),
+    tilt=5.0,
+    sample_tilt=microscope.sample_tilt,
+    azimuthal=microscope.azimuthal,
 )
 orientation = Rotation.from_euler([[35.0, 45.0, 10.0]], degrees=True)
 ref_detector = reference.project(detector, orientation, energy_kev=energy_kev, rescale=False)[0]
@@ -188,14 +201,19 @@ print(f"Detector-pattern correlation: r={correlation(our_detector, ref_detector)
 print(f"Detector normalized RMS residual: {float(detector_residual.square().mean().sqrt()):.6f}")
 detector_comparison, detector_axes = apl.subplots(1, 3, figsize=(1000, 320))
 for ax, values, title, is_residual in zip(
-    np.ravel(detector_axes), (ref_image, our_image, detector_residual),
-    ("EMsoft detector", "de-ebsd detector", "Normalized residual"), (False, False, True),
+    np.ravel(detector_axes),
+    (ref_image, our_image, detector_residual),
+    ("EMsoft detector", "de-ebsd detector", "Normalized residual"),
+    (False, False, True),
     strict=True,
 ):
     limit = max(float(detector_residual.abs().max()), 1e-12) if is_residual else 3.0
     panel = ax.imshow(
-        values.numpy(), origin="upper", cmap="coolwarm" if is_residual else "gray",
-        vmin=-limit, vmax=limit,
+        values.numpy(),
+        origin="upper",
+        cmap="coolwarm" if is_residual else "gray",
+        vmin=-limit,
+        vmax=limit,
     )
     panel.set_title(title)
 detector_comparison

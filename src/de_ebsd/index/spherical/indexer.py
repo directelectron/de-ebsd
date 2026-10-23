@@ -16,6 +16,7 @@ import math
 
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.spherical.correlation import so3_cross_correlation
 from de_ebsd.index.spherical.harmonics import SphericalHarmonicTransform
@@ -59,26 +60,18 @@ class SphericalIndexer:
         self.bandwidth = int(bandwidth)
         self.energy_kev = energy_kev
 
-        if device is not None:
-            self.device = torch.device(device)
-        else:
-            master_device = getattr(master, "device", None)
-            self.device = torch.device(master_device) if master_device is not None else (
-                torch.device("cpu")
-            )
+        self.device = resolve_device(device, getattr(master, "device", "cpu"))
 
         # pin the plan to the master's real dtype so master and patterns transform
         # identically; the plan requires a real float type
         master_dtype = getattr(getattr(master, "data", None), "dtype", torch.float64)
-        self.dtype = master_dtype if master_dtype in (torch.float32, torch.float64) else (
-            torch.float64
+        self.dtype = (
+            master_dtype if master_dtype in (torch.float32, torch.float64) else (torch.float64)
         )
         self._eps = torch.finfo(self.dtype).eps
 
         # the plan does NOT auto-move from its CPU/float64 default, so pin it here
-        self.sht = SphericalHarmonicTransform(
-            self.bandwidth, device=self.device, dtype=self.dtype
-        )
+        self.sht = SphericalHarmonicTransform(self.bandwidth, device=self.device, dtype=self.dtype)
 
         # quadrature directions M = (L+1)*(2L+2)
         self._dirs = self.sht.grid_directions().reshape(-1, 3)
@@ -97,7 +90,8 @@ class SphericalIndexer:
         self._wig_d = wigner_d(self.bandwidth, beta_grid)
 
         # normalizer terms, cached on the first normalize=True call; they depend only
-        # on the master and the fixed detector pc, so a variable pc must invalidate them
+        # on the master and the fixed detector pattern_center, so a variable pattern_center must
+        # invalidate them
         self._w_lm = None
         self._a_w = None
         self._denom_geo = None
@@ -115,12 +109,8 @@ class SphericalIndexer:
         _, w = pattern_to_sphere(zero, self.detector, self._dirs)
         w_lm = self.sht.forward(w.reshape(self.sht.n_theta, self.sht.n_phi))
         # master mean and second moment over the rotated FOV, aligned elementwise with X
-        s1 = so3_cross_correlation(
-            self.a_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
-        s2 = so3_cross_correlation(
-            self.a2_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
+        s1 = so3_cross_correlation(self.a_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d)
+        s2 = so3_cross_correlation(self.a2_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d)
         a_w = math.sqrt(4.0 * math.pi) * w_lm[0].real  # FOV spherical area
         denom = (s2 - s1**2 / a_w.clamp_min(self._eps)).clamp_min(self._eps).sqrt()
         self._w_lm = w_lm
@@ -173,13 +163,9 @@ class SphericalIndexer:
         mean = (samples * w).sum(-1, keepdim=True) / denom
         var = ((samples - mean) ** 2 * w).sum(-1, keepdim=True) / denom
         e = ((samples - mean) / var.clamp_min(self._eps).sqrt()) * w
-        b_lm = self.sht.forward(
-            e.reshape(*e.shape[:-1], self.sht.n_theta, self.sht.n_phi)
-        )
+        b_lm = self.sht.forward(e.reshape(*e.shape[:-1], self.sht.n_theta, self.sht.n_phi))
 
-        c = so3_cross_correlation(
-            self.a_lm, b_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
+        c = so3_cross_correlation(self.a_lm, b_lm, self.bandwidth, wigner_d_cached=self._wig_d)
         n_grid = 2 * self.bandwidth + 2
 
         if normalize:
@@ -205,11 +191,11 @@ class SphericalIndexer:
         self,
         patterns,
         rotations=None,
-        pc=None,
-        refine_pc=False,
-        n_iters=100,
-        lr=0.02,
-        pc_lr=None,
+        pattern_center=None,
+        refine_pattern_center=False,
+        n_iterations=100,
+        learning_rate=0.02,
+        pattern_center_learning_rate=None,
         keep_best=True,
         return_history=False,
     ):
@@ -221,8 +207,10 @@ class SphericalIndexer:
         ``rotations=None`` the seeds come from :meth:`index`, taking raw patterns
         straight to sharpened orientations.
 
-        ``pc`` defaults to ``detector.pc``; the remaining arguments pass through.
-        Returns ``(rotation, score)``, with ``pc`` appended when ``refine_pc`` and
+        ``pattern_center`` defaults to ``detector.pattern_center``; the remaining arguments pass
+        through.
+        Returns ``(rotation, score)``, with ``pattern_center`` appended when
+        ``refine_pattern_center`` and
         ``history`` when ``return_history``.
         """
         from de_ebsd.index.refine.orientation import refine_orientation
@@ -234,11 +222,11 @@ class SphericalIndexer:
             self.master,
             self.detector,
             rotations,
-            pc=pc,
-            refine_pc=refine_pc,
-            n_iters=n_iters,
-            lr=lr,
-            pc_lr=pc_lr,
+            pattern_center=pattern_center,
+            refine_pattern_center=refine_pattern_center,
+            n_iterations=n_iterations,
+            learning_rate=learning_rate,
+            pattern_center_learning_rate=pattern_center_learning_rate,
             directions=self._dirs,
             device=self.device,
             keep_best=keep_best,
@@ -315,13 +303,11 @@ class SphericalIndexer:
             rows, cols = int(shape[0]), int(shape[1])
             if rows * cols != patt.shape[0]:
                 raise ValueError(
-                    f"shape {(rows, cols)} implies {rows * cols} patterns but got "
-                    f"{patt.shape[0]}"
+                    f"shape {(rows, cols)} implies {rows * cols} patterns but got {patt.shape[0]}"
                 )
         else:
             raise ValueError(
-                "patterns must be (rows, cols, H, W) or (N, H, W), got shape "
-                f"{tuple(patt.shape)}"
+                f"patterns must be (rows, cols, H, W) or (N, H, W), got shape {tuple(patt.shape)}"
             )
 
         n = rows * cols
@@ -336,7 +322,7 @@ class SphericalIndexer:
             rot_c, qual_c = self.index(chunk, normalize=normalize)
             if refine:
                 rot_c, qual_c = self.refine(
-                    chunk, rotations=rot_c, n_iters=refine_iters, lr=refine_lr
+                    chunk, rotations=rot_c, n_iterations=refine_iters, learning_rate=refine_lr
                 )
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c)

@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 import h5py
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-from de_ebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
+from de_ebsd.core.constants import DIVISION_FLOOR
+from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.sim.detector import EBSDDetector
 
@@ -19,8 +19,6 @@ if TYPE_CHECKING:
     from anyplotlib import Figure
 
 __all__ = ["MasterPattern"]
-
-_EPS = 1e-12
 
 
 @dataclass
@@ -78,20 +76,8 @@ class MasterPattern:
         ``grid_sample(align_corners=True)``, identical to kikuchipy's
         interpolation. The hemisphere is selected by ``sign(z)``.
         """
-        i_e = self.energy_index(energy_kev)
-        shape = directions.shape[:-1]
-        v = directions.reshape(-1, 3).to(self.data.device, self.data.dtype)
-        p = v.shape[0]
-
-        lam = sphere_to_square(v) / SQRT_PI_HALF  # (P, 2) in [-1, 1]
-        grid = lam.view(1, 1, p, 2)
-
-        north = self.data[i_e, 0][None, None]
-        south = self.data[i_e, 1][None, None]
-        up = F.grid_sample(north, grid, mode="bilinear", align_corners=True, padding_mode="border")
-        lo = F.grid_sample(south, grid, mode="bilinear", align_corners=True, padding_mode="border")
-        values = torch.where(v[:, 2] >= 0, up.view(-1), lo.view(-1))
-        return values.reshape(shape)
+        directions = directions.to(self.data.device, self.data.dtype)
+        return sample_texture(self.data[self.energy_index(energy_kev)][None], directions)
 
     def project(
         self,
@@ -129,11 +115,12 @@ class MasterPattern:
         if rescale:
             pmin = pattern.amin(dim=1, keepdim=True)
             pmax = pattern.amax(dim=1, keepdim=True)
-            pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(_EPS) - 1.0
+            pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(DIVISION_FLOOR) - 1.0
         return pattern.reshape(-1, detector.nrows, detector.ncols)
 
-    def to_stereographic(self, n: int = 501, hemisphere: str = "north",
-                         energy_kev: float | None = None) -> torch.Tensor:
+    def to_stereographic(
+        self, n: int = 501, hemisphere: str = "north", energy_kev: float | None = None
+    ) -> torch.Tensor:
         """Resample one hemisphere into a stereographic (equal-angle) image."""
         sign = 1.0 if hemisphere == "north" else -1.0
         coords = torch.linspace(-1.0, 1.0, n, device=self.device)
@@ -204,9 +191,7 @@ class MasterPattern:
         if projection == "sphere":
             if texture_height < 8:
                 raise ValueError("texture_height must be >= 8")
-            texture = self.to_equirectangular(
-                height=int(texture_height), energy_kev=energy_kev
-            )
+            texture = self.to_equirectangular(height=int(texture_height), energy_kev=energy_kev)
             return sphere_figure(
                 texture.detach().cpu().numpy(), title=f"Master pattern ({label})", **kwargs
             )
@@ -243,4 +228,4 @@ def _as_quaternions(orientation) -> torch.Tensor:
     data = getattr(orientation, "data", orientation)  # orix Rotation -> .data
     q = torch.as_tensor(np.asarray(data) if not isinstance(data, torch.Tensor) else data)
     q = q.reshape(-1, 4)
-    return q / q.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    return q / q.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)

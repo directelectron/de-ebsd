@@ -18,16 +18,14 @@ from test_dictionary import _KNOWN_EULER_DEG, _symmetric_band_master
 from de_ebsd import EBSDDetector
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.crystal import Crystal
-from de_ebsd.index import _kernels, live
+from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
-from de_ebsd.index.live import (
-    DEFORMATION_LINE_SEARCH,
-    DEFORMATION_MAX_STEP,
-    MIN_FRAMES_FOR_STATIC,
-    LiveIndexer,
-    _pick,
-    _texture,
-)
+from de_ebsd.index.live import LiveIndexer
+from de_ebsd.index.live import indexer as live_indexer
+from de_ebsd.index.live.background import MIN_FRAMES_FOR_STATIC
+from de_ebsd.index.live.common import pick
+from de_ebsd.index.live.deformation import DEFORMATION_LINE_SEARCH, DEFORMATION_MAX_STEP
+from de_ebsd.index.live.indexer import texture_of
 from de_ebsd.index.preprocess import normalize_rows
 
 fused = pytest.mark.skipif(
@@ -50,7 +48,7 @@ def master(point_group):
 
 @pytest.fixture(scope="module")
 def detector():
-    return EBSDDetector(shape=(64, 64), pc=(0.5, 0.4, 0.55), sample_tilt=70.0, tilt=0.0)
+    return EBSDDetector(shape=(64, 64), pattern_center=(0.5, 0.4, 0.55), sample_tilt=70.0, tilt=0.0)
 
 
 def _known():
@@ -97,7 +95,7 @@ def test_a_search_in_chunks_finds_what_one_product_finds(
     indexer = _small_indexer(master, point_group, detector, device="cpu")
     search_rows, _ = indexer.prepare(master.project(detector, _known()))
     whole_score, whole_entry = (search_rows @ indexer.dictionary).max(1)
-    monkeypatch.setattr(live, "SEARCH_CHUNK", 10)
+    monkeypatch.setattr(live_indexer, "SEARCH_CHUNK", 10)
     assert indexer.dictionary.shape[1] % 10 != 0
     _, _, score, entry = indexer.search(search_rows)
     assert torch.equal(entry, whole_entry)
@@ -109,10 +107,12 @@ def test_a_new_pattern_center_rebuilds_the_dictionary_in_place(master, point_gro
     building a second one beside it, and gives what building it fresh would."""
     indexer = _small_indexer(master, point_group, detector, device="cpu")
     where = indexer.dictionary.data_ptr()
-    moved = tuple(v + 0.02 for v in detector.pc)
+    moved = tuple(v + 0.02 for v in detector.pattern_center)
     indexer.set_pattern_center(moved)
     assert indexer.dictionary.data_ptr() == where
-    fresh = _small_indexer(master, point_group, replace(detector, pc=moved), device="cpu")
+    fresh = _small_indexer(
+        master, point_group, replace(detector, pattern_center=moved), device="cpu"
+    )
     assert torch.allclose(indexer.dictionary, fresh.dictionary)
 
 
@@ -174,25 +174,25 @@ def test_pattern_center_is_refined_from_the_patterns(master, point_group, detect
     stays within 0.0002 of the truth (``PATTERN_CENTER_STEPS``)."""
     patterns = master.project(detector, _known())
     found = []
-    for start in (detector.pc, tuple(v + 0.006 for v in detector.pc)):
+    for start in (detector.pattern_center, tuple(v + 0.006 for v in detector.pattern_center)):
         indexer = LiveIndexer(
             [master],
             [point_group],
-            replace(detector, pc=start),
+            replace(detector, pattern_center=start),
             resolution=10.0,
             refine_shape=(64, 64),
             refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
             device="cpu",
         )
         found.append(indexer.refine_pattern_center(patterns))
-        assert indexer.detector.pc == found[-1]
+        assert indexer.detector.pattern_center == found[-1]
     assert np.allclose(found[0], found[1], atol=0.001), found
-    assert np.allclose(found[1], detector.pc, atol=0.005), found
+    assert np.allclose(found[1], detector.pattern_center, atol=0.005), found
 
 
 @fused
 def test_fused_projection_matches_the_master_projection(master, detector):
-    texture = _texture([master], "cuda")
+    texture = texture_of([master], "cuda")
     q = torch.as_tensor(_known().data, dtype=torch.float32, device="cuda")
     got = _kernels.project(
         texture,
@@ -207,7 +207,7 @@ def test_fused_projection_matches_the_master_projection(master, detector):
 
 @fused
 def test_fused_score_is_the_normalized_cross_correlation(master, detector):
-    texture = _texture([master], "cuda")
+    texture = texture_of([master], "cuda")
     g = quaternion_to_matrix(
         torch.as_tensor(Rotation.random(28).data, dtype=torch.float32, device="cuda")
     )
@@ -228,7 +228,9 @@ def test_center_maps_move_the_directions_to_another_center(master, point_group, 
     (m,) = indexer.center_maps([other])
     moved = indexer.refine_directions @ m.T
     moved = moved / moved.norm(dim=-1, keepdim=True)
-    expected = replace(detector, pc=other, shape=indexer.refine_shape).direction_cosines()
+    expected = replace(
+        detector, pattern_center=other, shape=indexer.refine_shape
+    ).direction_cosines()
     assert torch.allclose(moved, expected, atol=1e-5)
 
 
@@ -253,7 +255,7 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     deformed = g @ torch.linalg.inv(torch.eye(3) + strain)
     phase = torch.zeros(len(g), dtype=torch.int64)
     rows = normalize_rows(
-        indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
+        indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
     )
     off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.2, degrees=True)
     seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32))
@@ -274,11 +276,9 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
-    patterns = normalize_rows(
-        indexer._project(indexer.texture, g, phase, indexer.refine_directions)
-    )
+    patterns = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
     rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
-    indexer.static = torch.ones(indexer.refine_shape)
+    indexer.background.static = torch.ones(indexer.refine_shape)
     indexer.add_fits(phase, g)
     _, with_ghost, score = indexer.refine_deformation(rows, phase, g, ghost=indexer.ghost)
     _, without, _ = indexer.refine_deformation(rows, phase, g)
@@ -296,7 +296,7 @@ def test_a_fit_cannot_run_away(master, point_group, detector):
     )
     g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
     phase = torch.zeros(2, dtype=torch.int64)
-    rows = normalize_rows(indexer._project(indexer.texture, g, phase, indexer.refine_directions))
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
     noise = torch.randn(1, rows.shape[1], generator=torch.Generator().manual_seed(1))
     rows[1] = normalize_rows(noise)[0]
     _, strain, score = indexer.refine_deformation(rows, phase, g, iterations=10)
@@ -310,7 +310,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     Gauss-Newton step then falls short, and two iterations with the line search
     end several times nearer the converged fit than two without (a pattern whose
     plain fit has nearly converged may tie)."""
-    from de_ebsd.index.preprocess import _gaussian_blur
+    from de_ebsd.index.preprocess import gaussian_blur
 
     indexer = LiveIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
@@ -322,8 +322,8 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
     deformed = g @ torch.linalg.inv(torch.eye(3) + torch.as_tensor(e, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
-    sharp = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
-    rows = normalize_rows(_gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
+    sharp = indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
+    rows = normalize_rows(gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
 
     def fit(**options):
         return indexer.refine_deformation(rows, phase, g, **options)[1]
@@ -337,7 +337,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
 def test_uint16_frames_are_picked_as_they_are():
     frames = torch.randint(0, 2**16, (6, 4, 4), dtype=torch.int32).to(torch.uint16)
     rows = torch.tensor([4, 0, 4])
-    assert torch.equal(_pick(frames, rows).int(), frames.int()[rows])
+    assert torch.equal(pick(frames, rows).int(), frames.int()[rows])
 
 
 def test_the_static_background_divides_out(master, point_group, detector):
@@ -349,9 +349,9 @@ def test_the_static_background_divides_out(master, point_group, detector):
     bands = 1.0 + 0.1 * torch.rand(3, 64, 64, generator=torch.Generator().manual_seed(0))
     y, x = torch.meshgrid(torch.linspace(-1, 1, 64), torch.linspace(-1, 1, 64), indexing="ij")
     backscatter = torch.exp(-(x**2 + (y - 0.3) ** 2) / 0.5)
-    indexer.static = torch.ones(64, 64)
+    indexer.background.static = torch.ones(64, 64)
     even = indexer.corrected(bands)
-    indexer.static = backscatter
+    indexer.background.static = backscatter
     assert torch.allclose(indexer.corrected(backscatter * bands), even, atol=1e-5)
 
 
@@ -393,7 +393,7 @@ def test_strain_from_a_reference_pattern(master, point_group, detector):
     strain = torch.as_tensor(e, dtype=torch.float32)
     deformed = torch.cat([g, g @ torch.linalg.inv(torch.eye(3) + strain)])
     phase = torch.zeros(len(deformed), dtype=torch.int64)
-    frames = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
+    frames = indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
     frames = frames.view(-1, *indexer.refine_shape)
     found, rotation, residual = indexer.strain_from_reference(frames[1:], frames[0])
     # 16-pixel regions of a 64-pixel pattern resolve a few 1e-4

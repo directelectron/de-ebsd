@@ -14,7 +14,7 @@ from de_ebsd.index import (
     remove_dynamic_background,
     remove_static_background,
 )
-from de_ebsd.index.preprocess import _gaussian_blur
+from de_ebsd.index.preprocess import gaussian_blur
 
 
 def _rng(shape, seed=0):
@@ -31,10 +31,10 @@ def test_gaussian_blur_matches_scipy():
     """
     ndi = pytest.importorskip("scipy.ndimage")
     imgs = _rng((3, 40, 44))
-    std = 44 / 8.0
-    out = _gaussian_blur(torch.as_tensor(imgs), std, truncate=4.0).numpy()
+    sigma = 44 / 8.0
+    out = gaussian_blur(torch.as_tensor(imgs), sigma, truncate=4.0).numpy()
     for i in range(imgs.shape[0]):
-        ref = ndi.gaussian_filter(imgs[i], sigma=std, truncate=4.0, mode="mirror")
+        ref = ndi.gaussian_filter(imgs[i], sigma=sigma, truncate=4.0, mode="mirror")
         assert np.allclose(out[i], ref, atol=1e-5), f"max {np.abs(out[i] - ref).max():.2e}"
 
 
@@ -93,10 +93,10 @@ def test_divide_operation_runs_and_is_bounded():
 
 
 def test_default_std_is_width_over_eight():
-    """The default dynamic ``std`` is width/8 (matches kikuchipy)."""
+    """The default dynamic ``sigma`` is width/8 (matches kikuchipy)."""
     arr = _rng((2, 32, 48), seed=6)
     default = remove_dynamic_background(arr).numpy()
-    explicit = remove_dynamic_background(arr, std=48 / 8.0).numpy()
+    explicit = remove_dynamic_background(arr, sigma=48 / 8.0).numpy()
     assert np.allclose(default, explicit, atol=1e-6)
 
 

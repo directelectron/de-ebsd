@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.viz.figures import apl, label
 
 __all__ = ["show_correlation", "show_map", "show_match", "show_refinement"]
-
-_EPS = 1e-12
 
 
 def _to_numpy(x) -> np.ndarray:
@@ -28,7 +27,7 @@ def _to_image(x) -> np.ndarray:
 def _standardize(image: np.ndarray) -> np.ndarray:
     image = image - image.mean()
     std = float(image.std())
-    return image / std if std > _EPS else image
+    return image / std if std > DIVISION_FLOOR else image
 
 
 def _ncc(a: np.ndarray, b: np.ndarray) -> float:
@@ -36,7 +35,7 @@ def _ncc(a: np.ndarray, b: np.ndarray) -> float:
     b0 = b - b.mean()
     na = float(np.linalg.norm(a0))
     nb = float(np.linalg.norm(b0))
-    if na < _EPS or nb < _EPS:
+    if na < DIVISION_FLOOR or nb < DIVISION_FLOOR:
         return 0.0
     return float(np.vdot(a0, b0) / (na * nb))
 
@@ -193,9 +192,7 @@ def show_correlation(correlation):
     if corr.ndim == 4:
         corr = corr[0]
     if corr.ndim != 3:
-        raise ValueError(
-            f"correlation must be (N, N, N) or (Np, N, N, N), got shape {corr.shape}"
-        )
+        raise ValueError(f"correlation must be (N, N, N) or (Np, N, N, N), got shape {corr.shape}")
 
     a_idx, b_idx, g_idx = (int(i) for i in np.unravel_index(int(np.argmax(corr)), corr.shape))
     peak = float(corr[a_idx, b_idx, g_idx])
@@ -238,7 +235,7 @@ def show_refinement(history):
     history
         The per-iteration NCC trajectory from
         :func:`de_ebsd.index.refine.orientation.refine_orientation` (``return_history=True``),
-        shape ``(n_iters, Np)`` -- one column per pattern -- or ``(n_iters,)`` for a
+        shape ``(n_iterations, Np)`` -- one column per pattern -- or ``(n_iterations,)`` for a
         single pattern (numpy array or torch tensor). ``history[0]`` is the seed's
         score at ``w = 0``.
 
@@ -252,9 +249,11 @@ def show_refinement(history):
     if hist.ndim == 1:
         hist = hist[:, None]
     if hist.ndim != 2:
-        raise ValueError(f"history must be (n_iters, Np) or (n_iters,), got shape {hist.shape}")
-    n_iters, n_p = hist.shape
-    iters = np.arange(n_iters, dtype=np.float64)
+        raise ValueError(
+            f"history must be (n_iterations, Np) or (n_iterations,), got shape {hist.shape}"
+        )
+    n_iterations, n_p = hist.shape
+    iters = np.arange(n_iterations, dtype=np.float64)
 
     fig, ax = apl().subplots(1, 1, figsize=(680, 420))
     per_pattern_label = "per pattern" if n_p > 1 else "NCC"
@@ -271,9 +270,7 @@ def show_refinement(history):
     for p in range(1, n_p):
         plot.add_line(hist[:, p], x_axis=iters, color="#4fc3f7", linewidth=1.0, alpha=0.5)
     if n_p > 1:
-        plot.add_line(
-            hist.mean(axis=1), x_axis=iters, color="#ff7043", linewidth=2.5, label="mean"
-        )
+        plot.add_line(hist.mean(axis=1), x_axis=iters, color="#ff7043", linewidth=2.5, label="mean")
     _ax_setter(plot, "set_title", "Refinement convergence")
     _ax_setter(plot, "set_xlabel", "iteration")
     _ax_setter(plot, "set_ylabel", "NCC")

@@ -68,11 +68,13 @@ def test_master_pattern_grid_conventions():
     # center pixel is the north pole
     assert torch.allclose(grid[npx, npx], torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64))
     # column axis is Lambert X: pixel (npx, 2 npx) is the +x equator point
-    assert torch.allclose(grid[npx, -1], torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64),
-                          atol=1e-9)
+    assert torch.allclose(
+        grid[npx, -1], torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64), atol=1e-9
+    )
     # row axis is Lambert Y: pixel (2 npx, npx) is the +y equator point
-    assert torch.allclose(grid[-1, npx], torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64),
-                          atol=1e-9)
+    assert torch.allclose(
+        grid[-1, npx], torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64), atol=1e-9
+    )
     # equator on all edges
     assert torch.allclose(grid[0, :, 2], torch.zeros(n, dtype=torch.float64), atol=1e-9)
 
@@ -113,7 +115,8 @@ def test_grid_sample_compatibility():
 def test_sphere_to_square_gradient_is_finite_at_the_poles(dtype):
     """At a pole sqrt(2(1 - |z|)) has an infinite slope; a NaN there used to
     poison every Gauss-Newton system summed over samples that hit one."""
-    v = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1e-5, 0.0, 1.0]], dtype=dtype,
-                     requires_grad=True)
+    v = torch.tensor(
+        [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1e-5, 0.0, 1.0]], dtype=dtype, requires_grad=True
+    )
     (grad,) = torch.autograd.grad(sphere_to_square(v).sum(), v)
     assert torch.isfinite(grad).all()

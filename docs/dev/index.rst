@@ -27,7 +27,7 @@ not done when it runs -- it is done when it still reproduces the oracle:
 
 Nickel uses kikuchipy's bundled master pattern and needs no external files.
 Silicon needs a local EMsoft ``Si_MC.h5`` run, which is not redistributed here;
-point ``--mc`` or ``DE_EBSD_SI_MC`` at your copy. ``BENCHMARKS.md`` records the
+point ``--mc`` or ``DE_EBSD_SI_MC`` at your copy. :doc:`validation` records the
 numbers a change is expected to hold.
 
 Round-trip tests are the other half. Anything touching orientation conventions,
@@ -60,11 +60,17 @@ Build the site to check it:
     uv sync --group docs --group notebook
     uv run python -m sphinx -b html -W --keep-going docs docs/_build/html
 
-Design documents
-================
+Design notes
+============
 
-The repository carries the reasoning that does not belong in docstrings:
-``DESIGN.md`` (architecture, conventions, the dynamical algorithm, validation),
-``INDEXING_DESIGN.md`` (the indexers), ``MC_DESIGN.md`` (electron transport) and
-``BENCHMARKS.md`` (recorded performance and accuracy). Read the relevant one
-before changing a layer.
+The reasoning that does not belong in docstrings lives here. Read the relevant
+page before changing a layer.
+
+.. toctree::
+    :maxdepth: 1
+
+    architecture
+    algorithm
+    monte_carlo
+    indexing
+    validation

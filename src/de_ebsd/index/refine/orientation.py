@@ -12,23 +12,24 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
+from de_ebsd.core.constants import DIVISION_FLOOR
+from de_ebsd.core.device import resolve_device
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
+from de_ebsd.index.refine.levenberg import adapt_damping
 
 __all__ = ["refine_orientation"]
 
-_EPS = 1e-12
-
 
 def _masked_ncc(a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    denom = mask.sum(-1, keepdim=True).clamp_min(_EPS)
+    denom = mask.sum(-1, keepdim=True).clamp_min(DIVISION_FLOOR)
     ma = (a * mask).sum(-1, keepdim=True) / denom
     mb = (b * mask).sum(-1, keepdim=True) / denom
     a0 = (a - ma) * mask
     b0 = (b - mb) * mask
     num = (a0 * b0).sum(-1)
-    na = (a0 * a0).sum(-1).clamp_min(_EPS).sqrt()
-    nb = (b0 * b0).sum(-1).clamp_min(_EPS).sqrt()
+    na = (a0 * a0).sum(-1).clamp_min(DIVISION_FLOOR).sqrt()
+    nb = (b0 * b0).sum(-1).clamp_min(DIVISION_FLOOR).sqrt()
     return num / (na * nb)
 
 
@@ -38,13 +39,15 @@ def _fov_directions(detector, device, dtype, target: int = 1024) -> torch.Tensor
     return pix[::step][: int(target)].contiguous()
 
 
-def _backproject(patt, detector, dirs, pc, per_pattern):
+def _backproject(patt, detector, dirs, pattern_center, per_pattern):
     if not per_pattern:
-        e, mask = pattern_to_sphere(patt, detector, dirs, pc=pc)
+        e, mask = pattern_to_sphere(patt, detector, dirs, pattern_center=pattern_center)
         return e, mask
     es, masks = [], []
     for i in range(patt.shape[0]):
-        e_i, m_i = pattern_to_sphere(patt[i : i + 1], detector, dirs, pc=pc[i])
+        e_i, m_i = pattern_to_sphere(
+            patt[i : i + 1], detector, dirs, pattern_center=pattern_center[i]
+        )
         es.append(e_i)
         masks.append(m_i)
     return torch.cat(es, dim=0), torch.stack(masks, dim=0)
@@ -52,7 +55,7 @@ def _backproject(patt, detector, dirs, pc, per_pattern):
 
 def _standardize(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     c = x - x.mean(-1, keepdim=True)
-    return c, c.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    return c, c.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)
 
 
 def _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype):
@@ -77,13 +80,13 @@ def _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype):
 
 
 def _lm_refine(
-    master, dirs, r0_mat, e, mask, n_steps, lam0, keep_best, return_history, device, dtype
+    master, dirs, r0_mat, e, mask, n_steps, damping, keep_best, return_history, device, dtype
 ):
     e_c, e_s = _standardize(e)
     e_hat = e_c / e_s  # (Np, M) standardized experimental field
     r_mat = r0_mat.clone()
     n_p = r_mat.shape[0]
-    lam = torch.full((n_p,), float(lam0), device=device, dtype=dtype)
+    damping = torch.full((n_p,), float(damping), device=device, dtype=dtype)
 
     with torch.no_grad():
         m_seed = master.sample(dirs @ r0_mat.transpose(-1, -2)).to(device=device, dtype=dtype)
@@ -98,18 +101,18 @@ def _lm_refine(
         with torch.no_grad():
             jtr = torch.einsum("pm,pmk->pk", res, j_r)  # (Np, 3)
             jtj = torch.einsum("pmk,pml->pkl", j_r, j_r)  # (Np, 3, 3)
-            # LM damping: add lam * diag(JtJ) to the Gauss-Newton normal matrix.
+            # LM damping: add damping * diag(JtJ) to the Gauss-Newton normal matrix.
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
-            a = jtj + lam[:, None, None] * torch.diag_embed(diag)
+            a = jtj + damping[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, 3)
-            r_new = r_mat @ torch.matrix_exp(skew_matrix(delta))
+            r_new = r_mat @ rotation_vector_to_matrix(delta)
             m_new = master.sample(dirs @ r_new.transpose(-1, -2)).to(device=device, dtype=dtype)
             new_score = _masked_ncc(e, m_new, mask)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,
             # and monotone by construction
             better = new_score > cur_score
             r_mat = torch.where(better[:, None, None], r_new, r_mat)
-            lam = torch.where(better, (lam * 0.5).clamp_min(1e-6), (lam * 3.0).clamp_max(1e2))
+            damping = adapt_damping(damping, better)
             cur_score = torch.where(better, new_score, cur_score)
 
     refined_score = cur_score
@@ -133,13 +136,13 @@ def refine_orientation(
     master,
     detector,
     rotations,
-    pc=None,
-    refine_pc=False,
+    pattern_center=None,
+    refine_pattern_center=False,
     method="adam",
-    n_iters=None,
-    lr=0.02,
-    pc_lr=None,
-    lm_lambda=1e-3,
+    n_iterations=None,
+    learning_rate=0.02,
+    pattern_center_learning_rate=None,
+    damping=1e-3,
     directions=None,
     device=None,
     keep_best=True,
@@ -163,11 +166,11 @@ def refine_orientation(
         inverted (differentiably in the pattern center) to build ``E(n)``.
     rotations
         Seed :class:`orix.quaternion.Rotation`, typically the coarse index output.
-    pc
-        ``None`` uses ``detector.pc``. A ``(3,)`` value shares one center across the
+    pattern_center
+        ``None`` uses ``detector.pattern_center``. A ``(3,)`` value shares one center across the
         stack -- the common, fully-vectorized path; ``(Np, 3)`` gives a per-pattern
         center and loops the back-projection.
-    refine_pc
+    refine_pattern_center
         Refine the pattern center jointly with the orientation. Forces
         ``method="adam"``, since the LM path is orientation-only.
     method
@@ -175,16 +178,16 @@ def refine_orientation(
         analytic Jacobian, reaching the same sub-degree accuracy in ~10 steps
         instead of ~60 (~2.3x faster at equal accuracy on real data). LM is
         orientation-only and assumes the default in-FOV ``directions``.
-    n_iters
+    n_iterations
         Step budget. ``None`` resolves per method: 60 for Adam, 12 for LM.
-    lr
+    learning_rate
         Adam step size for the rotation vector, in radians. The key stability knob:
         too large a step overshoots the shallow, noisy basin of real patterns and
         diverges. ``0.02`` is stable on real data; use ~0.01 for noisy scans.
-    pc_lr
-        Adam step size for the pattern center (default ``lr / 5``, since its natural
-        scale is finer). Ignored unless ``refine_pc``.
-    lm_lambda
+    pattern_center_learning_rate
+        Adam step size for the pattern center (default ``learning_rate / 5``, since its natural
+        scale is finer). Ignored unless ``refine_pattern_center``.
+    damping
         Initial LM damping, adapted per pattern each step (x0.5 accepted, x3
         rejected). LM only.
     directions
@@ -210,22 +213,22 @@ def refine_orientation(
     score : torch.Tensor
         Final NCC per pattern, in ``[-1, 1]``; ``>=`` the coarse score. This is what
         ``index_scan(refine=True)`` stores as ``prop["quality"]``.
-    pc : torch.Tensor
-        Only when ``refine_pc``: the refined pattern center, shaped like the input.
+    pattern_center : torch.Tensor
+        Only when ``refine_pattern_center``: the refined pattern center, shaped like the input.
     history : torch.Tensor
-        Only when ``return_history``: the NCC at every step, ``(n_iters, Np)``, with
+        Only when ``return_history``: the NCC at every step, ``(n_iterations, Np)``, with
         ``history[0]`` the seed score.
     """
-    # LM is orientation-only, so refine_pc forces Adam
+    # LM is orientation-only, so refine_pattern_center forces Adam
     method = str(method).lower()
     if method not in ("adam", "lm"):
         raise ValueError(f"method must be 'adam' or 'lm', got {method!r}")
-    if method == "lm" and refine_pc:
+    if method == "lm" and refine_pattern_center:
         method = "adam"  # joint pattern-center + orientation LM is future work
-    if n_iters is None:
-        n_iters = 12 if method == "lm" else 60
+    if n_iterations is None:
+        n_iterations = 12 if method == "lm" else 60
 
-    device = master.data.device if device is None else torch.device(device)
+    device = resolve_device(device, master.data.device)
     dtype = master.data.dtype
     # master.data.device drives sampling, so move the master to honor `device`
     if master.data.device != device:
@@ -242,9 +245,7 @@ def refine_orientation(
     # the detached anchor: exactly the matrix MasterPattern.project builds
     q0 = torch.as_tensor(np.asarray(rotations.data), device=device, dtype=dtype).reshape(-1, 4)
     if q0.shape[0] != n_p:
-        raise ValueError(
-            f"rotations length {q0.shape[0]} != number of patterns {n_p}"
-        )
+        raise ValueError(f"rotations length {q0.shape[0]} != number of patterns {n_p}")
     r0_mat = quaternion_to_matrix(q0).detach()  # (Np, 3, 3)
 
     if directions is None:
@@ -253,17 +254,17 @@ def refine_orientation(
         dirs = torch.as_tensor(directions, device=device, dtype=dtype).reshape(-1, 3)
 
     # pattern center: shared (3,) or per-pattern (Np, 3)
-    if pc is None:
-        pc_init = torch.as_tensor(detector.pc, device=device, dtype=dtype)
+    if pattern_center is None:
+        pc_init = torch.as_tensor(detector.pattern_center, device=device, dtype=dtype)
     else:
-        pc_init = torch.as_tensor(pc, device=device, dtype=dtype)
+        pc_init = torch.as_tensor(pattern_center, device=device, dtype=dtype)
     if pc_init.ndim == 1 and pc_init.shape[0] == 3:
         per_pattern = False
     elif pc_init.ndim == 2 and pc_init.shape == (n_p, 3):
         per_pattern = True
     else:
         raise ValueError(
-            f"pc must be (3,) shared or (Np, 3) per-pattern (Np={n_p}), got "
+            f"pattern_center must be (3,) shared or (Np, 3) per-pattern (Np={n_p}), got "
             f"{tuple(pc_init.shape)}"
         )
 
@@ -272,8 +273,17 @@ def refine_orientation(
         with torch.no_grad():
             e_lm, mask_lm = _backproject(patt, detector, dirs, pc_init, per_pattern)
         r_final, score, hist = _lm_refine(
-            master, dirs, r0_mat, e_lm, mask_lm, n_iters, lm_lambda, keep_best,
-            return_history, device, dtype,
+            master,
+            dirs,
+            r0_mat,
+            e_lm,
+            mask_lm,
+            n_iterations,
+            damping,
+            keep_best,
+            return_history,
+            device,
+            dtype,
         )
         from orix.quaternion import Rotation
 
@@ -289,10 +299,17 @@ def refine_orientation(
         _, mask = _backproject(patt, detector, dirs, pc_init, per_pattern)
 
     w = torch.zeros(n_p, 3, device=device, dtype=dtype, requires_grad=True)
-    params = [{"params": [w], "lr": lr}]
-    if refine_pc:
+    params = [{"params": [w], "lr": learning_rate}]
+    if refine_pattern_center:
         pc_param = pc_init.clone().requires_grad_(True)
-        params.append({"params": [pc_param], "lr": pc_lr if pc_lr is not None else lr / 5.0})
+        params.append(
+            {
+                "params": [pc_param],
+                "lr": pattern_center_learning_rate
+                if pattern_center_learning_rate is not None
+                else learning_rate / 5.0,
+            }
+        )
     else:
         pc_param = pc_init
         # pattern center is fixed -> E does not change; back-project it once.
@@ -302,11 +319,11 @@ def refine_orientation(
     history = [] if return_history else None
 
     def _score():
-        if refine_pc:
+        if refine_pattern_center:
             e = _backproject(patt, detector, dirs, pc_param, per_pattern)[0]
         else:
             e = e_fixed
-        d_r = torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
+        d_r = rotation_vector_to_matrix(w)  # (Np, 3, 3)
         r = r0_mat @ d_r  # right-compose: R = R0 . dR(w)
         v = dirs @ r.transpose(-1, -2)  # (Np, M, 3) = R n, matching project
         m_r = master.sample(v).to(device=device, dtype=dtype)  # (Np, M)
@@ -316,7 +333,7 @@ def refine_orientation(
     with torch.no_grad():
         seed_score = _score().detach()
 
-    for _ in range(n_iters):
+    for _ in range(n_iterations):
         opt.zero_grad()
         s = _score()
         if return_history:
@@ -326,11 +343,11 @@ def refine_orientation(
 
     with torch.no_grad():
         refined_score = _score().detach()
-        r_ref = r0_mat @ torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
+        r_ref = r0_mat @ rotation_vector_to_matrix(w)  # (Np, 3, 3)
         if keep_best:
             # keep the coarse seed where refinement did not raise the NCC. Under
-            # refine_pc the gate reverts only the orientation, so seed_score (taken
-            # at the seed pc) is an approximation there -- a safe one.
+            # refine_pattern_center the gate reverts only the orientation, so seed_score (taken
+            # at the seed pattern_center) is an approximation there -- a safe one.
             keep = (refined_score >= seed_score).reshape(-1, 1, 1)
             r_final = torch.where(keep, r_ref, r0_mat).cpu().numpy()
             score = torch.maximum(refined_score, seed_score)
@@ -343,7 +360,7 @@ def refine_orientation(
     rotation = Rotation.from_matrix(r_final)
 
     out = [rotation, score]
-    if refine_pc:
+    if refine_pattern_center:
         out.append(pc_param.detach())
     if return_history:
         out.append(torch.stack(history, dim=0))

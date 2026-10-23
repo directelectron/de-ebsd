@@ -55,10 +55,16 @@ def load_reference_ni() -> tuple[de.MasterPattern, dict]:
 
     signal = kp.data.nickel_ebsd_master_pattern_small(projection="lambert", hemisphere="both")
     data = torch.as_tensor(signal.data.astype(np.float32))[None]  # (1, 2, 401, 401)
-    reference = de.MasterPattern(data=data, energies_kev=np.array([20.0]),
-                                 metadata={"backend": "EMsoft (kikuchipy data)"})
-    params = {"a": 0.35236, "space_group": 225, "sites": [("Ni", (0.0, 0.0, 0.0))],
-              "debye_waller": 0.0035, "dmin": 0.05}
+    reference = de.MasterPattern(
+        data=data, energies_kev=np.array([20.0]), metadata={"backend": "EMsoft (kikuchipy data)"}
+    )
+    params = {
+        "a": 0.35236,
+        "space_group": 225,
+        "sites": [("Ni", (0.0, 0.0, 0.0))],
+        "debye_waller": 0.0035,
+        "dmin": 0.05,
+    }
     return reference, params
 
 
@@ -82,8 +88,9 @@ def load_reference_si(path: str) -> tuple[de.MasterPattern, dict]:
         atom_data = np.asarray(f["CrystalData/AtomData"])  # (5, n): x y z occ B
         bethe = np.asarray(f["EMData/EBSDmaster/BetheParameters"])  # c1 c2 c3 sgdbdiff
     data = torch.as_tensor(np.stack([north, south]))[None]
-    reference = de.MasterPattern(data=data, energies_kev=np.array([energy]),
-                                 metadata={"backend": "EMsoft (Si_MC.h5)"})
+    reference = de.MasterPattern(
+        data=data, energies_kev=np.array([energy]), metadata={"backend": "EMsoft (Si_MC.h5)"}
+    )
     x, y, z, occupancy, dw = atom_data[:, 0]
     params = {
         "a": float(lattice[0]),
@@ -91,8 +98,12 @@ def load_reference_si(path: str) -> tuple[de.MasterPattern, dict]:
         "sites": [de.AtomSite("Si", (float(x), float(y), float(z)), float(occupancy), float(dw))],
         "debye_waller": float(dw),
         "dmin": dmin,
-        "bethe": de.BetheParameters(strong=float(bethe[0]), weak=float(bethe[1]),
-                                    cutoff=float(bethe[2]), sg_double=float(bethe[3])),
+        "bethe": de.BetheParameters(
+            strong=float(bethe[0]),
+            weak=float(bethe[1]),
+            cutoff=float(bethe[2]),
+            sg_double=float(bethe[3]),
+        ),
     }
     return reference, params
 
@@ -108,30 +119,34 @@ def pearson(a: torch.Tensor, b: torch.Tensor) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--material", choices=["ni", "si"], default="ni")
-    parser.add_argument("--npx", type=int, default=None,
-                        help="Lambert half-width (default: match the reference)")
-    parser.add_argument("--dmin", type=float, default=None,
-                        help="dmin in nm (default: the reference run's value)")
+    parser.add_argument(
+        "--npx", type=int, default=None, help="Lambert half-width (default: match the reference)"
+    )
+    parser.add_argument(
+        "--dmin", type=float, default=None, help="dmin in nm (default: the reference run's value)"
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--backend", default="bloch_prism")
     parser.add_argument(
-        "--mc", default=None,
+        "--mc",
+        default=None,
         help="EMsoft reference HDF5 for this material (Si: the reference+MC run; "
-             "Ni: optional exit-depth MC to refine the depth profile). Overrides "
-             "DE_EBSD_{SI,NI}_MC.")
+        "Ni: optional exit-depth MC to refine the depth profile). Overrides "
+        "DE_EBSD_{SI,NI}_MC.",
+    )
     parser.add_argument("--html", default=None, help="save a side-by-side figure to this file")
     args = parser.parse_args()
 
     mc_path = args.mc or {"si": SI_MC_PATH, "ni": NI_MC_PATH}[args.material]
-    reference, params = (
-        load_reference_ni() if args.material == "ni" else load_reference_si(mc_path)
-    )
+    reference, params = load_reference_ni() if args.material == "ni" else load_reference_si(mc_path)
     npx = args.npx if args.npx is not None else reference.npx
     dmin = args.dmin if args.dmin is not None else params["dmin"]
 
     sites = params["sites"]
     crystal = de.Crystal.from_parameters(
-        a=params["a"], space_group=params["space_group"], atoms=sites,
+        a=params["a"],
+        space_group=params["space_group"],
+        atoms=sites,
         debye_waller=params["debye_waller"],
     )
     energy_kev = float(reference.energies_kev[-1])
@@ -145,8 +160,13 @@ def main() -> None:
 
         monte_carlo = DepthDistribution.from_emsoft(mc_path)
     simulator = de.MasterPatternSimulator(
-        crystal, microscope, npx=npx, dmin=dmin, backend=args.backend,
-        monte_carlo=monte_carlo, bethe=params.get("bethe"),
+        crystal,
+        microscope,
+        npx=npx,
+        dmin=dmin,
+        backend=args.backend,
+        monte_carlo=monte_carlo,
+        bethe=params.get("bethe"),
     )
     print(simulator)
     print(simulator.structure_factors())
@@ -168,8 +188,7 @@ def main() -> None:
     r_south = pearson(our_s, ref_s)
     r_all = pearson(torch.stack([our_n, our_s]), torch.stack([ref_n, ref_s]))
     print()
-    print(f"Reference: {reference.metadata['backend']}, npx={reference.npx}, "
-          f"{energy_kev:g} keV")
+    print(f"Reference: {reference.metadata['backend']}, npx={reference.npx}, {energy_kev:g} keV")
     print(f"Simulated: backend={master.metadata['backend']}, npx={npx}, dmin={dmin} nm")
     print(f"Pearson correlation  north: {r_north:+.4f}")
     print(f"Pearson correlation  south: {r_south:+.4f}")
@@ -179,9 +198,10 @@ def main() -> None:
         from de_ebsd.viz.patterns import hemispheres_figure
 
         figure = hemispheres_figure(
-            our_n.numpy(), ref_n.detach().numpy(),
+            our_n.numpy(),
+            ref_n.detach().numpy(),
             title=f"{args.material.capitalize()} north: de-ebsd ({master.metadata['backend']})"
-                  " vs EMsoft",
+            " vs EMsoft",
         )
         figure.save_html(args.html)
         print(f"wrote {args.html}")

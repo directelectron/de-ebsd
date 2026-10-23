@@ -12,7 +12,6 @@ import math
 from dataclasses import dataclass
 
 from de_ebsd.core.constants import (
-    electron_wavelength_nm,
     interaction_constant,
     relativistic_correction,
 )
@@ -73,16 +72,6 @@ class Microscope:
         return relativistic_correction(self.energy_kev)
 
     @property
-    def vacuum_wavelength(self) -> float:
-        """Relativistic electron wavelength in nm, without refraction correction.
-
-        The in-crystal wavelength (corrected for the mean inner potential)
-        is computed by the simulator once structure factors are available;
-        see :attr:`de_ebsd.crystal.structure_factors.StructureFactors.wavelength`.
-        """
-        return electron_wavelength_nm(self.energy_kev, v0mod=0.0)
-
-    @property
     def sigma(self) -> float:
         """Interaction constant in (V nm)^-1."""
         return interaction_constant(self.energy_kev, v0mod=0.0)
@@ -95,9 +84,7 @@ class Microscope:
         """
         from de_ebsd.viz.widgets import MicroscopeWidget
 
-        return MicroscopeWidget.from_setup(
-            microscope=self, detector=detector, crystal=crystal
-        )
+        return MicroscopeWidget.from_setup(microscope=self, detector=detector, crystal=crystal)
 
     def __repr__(self) -> str:
         return (

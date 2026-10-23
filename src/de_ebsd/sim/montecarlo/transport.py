@@ -2,7 +2,8 @@
 
 Screened Rutherford elastic scattering with Joy-Luo continuous slowing down,
 batched on the GPU, producing the backscattered exit energy/depth statistics the
-master pattern integrates over.
+master pattern integrates over. The scattering model is that of EMsoft's
+``EMMC.cl`` kernel.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import C_AVOGADRO
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 
 if TYPE_CHECKING:
@@ -161,11 +163,13 @@ def rotate_direction(c: np.ndarray, cos_theta: float, psi: float) -> np.ndarray:
     if abs(cz) >= 0.99999:
         return np.array([st * cp, st * sp, (1.0 if cz >= 0 else -1.0) * ct])
     dsqi = 1.0 / np.sqrt(1.0 - cz * cz)
-    return np.array([
-        st * (cx * cz * cp - cy * sp) * dsqi + cx * ct,
-        st * (cy * cz * cp + cx * sp) * dsqi + cy * ct,
-        -st * cp / dsqi + cz * ct,
-    ])
+    return np.array(
+        [
+            st * (cx * cz * cp - cy * sp) * dsqi + cx * ct,
+            st * (cy * cz * cp + cx * sp) * dsqi + cy * ct,
+            -st * cp / dsqi + cz * ct,
+        ]
+    )
 
 
 @dataclass
@@ -313,7 +317,7 @@ def simulate_depth_distribution(
     if e_min_kev is None:
         e_min_kev = beam_energy_kev - 5.0
 
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     gen = torch.Generator(device=dev)
     if seed is not None:
         gen.manual_seed(int(seed))
@@ -327,7 +331,8 @@ def simulate_depth_distribution(
     sig, omega = np.deg2rad(tilt_deg), np.deg2rad(azimuth_deg)
     c0 = torch.tensor(
         [np.cos(omega) * np.sin(sig), np.sin(omega) * np.sin(sig), np.cos(sig)],
-        device=dev, dtype=f64,
+        device=dev,
+        dtype=f64,
     )
     pos = torch.zeros(n, 3, device=dev, dtype=f64)
     direction = c0.expand(n, 3).clone()
@@ -384,9 +389,12 @@ def simulate_depth_distribution(
     i_z = torch.round(edis / depth_step_nm).long()
     valid = (
         backscattered
-        & (exit_energy > e_min_kev) & (exit_energy <= beam_energy_kev)
-        & (i_e >= 0) & (i_e < num_e_bins)
-        & (i_z >= 0) & (i_z < num_z_bins)
+        & (exit_energy > e_min_kev)
+        & (exit_energy <= beam_energy_kev)
+        & (i_e >= 0)
+        & (i_e < num_e_bins)
+        & (i_z >= 0)
+        & (i_z < num_z_bins)
     )
     accum = torch.zeros(num_e_bins * num_z_bins, device=dev, dtype=f64)
     flat = i_e[valid] * num_z_bins + i_z[valid]
@@ -457,7 +465,7 @@ def soft_depth_histogram(
     contribution is only accumulated from the second step on (an electron must
     have entered the bulk).
     """
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     gen = torch.Generator(device=dev)
     if seed is not None:
         gen.manual_seed(int(seed))
@@ -476,7 +484,8 @@ def soft_depth_histogram(
     sig, omega = np.deg2rad(tilt_deg), np.deg2rad(azimuth_deg)
     c0 = torch.tensor(
         [np.cos(omega) * np.sin(sig), np.sin(omega) * np.sin(sig), np.cos(sig)],
-        device=dev, dtype=f64,
+        device=dev,
+        dtype=f64,
     )
     pos = torch.zeros(n, 3, device=dev, dtype=f64)
     direction = c0.expand(n, 3).clone()

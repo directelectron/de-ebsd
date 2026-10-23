@@ -3,7 +3,8 @@
 :class:`BlochWaveBackend` is the dynamical solver (Bethe-perturbed dynamical
 matrix, eigen-decomposition, depth integration) in float64, one direction at a
 time; :class:`~de_ebsd.diffraction.prism.BlochPrismBackend` is its batched GPU
-equivalent.
+equivalent. The dynamical matrix, depth integration and ``S_gh`` weighting port
+EMsoft's ``GetDynMat``, ``CalcLgh`` and ``preCalcSgh``.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ __all__ = [
 
 
 def classify_reflections(
-    sf: StructureFactors,
+    structure_factors: StructureFactors,
     k_hat: np.ndarray,
     bethe: BetheParameters,
 ) -> ReflectionList:
@@ -51,20 +52,22 @@ def classify_reflections(
 
     ``k_hat`` is a unit vector in the Cartesian crystal frame.
     """
-    refl = master_reflection_list(sf)
+    refl = master_reflection_list(structure_factors)
     k = torch.as_tensor(k_hat, dtype=torch.float64)
-    g_cart = torch.as_tensor(sf.crystal.g_cartesian(refl.hkl), dtype=torch.float64)
-    sg = excitation_errors(g_cart, k, sf.wavelength).numpy()
+    g_cart = torch.as_tensor(structure_factors.crystal.g_cartesian(refl.hkl), dtype=torch.float64)
+    sg = excitation_errors(g_cart, k, structure_factors.wavelength).numpy()
 
-    keep = candidate_reflections(refl, sg, sf.wavelength, bethe)
+    keep = candidate_reflections(refl, sg, structure_factors.wavelength, bethe)
     # prepend the incident beam g = 0
     hkl = np.concatenate([np.zeros((1, 3), dtype=np.int64), refl.hkl[keep]])
     sg_c = np.concatenate([[0.0], sg[keep]])
-    u_mod = np.concatenate([[np.abs(sf.lookup(np.zeros(3, dtype=np.int64)))], refl.u_mod[keep]])
+    u_mod = np.concatenate(
+        [[np.abs(structure_factors.lookup(np.zeros(3, dtype=np.int64)))], refl.u_mod[keep]]
+    )
     forbidden = np.concatenate([[False], refl.forbidden[keep]])
 
-    status = partition_strong_weak(hkl, sg_c, u_mod, forbidden, sf, bethe)
-    g_len = sf.crystal.g_length(hkl)
+    status = partition_strong_weak(hkl, sg_c, forbidden, structure_factors, bethe)
+    g_len = structure_factors.crystal.g_length(hkl)
     return ReflectionList(
         hkl=hkl,
         g=g_len,
@@ -77,7 +80,7 @@ def classify_reflections(
     )
 
 
-def build_dynamical_matrix(sf: StructureFactors, refl: ReflectionList) -> np.ndarray:
+def build_dynamical_matrix(structure_factors: StructureFactors, refl: ReflectionList) -> np.ndarray:
     """The Bloch dynamical matrix A (complex, nm^-2) for one classified list.
 
     Port of EMsoft ``GetDynMat`` (Bloch branch, with Bethe corrections).
@@ -90,20 +93,20 @@ def build_dynamical_matrix(sf: StructureFactors, refl: ReflectionList) -> np.nda
     hkl_w = refl.hkl[weak]
     sg_s = refl.sg[strong]
     sg_w = refl.sg[weak]
-    lam = sf.wavelength
+    lam = structure_factors.wavelength
 
     diff = hkl_s[:, None, :] - hkl_s[None, :, :]
-    a = sf.lookup(diff).astype(np.complex128)  # off-diagonal U_{g-h}
+    a = structure_factors.lookup(diff).astype(np.complex128)  # off-diagonal U_{g-h}
 
     if len(hkl_w) > 0:
-        u_gw = sf.lookup(hkl_s[:, None, :] - hkl_w[None, :, :])  # (Ns, Nw)
-        u_wh = sf.lookup(hkl_w[:, None, :] - hkl_s[None, :, :])  # (Nw, Ns)
+        u_gw = structure_factors.lookup(hkl_s[:, None, :] - hkl_w[None, :, :])  # (Ns, Nw)
+        u_wh = structure_factors.lookup(hkl_w[:, None, :] - hkl_s[None, :, :])  # (Nw, Ns)
         a -= 0.5 * lam * (u_gw / sg_w[None, :]) @ u_wh
         weak_diag = 0.5 * lam * (np.abs(u_gw) ** 2 / sg_w[None, :]).sum(axis=1)
     else:
         weak_diag = np.zeros(len(hkl_s))
 
-    np.fill_diagonal(a, 2.0 * sg_s / lam - weak_diag + 1j * sf.upz0)
+    np.fill_diagonal(a, 2.0 * sg_s / lam - weak_diag + 1j * structure_factors.upz0)
     return a
 
 
@@ -143,7 +146,7 @@ class DynamicalMatrix:
 class SimulationInputs:
     """Everything a backend needs, prepared once by the simulator."""
 
-    sf: StructureFactors
+    structure_factors: StructureFactors
     bethe: BetheParameters
     monte_carlo: DepthDistribution | None
     device: torch.device
@@ -231,28 +234,28 @@ class BlochWaveBackend(MasterPatternBackend):
     def prepare(self, inputs: SimulationInputs) -> None:
         from de_ebsd.sim.montecarlo.depth import DepthDistribution
 
-        self.sf = inputs.sf
+        self.structure_factors = inputs.structure_factors
         self.bethe = inputs.bethe
         self.device = inputs.device
         self.out_dtype = inputs.dtype
-        crystal = inputs.sf.crystal
+        crystal = inputs.structure_factors.crystal
 
         # depth integration (EMsoft lambdaE / thick / izzmax, one energy bin)
-        energy = inputs.sf.energy_kev
+        energy = inputs.structure_factors.energy_kev
         mc = inputs.monte_carlo or DepthDistribution.single_energy(energy)
         izzmax = max(int(mc.integration_depths()[mc.energy_index(energy)]), 1)
         self.depthstep = float(mc.depth_step)
         self.thick = izzmax * self.depthstep
-        weights = mc.depth_weights(energy, inputs.sf.normal_absorption_length)
+        weights = mc.depth_weights(energy, inputs.structure_factors.normal_absorption_length)
         self.lambda_e = np.ascontiguousarray(weights[:izzmax], dtype=np.float64)
-        self.kn = 1.0 / inputs.sf.wavelength
+        self.kn = 1.0 / inputs.structure_factors.wavelength
         self.gzero = 0
         self.n_atoms = int(sum(p.shape[0] for p in crystal.positions))
 
-        self._build_sgh_lut(inputs.sf, crystal)
+        self._build_sgh_lut(inputs.structure_factors, crystal)
 
-    def _build_sgh_lut(self, sf: StructureFactors, crystal) -> None:
-        self.hmax = sf.hmax
+    def _build_sgh_lut(self, structure_factors: StructureFactors, crystal) -> None:
+        self.hmax = structure_factors.hmax
         m = 2 * self.hmax
         rng = np.arange(-m, m + 1)
         hh, kk, ll = np.meshgrid(rng, rng, rng, indexing="ij")
@@ -281,9 +284,9 @@ class BlochWaveBackend(MasterPatternBackend):
         return self.sgh_lut[idx[..., 0], idx[..., 1], idx[..., 2]]
 
     def _intensity(self, k_hat: np.ndarray) -> float:
-        refl = classify_reflections(self.sf, k_hat, self.bethe)
+        refl = classify_reflections(self.structure_factors, k_hat, self.bethe)
         hkl_s = refl.hkl[refl.status == STRONG]
-        a = build_dynamical_matrix(self.sf, refl)
+        a = build_dynamical_matrix(self.structure_factors, refl)
         lgh = calc_lgh(a, self.kn, self.thick, self.depthstep, self.lambda_e, self.gzero)
         sgh = self._sgh_matrix(hkl_s)
         return float(np.real(np.sum(lgh * sgh)) / self.n_atoms)
