@@ -7,6 +7,8 @@ inspectable, showable object before ``compute()`` runs the full simulation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import torch
 
@@ -116,6 +118,7 @@ class MasterPatternSimulator:
         mc_electrons: int = 200_000,
         symmetry: bool = True,
         energy_resolved: bool = False,
+        progress: Callable[[int, int], None] | None = None,
     ) -> MasterPattern:
         """Compute the master pattern on the Lambert grid.
 
@@ -140,6 +143,15 @@ class MasterPatternSimulator:
             and depth profile per energy), giving an ``(nE, 2, n, n)`` master.
             Requires a depth-integrating backend; ignored otherwise. Default is a
             single map at the beam energy.
+        progress
+            Called as ``progress(done, total)`` after each batch of beam
+            directions, counting batches over all energies, so a caller can show
+            how far a long simulation has got. At the default *chunk_size* a
+            master of any usual size is one batch per energy, so a single-energy
+            compute reports only its end. The Monte Carlo, the symmetry fold and
+            the first energy all run before the first call. It is called on the
+            calling thread, inside the loop, so it should be quick and never
+            block; an exception raised in it stops the simulation.
         """
         device = torch.device(device) if device is not None else torch.device("cpu")
         backend = resolve_backend(self.backend)
@@ -170,6 +182,8 @@ class MasterPatternSimulator:
         else:
             energies = np.array([self.energy_kev])
 
+        starts = range(0, reps.shape[0], chunk_size)
+        total, done = len(energies) * len(starts), 0
         maps = []
         for energy in energies:
             sf = (self.structure_factors() if abs(energy - self.energy_kev) < 1e-9
@@ -178,9 +192,12 @@ class MasterPatternSimulator:
                 sf=sf, bethe=self.bethe, monte_carlo=monte_carlo, device=device, dtype=dtype,
             ))
             rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
-            for start in range(0, reps.shape[0], chunk_size):
+            for start in starts:
                 stop = min(start + chunk_size, reps.shape[0])
                 rep_values[start:stop] = backend.intensities(reps[start:stop])
+                done += 1
+                if progress is not None:
+                    progress(done, total)
             values = rep_values if inverse is None else rep_values[inverse]
             maps.append(values.reshape(2, n, n))
 

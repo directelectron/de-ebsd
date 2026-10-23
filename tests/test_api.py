@@ -50,6 +50,39 @@ def test_energy_resolved_master():
     assert torch.allclose(er.data[-1], se.data[0], atol=1e-9)
 
 
+def test_compute_reports_its_progress_over_every_energy(monkeypatch):
+    """One call per batch of beam directions, each made as soon as that batch is
+    simulated rather than all at the end."""
+    from de_ebsd.sim import simulator
+
+    crystal = de.Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    )
+    sim = de.MasterPatternSimulator(
+        crystal, de.Microscope(energy=20e3, sample_tilt=70.0), npx=8, dmin=0.1, backend="bloch"
+    )
+    batches = []
+    resolve = simulator.resolve_backend
+
+    def counting(name):
+        backend = resolve(name)
+        intensities = backend.intensities
+        backend.intensities = lambda directions: batches.append(1) or intensities(directions)
+        return backend
+
+    monkeypatch.setattr(simulator, "resolve_backend", counting)
+    calls = []
+    master = sim.compute(
+        energy_resolved=True,
+        mc_electrons=20_000,
+        chunk_size=7,
+        progress=lambda done, total: calls.append((done, total, len(batches))),
+    )
+    total = calls[0][1]
+    assert total > master.energies_kev.shape[0]  # several batches per energy
+    assert calls == [(done, total, done) for done in range(1, total + 1)]
+
+
 def test_stage_objects(sim):
     sf = sim.structure_factors()
     assert sf is sim.structure_factors()  # cached
