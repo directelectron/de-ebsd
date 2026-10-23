@@ -38,46 +38,24 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.index import determine_pattern_center, refine_hr
 
 # fixed band-edge sample budget for the whole file (crisp, fast, plenty for 3 PC params)
 _NT, _SPT = 12, 8
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like field: bright Gaussian bands about great circles."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
-def _make_band_master(npx: int, width: float, nbands: int, seed: int) -> MasterPattern:
-    """A band master of ``nbands`` great-circle bands with high-gradient edges."""
-    g = torch.Generator().manual_seed(seed)
-    poles = torch.randn(nbands, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(nbands, generator=g, dtype=torch.float64)
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, width), _band_field(south, poles, amps, width)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A sharper band master (narrow bands -> crisp edges -> tight PC information)."""
-    return _make_band_master(npx=160, width=0.06, nbands=14, seed=11)
+    return make_band_master(npx=160, width=0.06, n_bands=14, seed=11)
 
 
 @pytest.fixture(scope="module")
 def smooth_master() -> MasterPattern:
     """A smooth band master (broad bands) -- the harder, lower-gradient case."""
-    return _make_band_master(npx=140, width=0.11, nbands=12, seed=7)
+    return make_band_master(npx=140, width=0.11, n_bands=12, seed=7)
 
 
 @pytest.fixture(scope="module")
@@ -400,7 +378,7 @@ def test_a_sharp_master_is_reached_from_outside_its_basin(detector):
     within 0.02 of PC, so a start 0.03 off sees no slope. The coarse-to-fine
     blur schedule must still recover the PC -- and without it, it must not
     (otherwise this test is not testing the schedule)."""
-    sharp = _make_band_master(npx=200, width=0.012, nbands=30, seed=3)
+    sharp = make_band_master(npx=200, width=0.012, n_bands=30, seed=3)
     pc_true = torch.tensor(detector.pc, dtype=torch.float64)
     r_true = _orientations(24, seed=0)
     patterns = sharp.project(detector, r_true, rescale=True)

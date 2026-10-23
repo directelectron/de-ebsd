@@ -35,9 +35,9 @@ import numpy as np
 import pytest
 import torch
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
-from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.index.crosscorr import (
     _design,
     _measure_shifts,
@@ -52,25 +52,10 @@ from de_ebsd.index.crosscorr import (
 DT = torch.float64
 
 
-def _band_field(v, poles, amps, width):
-    d = v.to(DT) @ poles.T
-    return (amps * torch.exp(-((d / width) ** 2))).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A band master. Smoother than a real pattern -- see the module docstring."""
-    g = torch.Generator().manual_seed(11)
-    poles = torch.randn(18, 3, generator=g, dtype=DT)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(18, generator=g, dtype=DT)
-    north = master_pattern_grid(220, dtype=DT)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.05), _band_field(south, poles, amps, 0.05)], dim=0
-    )[None]
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master(npx=220, width=0.05, n_bands=18, seed=11)
 
 
 @pytest.fixture(scope="module")

@@ -36,8 +36,8 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import refine_hr
 from de_ebsd.index.refine.highres import (
@@ -50,28 +50,10 @@ from de_ebsd.index.refine.highres import (
 )
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like field: bright Gaussian bands about great circles."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A band master: 12 great-circle bands, distinctive with clear high-gradient edges."""
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-    npx = 160
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master()
 
 
 @pytest.fixture(scope="module")

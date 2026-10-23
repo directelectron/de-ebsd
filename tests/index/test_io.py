@@ -22,6 +22,7 @@ import torch
 from orix.crystal_map import CrystalMap, Phase
 from orix.quaternion import Rotation
 
+from band_master import band_field, make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
 from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.crystal import Crystal
@@ -57,12 +58,6 @@ def _disorientation_deg(r_a: Rotation, r_b: Rotation) -> float:
     return float(np.asarray((r_a * (~r_b)).angle).ravel()[0]) * 180.0 / math.pi
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like scalar field on the sphere (see test_indexer)."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def crystal() -> Crystal:
     """Cubic silicon (Fd-3m, space group 227) -- a non-trivial point group (m-3m)."""
@@ -74,22 +69,7 @@ def crystal() -> Crystal:
 @pytest.fixture(scope="module")
 def master(crystal) -> MasterPattern:
     """A synthetic band master carrying the crystal in metadata (for auto-derivation)."""
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-
-    npx = 140
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(
-        data=data, energies_kev=np.array([20.0]), metadata={"crystal": crystal}
-    )
+    return make_band_master(npx=140, metadata={"crystal": crystal})
 
 
 @pytest.fixture(scope="module")
@@ -289,7 +269,7 @@ def test_index_scan_errors_when_no_phase_available(detector, scan_patterns):
     south = north.clone()
     south[..., 2] = -south[..., 2]
     data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
+        [band_field(north, poles, amps, 0.11), band_field(south, poles, amps, 0.11)],
         dim=0,
     )[None]
     bare = MasterPattern(data=data, energies_kev=np.array([20.0]))  # empty metadata

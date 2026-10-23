@@ -13,8 +13,8 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
-from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
+from band_master import make_band_master
+from de_ebsd import EBSDDetector
 from de_ebsd.crystal import Crystal
 from de_ebsd.index import to_crystal_map
 from de_ebsd.index.spherical.indexer import SphericalIndexer
@@ -34,11 +34,6 @@ _SCAN_EULER_DEG = np.array(
 )
 
 
-def _band_field(v, poles, amps, width):
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def crystal():
     return Crystal.from_parameters(
@@ -48,17 +43,7 @@ def crystal():
 
 @pytest.fixture(scope="module")
 def master(crystal):
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-    north = master_pattern_grid(120, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)], dim=0
-    )[None]
-    return MasterPattern(data=data, energies_kev=np.array([20.0]), metadata={"crystal": crystal})
+    return make_band_master(npx=120, metadata={"crystal": crystal})
 
 
 @pytest.fixture(scope="module")

@@ -34,8 +34,8 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import refine_orientation
 from de_ebsd.index.backproject import pattern_to_sphere
@@ -50,28 +50,10 @@ BANDWIDTH = 20
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)  # ~8.57 deg SOFT cell at L = 20
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like field: bright Gaussian bands about great circles."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """The I4 band master: 12 great-circle bands, distinctive yet near-uniform norm."""
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-    npx = 160
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master()
 
 
 @pytest.fixture(scope="module")

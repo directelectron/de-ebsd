@@ -36,6 +36,7 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import band_field, make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
 from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.crystal import Crystal
@@ -58,19 +59,6 @@ GRID_STEP_SPOT_DEG = 360.0 / (2 * BW_SPOT + 2)
 TOL_SPOT_DEG = 1.5 * GRID_STEP_SPOT_DEG
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like scalar field on the sphere.
-
-    Each pole contributes a bright Gaussian band about its great circle
-    (``exp(-((n . pole) / width) ** 2)`` peaks where ``n`` is perpendicular to the
-    pole). Bands cover the whole sphere, giving the field near-uniform local norm --
-    exactly what lets the unnormalized I4 correlation recover orientation without the
-    bright-region bias. Band-limited (smooth) for ``width`` not too small.
-    """
-    d = v.to(torch.float64) @ poles.T  # (..., n_bands)
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A synthetic band master, filled on a fine square-Lambert grid (both hemispheres).
@@ -79,22 +67,7 @@ def master() -> MasterPattern:
     (a genuine test of the frame convention) yet uniform enough in local norm that the
     unnormalized correlation is unbiased.
     """
-    g = torch.Generator().manual_seed(7)
-    n_bands = 12
-    width = 0.11
-    poles = torch.randn(n_bands, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(n_bands, generator=g, dtype=torch.float64)
-
-    npx = 160
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, width), _band_field(south, poles, amps, width)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master()
 
 
 @pytest.fixture(scope="module")
@@ -583,10 +556,10 @@ def test_energy_kev_selects_master_bin(detector):
     amps0 = 0.5 + torch.rand(6, generator=g, dtype=torch.float64)
     amps1 = 2.0 + torch.rand(6, generator=g, dtype=torch.float64)  # markedly different bin
     bin0 = torch.stack(
-        [_band_field(north, poles, amps0, 0.11), _band_field(south, poles, amps0, 0.11)], dim=0
+        [band_field(north, poles, amps0, 0.11), band_field(south, poles, amps0, 0.11)], dim=0
     )
     bin1 = torch.stack(
-        [_band_field(north, poles, amps1, 0.11), _band_field(south, poles, amps1, 0.11)], dim=0
+        [band_field(north, poles, amps1, 0.11), band_field(south, poles, amps1, 0.11)], dim=0
     )
     data = torch.stack([bin0, bin1], dim=0)  # (2 energy, 2 hemi, n, n)
     multi = MasterPattern(data=data, energies_kev=np.array([10.0, 20.0]))
