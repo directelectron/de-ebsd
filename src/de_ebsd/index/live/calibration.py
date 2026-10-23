@@ -9,7 +9,8 @@ import torch
 from de_ebsd.index.live.common import parabola_offset, pick
 
 #: Pattern-center steps (fractions of the detector, as the center is), each half the
-#: last. On a twin scan (1024 patterns, 33 grains), starts 0.004-0.01 off in every coordinate came back
+# : last. On a twin scan (1024 patterns, 33 grains), starts 0.004-0.01 off in every coordinate came
+# back
 #: within 0.001 of the truth (256 patterns, 0.45 s); 0.002 off costs 0.07° of median
 #: orientation error.
 PATTERN_CENTER_STEPS = (0.008, 0.004, 0.002, 0.001)

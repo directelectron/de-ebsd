@@ -10,20 +10,22 @@ equations are **summed over all patterns**.
 
 The money tests:
 
-1. **PC recovery** -- project ``N=24`` patterns at known orientations and a KNOWN true PC,
-   start from a WRONG ``initial_pattern_center`` (off by 0.03 per component), and recover the shared PC to
+   start from a WRONG starting ``pattern_center`` (off by 0.03 per component), and recover the
+   shared PC to
+   PC to
    ``< 0.005`` (>= 6x better than the seed), on both a smooth and a sharper band master and
    several wrong-PC seeds.
 2. **Degeneracy contrast** -- fitting the PC from single patterns (``N=1``) is *erratic*
    (their errors scatter over 100x and the worst is several-fold worse than the ensemble),
    while the ``N=20`` ensemble is reliably accurate -- demonstrating the ensemble breaks the
    R--PC degeneracy.
-3. **Robustness** -- several wrong ``initial_pattern_center`` seeds converge to the same PC;
+3. **Robustness** -- several wrong starting ``pattern_center`` seeds converge to the same PC;
    ``refine_orientations=True`` (from perturbed seeds) and ``=False`` (from the true
    orientations) both recover it.
 4. **Workflow integration** -- after calibration, orientation-only
-   ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` recovers the known orientations to
-   ``< 0.1`` deg, whereas at the wrong ``initial_pattern_center`` it lands degrees off.
+   ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` recovers the known
+   orientations to
+   ``< 0.1`` deg, whereas at the wrong starting ``pattern_center`` it lands degrees off.
 5. **Plumbing** -- numpy and torch input agree; ``return_orientations``; the ``info`` diag
    fields; single ``(H, W)`` and batched ``(N, H, W)`` inputs; shape validation; a
    CUDA-guarded path.
@@ -90,10 +92,12 @@ def _dis(a: Rotation, b: Rotation) -> float:
 @pytest.mark.parametrize("which", ["sharp", "smooth"])
 @pytest.mark.parametrize("off", [(0.03, 0.03, 0.03), (-0.03, 0.02, -0.03)])
 def test_pc_recovery(which, off, master, smooth_master, detector):
-    """Recover a shared PC from a wrong ``initial_pattern_center`` given N=24 patterns at known orientations.
+    """Recover a shared PC from a wrong starting ``pattern_center`` given N=24 patterns at known
+    orientations.
 
     Project 24 patterns at random orientations and the true PC, hand the routine the true
-    orientations and a ``initial_pattern_center`` offset by 0.03 in every component, and assert the calibrated
+    orientations and a starting ``pattern_center`` offset by 0.03 in every component, and assert the
+    calibrated
     shared PC is within ``0.005`` of truth AND at least 6x closer than the seed -- on both a
     smooth and a sharper band master, for several wrong-PC seeds.
     """
@@ -196,7 +200,8 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
 # 3. robustness -- many seeds agree; both orientation modes work
 # --------------------------------------------------------------------------- #
 def test_multiple_seeds_converge_to_same_pc(master, detector):
-    """Several different wrong ``initial_pattern_center`` seeds converge to the same calibrated PC."""
+    """Several different wrong starting ``pattern_center`` seeds converge to the same calibrated
+    PC."""
     pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(24, seed=1)
     patterns = master.project(detector, r_true, rescale=True)
@@ -270,8 +275,10 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
     """The downstream payoff: orientations refine to < 0.1 deg only at the calibrated PC.
 
     Calibrate the shared PC from coarse-seeded patterns, then run orientation-only
-    ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` on the whole set: the disorientations
-    fall below 0.1 deg. Running the same refine at the original wrong ``initial_pattern_center`` instead leaves
+    ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated>)`` on the whole set: the
+    disorientations
+    fall below 0.1 deg. Running the same refine at the original wrong starting ``pattern_center``
+    instead leaves
     them degrees off -- tying the calibration to its benefit.
     """
     pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
@@ -324,7 +331,8 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
         f"orient refine at calibrated PC: max {good_dis.max():.4f} deg not < 0.1"
     )
     assert float(np.median(bad_dis)) > 1.0, (
-        f"orient refine at wrong initial_pattern_center unexpectedly good ({np.median(bad_dis):.3f} deg)"
+        "orient refine at the wrong pattern center unexpectedly good "
+        f"({np.median(bad_dis):.3f} deg)"
     )
 
 
@@ -362,7 +370,8 @@ def test_numpy_and_torch_input_agree(master, detector):
 
 
 def test_return_orientations_and_info_fields(master, detector):
-    """``return_orientations`` yields ``(pattern_center, Rotation, info)``; ``info`` reports the fit."""
+    """``return_orientations`` yields ``(pattern_center, Rotation, info)``; ``info`` reports the
+    fit."""
     pc_true = torch.tensor(detector.pattern_center, dtype=torch.float64)
     r_true = _orientations(16, seed=4)
     patterns = master.project(detector, r_true, rescale=True)
@@ -438,7 +447,8 @@ def test_single_pattern_and_batch_shapes(master, detector):
 
 
 def test_shape_validation(master, detector):
-    """A rotations/patterns length mismatch and a bad ``initial_pattern_center`` shape both raise."""
+    """A rotations/patterns length mismatch and a bad starting ``pattern_center`` shape both
+    raise."""
     r_true = _orientations(4, seed=6)
     patterns = master.project(detector, r_true, rescale=True)
 

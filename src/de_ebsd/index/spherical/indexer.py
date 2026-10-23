@@ -90,7 +90,8 @@ class SphericalIndexer:
         self._wig_d = wigner_d(self.bandwidth, beta_grid)
 
         # normalizer terms, cached on the first normalize=True call; they depend only
-        # on the master and the fixed detector pattern_center, so a variable pattern_center must invalidate them
+        # on the master and the fixed detector pattern_center, so a variable pattern_center must
+        # invalidate them
         self._w_lm = None
         self._a_w = None
         self._denom_geo = None
@@ -206,8 +207,10 @@ class SphericalIndexer:
         ``rotations=None`` the seeds come from :meth:`index`, taking raw patterns
         straight to sharpened orientations.
 
-        ``pattern_center`` defaults to ``detector.pattern_center``; the remaining arguments pass through.
-        Returns ``(rotation, score)``, with ``pattern_center`` appended when ``refine_pattern_center`` and
+        ``pattern_center`` defaults to ``detector.pattern_center``; the remaining arguments pass
+        through.
+        Returns ``(rotation, score)``, with ``pattern_center`` appended when
+        ``refine_pattern_center`` and
         ``history`` when ``return_history``.
         """
         from de_ebsd.index.refine.orientation import refine_orientation

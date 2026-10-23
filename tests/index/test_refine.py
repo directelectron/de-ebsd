@@ -601,7 +601,8 @@ def test_lm_and_adam_both_run_and_history(master, detector, indexer):
 
 
 def test_lm_refine_pc_falls_back_to_adam(master):
-    """``method="lm"`` with ``refine_pattern_center=True`` falls back to Adam and still returns pattern_center."""
+    """``method="lm"`` with ``refine_pattern_center=True`` falls back to Adam and still returns
+    pattern_center."""
     pc_true = (0.5, 0.5, 0.20)
     det_true = EBSDDetector(shape=(90, 90), pattern_center=pc_true, sample_tilt=70.0, tilt=5.0)
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))

@@ -75,7 +75,8 @@ def polar_parts(beta: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 def center_maps(detector, pattern_centers, device) -> torch.Tensor:
     """``(N, 3, 3)`` maps taking the refine's directions at the *detector*'s pattern
-    center to those at each of *pattern_centers* ``(N, 3)``, up to length. *detector* is at the refine shape.
+    center to those at each of *pattern_centers* ``(N, 3)``, up to length. *detector* is at the
+    refine shape.
 
     On a flat screen a pixel's position is linear in its index at any center,
     so moving the center is exactly a linear map of the directions: in a

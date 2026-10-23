@@ -24,7 +24,8 @@ __all__ = ["direction_cosines_from_pattern_center", "edge_importance_samples", "
 def direction_cosines_from_pattern_center(
     detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor
 ) -> torch.Tensor:
-    """Sample-frame direction cosines at pixels ``(row, col)``, differentiable in ``pattern_center``.
+    """Sample-frame direction cosines at pixels ``(row, col)``, differentiable in
+    ``pattern_center``.
 
     A ``grid_sample``-free rewrite of
     :meth:`~de_ebsd.sim.detector.EBSDDetector.direction_cosines` over an arbitrary
@@ -38,7 +39,8 @@ def direction_cosines_from_pattern_center(
     rotated into the sample frame and normalized. Reproduces
     ``EBSDDetector.direction_cosines`` to ~1e-16.
 
-    ``pattern_center`` is ``(..., 3)``, overriding ``detector.pattern_center``, and broadcasts against the
+    ``pattern_center`` is ``(..., 3)``, overriding ``detector.pattern_center``, and broadcasts
+    against the
     leading dims of the ``(..., K)`` fractional ``rows``/``cols``. Returns unit
     direction cosines ``(..., K, 3)``.
     """

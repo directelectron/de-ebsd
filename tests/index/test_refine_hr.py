@@ -13,7 +13,8 @@ The money tests:
    forward-mode (``jvp``) pattern-center block match central finite differences on the
    smooth band master to a tight tolerance (the per-tile standardization derivative
    included).
-2. **Joint (R, pattern_center) recovery** -- project known ``(R, pattern_center)``, seed ~1 deg off with a
+2. **Joint (R, pattern_center) recovery** -- project known ``(R, pattern_center)``, seed ~1 deg off
+with a
    perturbed pattern center, and recover disorientation ``< 0.1`` deg *and* pattern-center
    error ``< 0.2x`` the seed's, batched over several general orientations.
 3. **Edge sampling picks edges** -- the selected samples have a higher mean ``|grad E|``
@@ -23,7 +24,8 @@ The money tests:
    the orientation better than a single global tile.
 5. **Speed knob monotonicity** -- more samples never hurt recovery, and the ``all_pixels``
    reference path agrees with a dense subsample.
-6. **Plumbing** -- ``refine_pattern_center=False`` is orientation-only and returns no pattern center;
+6. **Plumbing** -- ``refine_pattern_center=False`` is orientation-only and returns no pattern
+center;
    numpy and torch, single and batched inputs; a CUDA-guarded path.
 
 fp64 on CPU at small sizes throughout -- exact-ish, fast, small.
@@ -90,7 +92,8 @@ def _seed(r_true: Rotation, deg: float, rng_seed: int) -> Rotation:
 # 0. the differentiable forward DC map reproduces the detector's own
 # --------------------------------------------------------------------------- #
 def test_direction_cosines_from_pc_matches_detector(detector):
-    """:func:`direction_cosines_from_pattern_center` reproduces ``EBSDDetector.direction_cosines``."""
+    """:func:`direction_cosines_from_pattern_center` reproduces
+    ``EBSDDetector.direction_cosines``."""
     ref = detector.direction_cosines(dtype=torch.float64).reshape(detector.nrows, detector.ncols, 3)
     rr, cc = torch.meshgrid(
         torch.arange(detector.nrows, dtype=torch.float64),
@@ -417,7 +420,8 @@ def test_all_pixels_agrees_with_dense_sample(master, detector):
 # 6. plumbing: refine_pattern_center, numpy/torch, single/batched, device
 # --------------------------------------------------------------------------- #
 def test_refine_pc_false_is_orientation_only(master, detector):
-    """``refine_pattern_center=False`` returns just ``(rotation, score)`` and leaves ``pattern_center`` untouched."""
+    """``refine_pattern_center=False`` returns just ``(rotation, score)`` and leaves
+    ``pattern_center`` untouched."""
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[:2]))
     patterns = master.project(detector, r_true, rescale=True)
     seed = _seed(r_true, 1.0, rng_seed=3)

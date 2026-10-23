@@ -83,7 +83,8 @@ def determine_pattern_center(
     Levenberg-Marquardt step on the 3-parameter PC whose normal equations are
     accumulated over all patterns. That ensemble accumulation is what breaks the
     single-pattern R--PC degeneracy. Calibrate once, then refine the full scan at the
-    fixed PC with ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated pattern_center>)``.
+    fixed PC with ``refine_hr(refine_pattern_center=False, pattern_center=<calibrated
+    pattern_center>)``.
 
     Parameters
     ----------
@@ -160,7 +161,8 @@ def determine_pattern_center(
     pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype)
     if tuple(pattern_center.shape) != (3,):
         raise ValueError(
-            f"pattern_center must be a shared 3-vector (3,), got shape {tuple(pattern_center.shape)}"
+            "pattern_center must be a shared 3-vector (3,), "
+            f"got shape {tuple(pattern_center.shape)}"
         )
     pattern_center = pattern_center.clone()
 
