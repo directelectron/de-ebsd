@@ -19,11 +19,10 @@ from de_ebsd.index.refine.highres import (
     direction_cosines_from_pc,
     edge_importance_samples,
 )
+from de_ebsd.index.refine.levenberg import adapt_shared_damping
 
 __all__ = ["determine_pattern_center"]
 
-_LAM_MIN = 1e-6
-_LAM_MAX = 1e2
 
 #: Blur of the master, in radians on the sphere, from the first round to the last.
 #: A real dynamical master is sharp: its band-edge NCC falls from 1 to ~0 within
@@ -318,10 +317,9 @@ def _shared_pc_lm(
                 r_new = r_mat
             pc_new = pattern_center + delta_pc
             new_total = total_fn(r_new, pc_new)
-            if bool(new_total > cur_total):
+            accepted = bool(new_total > cur_total)
+            if accepted:
                 pattern_center, r_mat = pc_new, r_new
                 cur_total = new_total
-                damping = max(damping * 0.5, _LAM_MIN)
-            else:
-                damping = min(damping * 3.0, _LAM_MAX)
+            damping = adapt_shared_damping(damping, accepted)
     return pattern_center, r_mat, damping
