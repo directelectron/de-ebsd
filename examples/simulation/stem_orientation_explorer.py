@@ -1,6 +1,6 @@
 """
 Explore STEM zone axes with lines and spots
-==========================================
+===========================================
 
 Load a crystal, rotate it, and follow geometric Kikuchi lines toward a zone
 axis while watching the kinematic spot pattern. Both layers share a forward

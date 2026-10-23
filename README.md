@@ -26,7 +26,7 @@ Windows / Linux with uv (Python >= 3.11; torch comes from the CUDA 12.4
 index on Windows and the CPU index on Linux, configured in `pyproject.toml`):
 
 ```
-git clone https://github.com/CSSFrancis/de-ebsd
+git clone https://github.com/directelectron/de-ebsd
 cd de-ebsd
 uv sync
 ```
@@ -157,10 +157,11 @@ convergence notes.
 ## Documentation
 
 The full site -- user guide, design notes, the executable example gallery, and
-an API reference generated from the docstrings -- builds with:
+an API reference generated from the docstrings -- is published at
+<https://directelectron.github.io/de-ebsd/>. To build it locally:
 
 ```shell
-uv sync --group docs --group notebook
+uv sync --group docs
 uv run python -m sphinx -b html -W --keep-going docs docs/_build/html
 ```
 

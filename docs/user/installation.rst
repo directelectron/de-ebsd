@@ -13,7 +13,7 @@ GPU-capable build on Windows and Linux:
 
 .. code-block:: shell
 
-    git clone https://github.com/CSSFrancis/de-ebsd.git
+    git clone https://github.com/directelectron/de-ebsd.git
     cd de-ebsd
     uv sync
 

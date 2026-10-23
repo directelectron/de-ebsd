@@ -47,10 +47,9 @@ templates_path = ["_templates"]
 # -- HTML ---------------------------------------------------------------------
 
 html_theme = "pydata_sphinx_theme"
-html_static_path = ["_static"]
 html_title = f"de-ebsd {version}"
 html_theme_options = {
-    "github_url": "https://github.com/CSSFrancis/de-ebsd",
+    "github_url": "https://github.com/directelectron/de-ebsd",
     "header_links_before_dropdown": 6,
     "navigation_with_keys": False,
     "show_prev_next": False,
@@ -63,7 +62,7 @@ html_theme_options = {
         },
     ],
 }
-html_context = {"github_user": "CSSFrancis", "github_repo": "de-ebsd", "github_version": "main"}
+html_context = {"github_user": "directelectron", "github_repo": "de-ebsd", "github_version": "main"}
 
 # The gallery embeds large interactive anyplotlib figures; copying the page
 # sources duplicates every one of them (~18 MB), and linkcode already points at
@@ -164,4 +163,6 @@ def linkcode_resolve(domain, info):
         line = inspect.getsourcelines(obj)[1]
     except (TypeError, OSError, ValueError):
         return None
-    return f"https://github.com/CSSFrancis/de-ebsd/blob/{_REVISION}/src/{path.as_posix()}#L{line}"
+    return (
+        f"https://github.com/directelectron/de-ebsd/blob/{_REVISION}/src/{path.as_posix()}#L{line}"
+    )
