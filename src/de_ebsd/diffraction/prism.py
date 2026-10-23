@@ -1,4 +1,4 @@
-"""PRISM-style Bloch backend: one eigen-decomposition reused across directions.
+"""Scattering-matrix Bloch backend: the batched, differentiable form of ``bloch``.
 
 Replaces the per-direction dynamical matrix with batched solves of the
 scattering matrix, much faster for dense direction grids and equal to

@@ -3,7 +3,8 @@
 :class:`BlochWaveBackend` is the dynamical solver (Bethe-perturbed dynamical
 matrix, eigen-decomposition, depth integration) in float64, one direction at a
 time; :class:`~de_ebsd.diffraction.prism.BlochPrismBackend` is its batched GPU
-equivalent.
+equivalent. The dynamical matrix, depth integration and ``S_gh`` weighting port
+EMsoft's ``GetDynMat``, ``CalcLgh`` and ``preCalcSgh``.
 """
 
 from __future__ import annotations

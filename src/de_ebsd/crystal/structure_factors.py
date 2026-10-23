@@ -2,7 +2,8 @@
 
 Sums Weickenmeier-Kohl form factors over the symmetry-expanded basis. Provides
 the numpy path (:func:`compute_structure_factors`) used by the Bloch-wave
-backend and a differentiable lookup (:func:`differentiable_ucg_lut`).
+backend and a differentiable lookup (:func:`differentiable_ucg_lut`). Follows
+EMsoft ``CalcUcg`` (Weickenmeier-Kohl branch).
 """
 
 from __future__ import annotations

@@ -2,7 +2,8 @@
 
 The master pattern is stored on the square; ``sphere_to_square`` maps a
 direction to its (x, y) in [-L, L]^2 with L = sqrt(pi/2), and
-``square_to_sphere`` inverts it. Both are differentiable and batched.
+``square_to_sphere`` inverts it. Both are differentiable and batched, and follow
+kikuchipy's ``_vector2lambert`` and EMsoft's Rosca-Lambert mapping.
 """
 
 from __future__ import annotations

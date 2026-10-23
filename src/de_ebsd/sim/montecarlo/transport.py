@@ -2,7 +2,8 @@
 
 Screened Rutherford elastic scattering with Joy-Luo continuous slowing down,
 batched on the GPU, producing the backscattered exit energy/depth statistics the
-master pattern integrates over.
+master pattern integrates over. The scattering model is that of EMsoft's
+``EMMC.cl`` kernel.
 """
 
 from __future__ import annotations

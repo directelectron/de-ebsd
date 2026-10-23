@@ -1,4 +1,8 @@
-"""Reflection lists, excitation errors, and the strong/weak Bethe partition."""
+"""Reflection lists, excitation errors, and the strong/weak Bethe partition.
+
+Ports of EMsoft's ``Initialize_ReflectionList``, ``CalcsgDouble`` and
+``Apply_BethePotentials``.
+"""
 
 from __future__ import annotations
 
