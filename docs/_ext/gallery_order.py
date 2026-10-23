@@ -13,6 +13,7 @@ EXAMPLE_ORDER = (
     "cif_to_detector.py",
     "energy_resolved_simulation.py",
     "resolution_and_backends.py",
+    "stem_orientation_explorer.py",
     "compare_emsoft.py",
     # indexing
     "dictionary_indexing.py",
