@@ -68,12 +68,12 @@ def determine_pattern_center(
     n_tiles: int = 16,
     samples_per_tile: int = 8,
     refine_orientations: bool = True,
-    n_steps_pc: int = 10,
+    n_pattern_center_steps: int = 10,
     damping: float = 1e-3,
     keep_best: bool = True,
     device=None,
     return_orientations: bool = False,
-    n_steps_orient: int = 15,
+    n_orientation_steps: int = 15,
     blur=_DEFAULT_BLUR,
 ):
     """Calibrate one shared pattern center from many EBSD patterns.
@@ -107,7 +107,7 @@ def determine_pattern_center(
     refine_orientations
         Re-refine each orientation at the current PC every round (default), or hold
         the input ``rotations`` fixed and fit only the PC.
-    n_steps_pc
+    n_pattern_center_steps
         Levenberg-Marquardt steps on the shared PC per round.
     damping
         Initial LM damping, adapted each step (x0.5 accepted, x3 rejected) and
@@ -119,7 +119,7 @@ def determine_pattern_center(
         Defaults to ``master.data.device``; otherwise everything is moved there.
     return_orientations
         Also return the refined orientations, before ``info``.
-    n_steps_orient
+    n_orientation_steps
         LM steps for the inner orientation refinement each round.
     blur
         Gaussian blur of the master (radians on the sphere) per stage, coarse to
@@ -206,7 +206,7 @@ def determine_pattern_center(
             pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
             r_mat, _, _ = levenberg_marquardt_refine(
                 seen, detector, rows, cols, e_raw, tile_ids, counts, r_mat, pc_bc,
-                False, n_steps_orient, damping, keep_best, device, dtype,
+                False, n_orientation_steps, damping, keep_best, device, dtype,
             )
 
         # 2. shared-PC block -- LM on the 3-vector, normal equations summed over all
@@ -215,7 +215,7 @@ def determine_pattern_center(
         pc_before = pattern_center.clone()
         pattern_center, r_mat, damping = _shared_pc_lm(
             seen, detector, rows, cols, r_mat, pattern_center, e_hat, tile_ids, counts_ps, n_total,
-            damping, n_steps_pc, _seen_total, device, dtype,
+            damping, n_pattern_center_steps, _seen_total, device, dtype,
             joint=refine_orientations,
         )
         pc_step_history.append(float((pattern_center - pc_before).norm()))

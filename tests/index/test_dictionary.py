@@ -340,7 +340,7 @@ def test_refine_sharpens_coarse_orientations(indexer, master, detector, point_gr
     rot_coarse, _ = indexer.index(patterns)
     dis_coarse = _disorientation_deg(rot_coarse, r_true, point_group)
 
-    rot_ref, score_ref = indexer.refine(patterns, rotations=rot_coarse, n_iters=100)
+    rot_ref, score_ref = indexer.refine(patterns, rotations=rot_coarse, n_iterations=100)
     dis_ref = _disorientation_deg(rot_ref, r_true, point_group)
 
     # the coarse grid is a few degrees off; refinement drops it well below a degree
@@ -355,7 +355,7 @@ def test_refine_seeds_from_index_when_rotations_none(indexer, master, detector, 
     r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG[:3]))
     patterns = master.project(detector, r_true, rescale=False)
 
-    rot_ref, _ = indexer.refine(patterns, n_iters=100)
+    rot_ref, _ = indexer.refine(patterns, n_iterations=100)
     dis_ref = _disorientation_deg(rot_ref, r_true, point_group)
     assert float(dis_ref.max()) < 1.0
 
@@ -385,9 +385,9 @@ def test_refine_defaults_to_lm(indexer, master, detector, point_group):
     patterns = master.project(detector, r_true, rescale=False)
     coarse, _ = indexer.index(patterns)
 
-    default_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15)
-    lm_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15, method="lm")
-    adam_ref, _ = indexer.refine(patterns, rotations=coarse, n_iters=15, method="adam")
+    default_ref, _ = indexer.refine(patterns, rotations=coarse, n_iterations=15)
+    lm_ref, _ = indexer.refine(patterns, rotations=coarse, n_iterations=15, method="lm")
+    adam_ref, _ = indexer.refine(patterns, rotations=coarse, n_iterations=15, method="adam")
 
     # the default IS lm (identical), and is not the adam path
     assert np.allclose(default_ref.data, lm_ref.data)

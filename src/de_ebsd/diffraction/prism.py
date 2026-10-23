@@ -42,29 +42,29 @@ class BlochPrismBackend(BlochWaveBackend):
 
     # ---- setup ---------------------------------------------------------- #
     def prepare(self, inputs: SimulationInputs) -> None:
-        super().prepare(inputs)  # sf, bethe, depth profile, Sgh LUT, kn, gzero, n_atoms, hmax
+        super().prepare(inputs)  # structure_factors, bethe, depth profile, Sgh LUT, kn, gzero, n_atoms, hmax
         dev = torch.device(self.device if self.device is not None else "cpu")
         self.tdev = dev
         self.off = 2 * self.hmax
-        self.u_lut = torch.as_tensor(self.sf.ucg_lut, device=dev, dtype=self.cdtype)
+        self.u_lut = torch.as_tensor(self.structure_factors.ucg_lut, device=dev, dtype=self.cdtype)
         self.sgh_t = torch.as_tensor(self.sgh_lut, device=dev, dtype=self.cdtype)
-        self.lam = float(self.sf.wavelength)
-        self.upz0 = float(self.sf.upz0)
+        self.lam = float(self.structure_factors.wavelength)
+        self.upz0 = float(self.structure_factors.upz0)
         self.lambda_t = torch.as_tensor(self.lambda_e, device=dev, dtype=self.rdtype)
         self.n_depths = self.lambda_t.shape[0]
 
         # fixed, direction-independent tables (g = 0 prepended at index 0)
-        master = master_reflection_list(self.sf)
+        master = master_reflection_list(self.structure_factors)
         z1 = np.zeros((1, 3), np.int64)
         self.hkl_aug = torch.as_tensor(np.concatenate([z1, master.hkl]), device=dev)
         self.n_beams = self.hkl_aug.shape[0]
-        u0 = float(np.abs(self.sf.lookup(np.zeros(3, np.int64))))
+        u0 = float(np.abs(self.structure_factors.lookup(np.zeros(3, np.int64))))
         self.u_mod = torch.as_tensor(
             np.concatenate([[u0], master.u_mod]), device=dev, dtype=self.rdtype)
         self.forbidden = torch.as_tensor(
             np.concatenate([[False], master.forbidden]), device=dev)
         self.g_cart = torch.as_tensor(
-            self.sf.crystal.g_cartesian(master.hkl), device=dev, dtype=self.rdtype)
+            self.structure_factors.crystal.g_cartesian(master.hkl), device=dev, dtype=self.rdtype)
 
     def _lookup(self, lut: torch.Tensor, hkl: torch.Tensor) -> torch.Tensor:
         i = hkl + self.off

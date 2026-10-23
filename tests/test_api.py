@@ -84,8 +84,8 @@ def test_compute_reports_its_progress_over_every_energy(monkeypatch):
 
 
 def test_stage_objects(sim):
-    sf = sim.structure_factors()
-    assert sf is sim.structure_factors()  # cached
+    structure_factors = sim.structure_factors()
+    assert structure_factors is sim.structure_factors()  # cached
     refl = sim.reflections()
     assert len(refl) > 20
     classified = sim.reflections(k=(0, 0, 1))
@@ -166,9 +166,9 @@ def test_save_load_round_trip(master, tmp_path):
 
 
 def test_refine_reuses_structure_factors(sim):
-    sf = sim.structure_factors()
+    structure_factors = sim.structure_factors()
     finer_grid = sim.refine(npx=32)
-    assert finer_grid.structure_factors() is sf  # npx does not touch U_g
+    assert finer_grid.structure_factors() is structure_factors  # npx does not touch U_g
     finer_physics = sim.refine(dmin=0.1)
     assert finer_physics._sf is None  # dmin invalidates the cache
     with pytest.raises(TypeError, match="unknown refine"):

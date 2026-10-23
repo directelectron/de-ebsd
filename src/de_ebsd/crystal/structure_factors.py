@@ -177,11 +177,11 @@ def compute_structure_factors(
     for site, positions in zip(crystal.sites, crystal.positions, strict=True):
         z = atomic_number(site.element)
         ul = float(np.sqrt(site.debye_waller * DWWK))
-        sf = wk_scattering_factor(z, g_unique, ul, energy_kev, absorption=absorption)
-        sf = sf[inverse] * site.occupancy
+        structure_factors = wk_scattering_factor(z, g_unique, ul, energy_kev, absorption=absorption)
+        structure_factors = structure_factors[inverse] * site.occupancy
         phase = np.exp(-2j * np.pi * (hkl_box @ positions.T)).sum(axis=1)
-        ff += phase * sf.real
-        gg += phase * sf.imag
+        ff += phase * structure_factors.real
+        gg += phase * structure_factors.imag
 
     if absorption:
         ucg = pre * (ff + 1j * gg)

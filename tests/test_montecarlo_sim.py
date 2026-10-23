@@ -288,7 +288,7 @@ def test_native_mc_feeds_bloch_backend(si_sf, si_crystal):
     )
     backend = BlochWaveBackend()
     backend.prepare(SimulationInputs(
-        sf=si_sf, bethe=BetheParameters(), monte_carlo=dd,
+        structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=dd,
         device=torch.device("cpu"), dtype=torch.float32,
     ))
     v = torch.randn(8, 3)

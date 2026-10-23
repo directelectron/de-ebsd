@@ -183,7 +183,7 @@ print(f"coarse: median {np.median(coarse_error):.3f} deg, max {coarse_error.max(
 # makes it monotone, so a seed is never made worse.
 
 refined, score, history = indexer.refine(
-    patterns, rotations=xmap.rotations, n_iters=60, learning_rate=0.02, return_history=True,
+    patterns, rotations=xmap.rotations, n_iterations=60, learning_rate=0.02, return_history=True,
 )
 show_refinement(history)
 

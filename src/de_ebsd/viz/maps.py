@@ -237,7 +237,7 @@ def show_refinement(history):
     history
         The per-iteration NCC trajectory from
         :func:`de_ebsd.index.refine.orientation.refine_orientation` (``return_history=True``),
-        shape ``(n_iters, Np)`` -- one column per pattern -- or ``(n_iters,)`` for a
+        shape ``(n_iterations, Np)`` -- one column per pattern -- or ``(n_iterations,)`` for a
         single pattern (numpy array or torch tensor). ``history[0]`` is the seed's
         score at ``w = 0``.
 
@@ -251,9 +251,9 @@ def show_refinement(history):
     if hist.ndim == 1:
         hist = hist[:, None]
     if hist.ndim != 2:
-        raise ValueError(f"history must be (n_iters, Np) or (n_iters,), got shape {hist.shape}")
-    n_iters, n_p = hist.shape
-    iters = np.arange(n_iters, dtype=np.float64)
+        raise ValueError(f"history must be (n_iterations, Np) or (n_iterations,), got shape {hist.shape}")
+    n_iterations, n_p = hist.shape
+    iters = np.arange(n_iterations, dtype=np.float64)
 
     fig, ax = apl().subplots(1, 1, figsize=(680, 420))
     per_pattern_label = "per pattern" if n_p > 1 else "NCC"

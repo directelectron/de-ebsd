@@ -345,7 +345,7 @@ class DictionaryIndexer:
             chunk = patt[start : start + bs].to(self.device)
             rot_c, qual_c = self.index(chunk)
             if refine:
-                rot_c, qual_c = self.refine(chunk, rotations=rot_c, n_iters=refine_iters)
+                rot_c, qual_c = self.refine(chunk, rotations=rot_c, n_iterations=refine_iters)
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c.detach().cpu())
         rotations = Rotation(np.concatenate(rot_chunks, axis=0))

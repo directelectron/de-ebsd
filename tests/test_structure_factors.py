@@ -17,9 +17,9 @@ def _si():
 
 def test_differentiable_ucg_lut_matches_numpy():
     cry = _si()
-    sf = compute_structure_factors(cry, 20.0, dmin=0.12)
+    structure_factors = compute_structure_factors(cry, 20.0, dmin=0.12)
     lut = differentiable_ucg_lut(cry, 20.0, 0.12)
-    assert torch.allclose(lut.detach(), torch.as_tensor(sf.ucg_lut), atol=1e-12)
+    assert torch.allclose(lut.detach(), torch.as_tensor(structure_factors.ucg_lut), atol=1e-12)
 
 
 def test_ucg_gradients_match_finite_difference():
@@ -77,9 +77,9 @@ def test_ug_matches_emsoft():
     crystal = Crystal.from_parameters(
         a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.0045
     )
-    sf = compute_structure_factors(crystal, 20.0, dmin=0.1)
+    structure_factors = compute_structure_factors(crystal, 20.0, dmin=0.1)
     for hkl, ucg in _EMSOFT_SI_UCG.items():
-        got = complex(sf.lookup(np.array(hkl)))
+        got = complex(structure_factors.lookup(np.array(hkl)))
         assert got.real == pytest.approx(ucg.real, abs=1e-3)
         assert got.imag == pytest.approx(ucg.imag, abs=1e-3)
 

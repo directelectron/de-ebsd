@@ -137,7 +137,7 @@ def refine_orientation(
     pattern_center=None,
     refine_pattern_center=False,
     method="adam",
-    n_iters=None,
+    n_iterations=None,
     learning_rate=0.02,
     pattern_center_learning_rate=None,
     damping=1e-3,
@@ -176,7 +176,7 @@ def refine_orientation(
         analytic Jacobian, reaching the same sub-degree accuracy in ~10 steps
         instead of ~60 (~2.3x faster at equal accuracy on real data). LM is
         orientation-only and assumes the default in-FOV ``directions``.
-    n_iters
+    n_iterations
         Step budget. ``None`` resolves per method: 60 for Adam, 12 for LM.
     learning_rate
         Adam step size for the rotation vector, in radians. The key stability knob:
@@ -214,7 +214,7 @@ def refine_orientation(
     pattern_center : torch.Tensor
         Only when ``refine_pattern_center``: the refined pattern center, shaped like the input.
     history : torch.Tensor
-        Only when ``return_history``: the NCC at every step, ``(n_iters, Np)``, with
+        Only when ``return_history``: the NCC at every step, ``(n_iterations, Np)``, with
         ``history[0]`` the seed score.
     """
     # LM is orientation-only, so refine_pattern_center forces Adam
@@ -223,8 +223,8 @@ def refine_orientation(
         raise ValueError(f"method must be 'adam' or 'lm', got {method!r}")
     if method == "lm" and refine_pattern_center:
         method = "adam"  # joint pattern-center + orientation LM is future work
-    if n_iters is None:
-        n_iters = 12 if method == "lm" else 60
+    if n_iterations is None:
+        n_iterations = 12 if method == "lm" else 60
 
     device = resolve_device(device, master.data.device)
     dtype = master.data.dtype
@@ -273,7 +273,7 @@ def refine_orientation(
         with torch.no_grad():
             e_lm, mask_lm = _backproject(patt, detector, dirs, pc_init, per_pattern)
         r_final, score, hist = _lm_refine(
-            master, dirs, r0_mat, e_lm, mask_lm, n_iters, damping, keep_best,
+            master, dirs, r0_mat, e_lm, mask_lm, n_iterations, damping, keep_best,
             return_history, device, dtype,
         )
         from orix.quaternion import Rotation
@@ -317,7 +317,7 @@ def refine_orientation(
     with torch.no_grad():
         seed_score = _score().detach()
 
-    for _ in range(n_iters):
+    for _ in range(n_iterations):
         opt.zero_grad()
         s = _score()
         if return_history:

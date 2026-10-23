@@ -202,7 +202,7 @@ class SphericalIndexer:
         rotations=None,
         pattern_center=None,
         refine_pattern_center=False,
-        n_iters=100,
+        n_iterations=100,
         learning_rate=0.02,
         pattern_center_learning_rate=None,
         keep_best=True,
@@ -231,7 +231,7 @@ class SphericalIndexer:
             rotations,
             pattern_center=pattern_center,
             refine_pattern_center=refine_pattern_center,
-            n_iters=n_iters,
+            n_iterations=n_iterations,
             learning_rate=learning_rate,
             pattern_center_learning_rate=pattern_center_learning_rate,
             directions=self._dirs,
@@ -331,7 +331,7 @@ class SphericalIndexer:
             rot_c, qual_c = self.index(chunk, normalize=normalize)
             if refine:
                 rot_c, qual_c = self.refine(
-                    chunk, rotations=rot_c, n_iters=refine_iters, learning_rate=refine_lr
+                    chunk, rotations=rot_c, n_iterations=refine_iters, learning_rate=refine_lr
                 )
             rot_chunks.append(np.asarray(rot_c.data))
             qual_chunks.append(qual_c)

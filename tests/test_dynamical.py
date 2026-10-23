@@ -82,7 +82,7 @@ def test_bloch_backend_intensities(si_sf):
     """The Bloch backend returns finite, non-uniform backscatter intensities."""
     backend = BlochWaveBackend()
     backend.prepare(
-        SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
+        SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
                          device=torch.device("cpu"), dtype=torch.float32)
     )
     v = torch.randn(12, 3)

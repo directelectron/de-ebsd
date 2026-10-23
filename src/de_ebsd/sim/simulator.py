@@ -102,16 +102,16 @@ class MasterPatternSimulator:
         it is normalized). For cubic crystals Cartesian components coincide
         with lattice directions.
         """
-        sf = self.structure_factors()
+        structure_factors = self.structure_factors()
         if k is None:
-            return master_reflection_list(sf)
-        return classify_reflections(sf, _unit(k), self.bethe)
+            return master_reflection_list(structure_factors)
+        return classify_reflections(structure_factors, _unit(k), self.bethe)
 
     def dynamical_matrix(self, k) -> DynamicalMatrix:
         """The Bloch dynamical matrix (with Bethe corrections) for one beam."""
-        sf = self.structure_factors()
-        refl = classify_reflections(sf, _unit(k), self.bethe)
-        matrix = build_dynamical_matrix(sf, refl)
+        structure_factors = self.structure_factors()
+        refl = classify_reflections(structure_factors, _unit(k), self.bethe)
+        matrix = build_dynamical_matrix(structure_factors, refl)
         return DynamicalMatrix(matrix=matrix, hkl=refl.strong(), k=refl.k, reflections=refl)
 
     def compute(
@@ -190,10 +190,10 @@ class MasterPatternSimulator:
         total, done = len(energies) * len(starts), 0
         maps = []
         for energy in energies:
-            sf = (self.structure_factors() if abs(energy - self.energy_kev) < 1e-9
+            structure_factors = (self.structure_factors() if abs(energy - self.energy_kev) < 1e-9
                   else compute_structure_factors(self.crystal, float(energy), self.dmin))
             backend.prepare(SimulationInputs(
-                sf=sf, bethe=self.bethe, monte_carlo=monte_carlo, device=device, dtype=dtype,
+                structure_factors=structure_factors, bethe=self.bethe, monte_carlo=monte_carlo, device=device, dtype=dtype,
             ))
             rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
             for start in starts:
