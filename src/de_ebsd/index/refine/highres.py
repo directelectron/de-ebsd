@@ -13,23 +13,11 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.geometry import sample_to_detector_tensor
-from de_ebsd.core.rotation import quaternion_to_matrix
-from de_ebsd.index.refine.orientation import _skew
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 
 __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
 
 _EPS = 1e-12
-
-
-def _rotvec_to_matrix(w: torch.Tensor) -> torch.Tensor:
-    k = _skew(w)
-    th2 = (w * w).sum(-1)  # (...,)
-    th = th2.clamp_min(_EPS).sqrt()
-    small = th2 < 1e-12
-    a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
-    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(_EPS))
-    eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
-    return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)
 
 
 def direction_cosines_from_pc(
@@ -271,7 +259,7 @@ def _hr_lm_refine(
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
             a = jtj + lam[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, P)
-            r_new = r_mat @ _rotvec_to_matrix(delta[:, :3])
+            r_new = r_mat @ rotation_vector_to_matrix(delta[:, :3])
             pc_new = pc + delta[:, 3:6] if refine_pc else pc
             new_score = _ncc(r_new, pc_new)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,

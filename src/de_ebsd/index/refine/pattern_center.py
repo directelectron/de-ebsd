@@ -10,12 +10,11 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.highres import (
     _ddc_dpc,
     _hr_lm_refine,
     _residual_jacobian,
-    _rotvec_to_matrix,
     _standardize_tiled,
     direction_cosines_from_pc,
     edge_importance_samples,
@@ -310,7 +309,7 @@ def _shared_pc_lm(
                 rhs = jtr[:, 3:].sum(0) - torch.einsum("pji,pj->i", b, a_inv_g)
                 delta_pc = -torch.linalg.solve(schur, rhs)  # (3,)
                 delta_w = -(a_inv_g + (a_inv_b @ delta_pc[:, None])[..., 0])  # (N, 3)
-                r_new = r_mat @ _rotvec_to_matrix(delta_w)
+                r_new = r_mat @ rotation_vector_to_matrix(delta_w)
             else:
                 jtr, jtj = jtr.sum(0), jtj.sum(0)  # summed over patterns
                 diag = torch.diagonal(jtj).clamp_min(1e-9)

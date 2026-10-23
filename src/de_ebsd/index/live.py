@@ -39,7 +39,7 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.preprocess import _gaussian_blur
 
@@ -173,11 +173,7 @@ def _rotation_matrices(w: torch.Tensor) -> torch.Tensor:
     """Rotation vectors ``(..., 3)`` in radians as matrices ``(..., 3, 3)``."""
     theta = w.norm(dim=-1, keepdim=True)
     k = w / theta.clamp_min(1e-12)
-    zero = torch.zeros_like(k[..., 0])
-    skew = torch.stack(
-        [zero, -k[..., 2], k[..., 1], k[..., 2], zero, -k[..., 0], -k[..., 1], k[..., 0], zero],
-        dim=-1,
-    ).reshape(*k.shape[:-1], 3, 3)
+    skew = skew_matrix(k)
     s = torch.sin(theta)[..., None]
     c = torch.cos(theta)[..., None]
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand_as(skew)
