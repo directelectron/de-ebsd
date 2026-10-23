@@ -21,6 +21,7 @@ from de_ebsd.crystal import Crystal
 from de_ebsd.index import _kernels, live
 from de_ebsd.index.io import phase_from_crystal
 from de_ebsd.index.live import (
+    DEFORMATION_LINE_SEARCH,
     DEFORMATION_MAX_STEP,
     MIN_FRAMES_FOR_STATIC,
     LiveIndexer,
@@ -288,7 +289,8 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
 
 def test_a_fit_cannot_run_away(master, point_group, detector):
     """A pattern of noise beside a real one: the noise's fit moves at most
-    DEFORMATION_MAX_STEP an iteration, and the real pattern's fit is untouched."""
+    DEFORMATION_MAX_STEP times the line search's longest multiple an iteration,
+    and the real pattern's fit is untouched."""
     indexer = LiveIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
@@ -300,7 +302,36 @@ def test_a_fit_cannot_run_away(master, point_group, detector):
     _, strain, score = indexer.refine_deformation(rows, phase, g, iterations=10)
     assert strain[0].abs().max() < 1e-5 and score[0] > 0.999
     # strain is the symmetric part of eight numbers that each moved this far at most
-    assert strain[1].abs().max() <= 10 * DEFORMATION_MAX_STEP
+    assert strain[1].abs().max() <= 10 * DEFORMATION_MAX_STEP * max(DEFORMATION_LINE_SEARCH)
+
+
+def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, detector):
+    """Strained patterns blurred softer than the master, as a camera's are: a plain
+    Gauss-Newton step then falls short, and two iterations with the line search
+    end several times nearer the converged fit than two without (a pattern whose
+    plain fit has nearly converged may tie)."""
+    from de_ebsd.index.preprocess import _gaussian_blur
+
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
+    rng = np.random.default_rng(4)
+    e = rng.normal(0.0, 3e-3, (len(g), 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    deformed = g @ torch.linalg.inv(torch.eye(3) + torch.as_tensor(e, dtype=torch.float32))
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    sharp = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
+    rows = _normalized_rows(_gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
+
+    def fit(**options):
+        return indexer.refine_deformation(rows, phase, g, **options)[1]
+
+    converged = fit(iterations=20, line_search=())
+    plain = (fit(iterations=2, line_search=()) - converged).abs().amax((1, 2))
+    searched = (fit(iterations=2) - converged).abs().amax((1, 2))
+    assert searched.median() < plain.median() / 3, (searched, plain)
 
 
 def test_uint16_frames_are_picked_as_they_are():
