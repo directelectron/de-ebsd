@@ -14,6 +14,7 @@ import importlib
 __all__ = [
     "DictionaryIndexer",
     "HREBSDResult",
+    "LiveIndexer",
     "SphericalIndexer",
     "determine_pattern_center",
     "hrebsd",
@@ -33,6 +34,7 @@ _ORIGIN = {
     "SphericalIndexer": "de_ebsd.index.spherical",
     "determine_pattern_center": "de_ebsd.index.refine",
     "HREBSDResult": "de_ebsd.index.crosscorr",
+    "LiveIndexer": "de_ebsd.index.live",
     "hrebsd": "de_ebsd.index.crosscorr",
     "remap_reference": "de_ebsd.index.crosscorr",
     "refine_hr": "de_ebsd.index.refine",
