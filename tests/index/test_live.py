@@ -310,7 +310,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     Gauss-Newton step then falls short, and two iterations with the line search
     end several times nearer the converged fit than two without (a pattern whose
     plain fit has nearly converged may tie)."""
-    from de_ebsd.index.preprocess import _gaussian_blur
+    from de_ebsd.index.preprocess import gaussian_blur
 
     indexer = LiveIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
@@ -323,7 +323,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     deformed = g @ torch.linalg.inv(torch.eye(3) + torch.as_tensor(e, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
     sharp = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
-    rows = normalize_rows(_gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
+    rows = normalize_rows(gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
 
     def fit(**options):
         return indexer.refine_deformation(rows, phase, g, **options)[1]

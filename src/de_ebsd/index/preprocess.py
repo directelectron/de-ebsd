@@ -68,7 +68,7 @@ def _gaussian_kernel_1d(std, truncate, device, dtype):
     return k / k.sum(), radius
 
 
-def _gaussian_blur(stack, std, truncate):
+def gaussian_blur(stack, std, truncate):
     k, r = _gaussian_kernel_1d(std, truncate, stack.device, stack.dtype)
     x = stack[:, None]  # (N, 1, H, W)
     x = F.conv2d(F.pad(x, (r, r, 0, 0), mode="reflect"), k.view(1, 1, 1, -1))
@@ -147,7 +147,7 @@ def remove_dynamic_background(
     stack, restore = _as_stack(patterns, device, dtype)
     if std is None:
         std = stack.shape[-1] / 8.0
-    bg = _gaussian_blur(stack, std, truncate)
+    bg = gaussian_blur(stack, std, truncate)
     out = _rescale01(_apply(stack, bg, operation))
     return restore(out)
 

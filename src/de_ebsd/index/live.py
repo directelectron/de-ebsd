@@ -42,7 +42,7 @@ from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
-from de_ebsd.index.preprocess import _gaussian_blur, normalize_rows
+from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
 
@@ -131,7 +131,7 @@ def _texture(masters, device, blur_deg: float = 0.0) -> torch.Tensor:
     # Near the center of the square Lambert grid a pixel spans 90° / npx.
     per_degree = masters[0].npx / 90.0
     if blur_deg:
-        texture = _gaussian_blur(texture, blur_deg * per_degree, 4.0)
+        texture = gaussian_blur(texture, blur_deg * per_degree, 4.0)
     return texture[None].contiguous()
 
 
@@ -366,7 +366,7 @@ class LiveIndexer:
         if self._static_count >= MIN_FRAMES_FOR_STATIC:
             static = self._static_sum / self._static_count
             if self.static_blur:
-                static = _gaussian_blur(static[None], self.static_blur * static.shape[-1], 4.0)[0]
+                static = gaussian_blur(static[None], self.static_blur * static.shape[-1], 4.0)[0]
             self.static = static
 
     def _without_background(self, t: torch.Tensor) -> torch.Tensor:
@@ -389,7 +389,7 @@ class LiveIndexer:
         # quarter of the refine resolution and drawn back up: a full-size blur that
         # wide was most of the preparation's time.
         coarse = _average_to(t, (self.refine_shape[0] // 4, self.refine_shape[1] // 4))
-        coarse = _gaussian_blur(coarse, coarse.shape[-1] / 8.0, 4.0)
+        coarse = gaussian_blur(coarse, coarse.shape[-1] / 8.0, 4.0)
         return (
             t
             - F.interpolate(coarse[:, None], size=shape, mode="bilinear", align_corners=False)[:, 0]

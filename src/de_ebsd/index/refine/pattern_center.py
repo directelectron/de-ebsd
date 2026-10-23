@@ -12,12 +12,12 @@ import torch
 
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.highres import (
-    _ddc_dpc,
-    _hr_lm_refine,
-    _residual_jacobian,
-    _standardize_tiled,
-    direction_cosines_from_pc,
+    direction_cosine_derivative,
+    direction_cosines_from_pattern_center,
     edge_importance_samples,
+    levenberg_marquardt_refine,
+    normalized_residual_jacobian,
+    standardize_tiled,
 )
 from de_ebsd.index.refine.levenberg import adapt_shared_damping
 
@@ -171,13 +171,13 @@ def determine_pattern_center(
     n_total = int(counts.shape[0])
     n_active = int((counts > 0).sum())
     counts_ps = counts.index_select(0, tile_ids).to(dtype)  # (K,)
-    _, _, e_hat = _standardize_tiled(e_raw, tile_ids, counts_ps, n_total)  # (N, K) fixed
+    _, _, e_hat = standardize_tiled(e_raw, tile_ids, counts_ps, n_total)  # (N, K) fixed
 
     def _ncc_per_pattern(r_cur: torch.Tensor, pc_vec: torch.Tensor, seen=master) -> torch.Tensor:
         pc_bc = pc_vec[None].expand(n_p, 3)
-        dc = direction_cosines_from_pc(detector, pc_bc, rows, cols)
+        dc = direction_cosines_from_pattern_center(detector, pc_bc, rows, cols)
         m = seen.sample(dc @ r_cur.transpose(-1, -2)).to(device=device, dtype=dtype)
-        _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
+        _, _, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
         return (e_hat * m_hat).sum(-1) / n_active
 
     def _total(r_cur: torch.Tensor, pc_vec: torch.Tensor) -> torch.Tensor:
@@ -203,7 +203,7 @@ def determine_pattern_center(
         # 1. orientation block -- refine each pattern at the current shared PC (well-posed)
         if refine_orientations:
             pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
-            r_mat, _, _ = _hr_lm_refine(
+            r_mat, _, _ = levenberg_marquardt_refine(
                 seen, detector, rows, cols, e_raw, tile_ids, counts, r_mat, pc_bc,
                 False, n_steps_orient, damping, keep_best, device, dtype,
             )
@@ -274,7 +274,7 @@ def _shared_pc_lm(
 
     for _ in range(n_steps):
         pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
-        dc = direction_cosines_from_pc(detector, pc_bc, rows, cols).detach()  # (N, K, 3)
+        dc = direction_cosines_from_pattern_center(detector, pc_bc, rows, cols).detach()  # (N, K, 3)
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
@@ -284,7 +284,7 @@ def _shared_pc_lm(
         g_m = g_m.to(device=device, dtype=dtype)
 
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)  # gM @ R -> (N, K, 3)
-        ddc_dpc = _ddc_dpc(detector, pc_bc, rows, cols)  # (N, K, 3, 3)
+        ddc_dpc = direction_cosine_derivative(detector, pc_bc, rows, cols)  # (N, K, 3, 3)
         dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc_dpc)  # raw dM/dpc, (N, K, 3)
         if joint:
             dm_dw = torch.linalg.cross(dc, q, dim=-1)  # raw dM/dw, (N, K, 3)
@@ -292,7 +292,7 @@ def _shared_pc_lm(
         else:
             g_raw = dm_dpc
 
-        res, j_r = _residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
+        res, j_r = normalized_residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
         with torch.no_grad():
             jtr = torch.einsum("pk,pki->pi", res, j_r)  # per pattern, (N, P)
             jtj = torch.einsum("pki,pkj->pij", j_r, j_r)  # per pattern, (N, P, P)

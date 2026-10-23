@@ -41,12 +41,12 @@ from de_ebsd import EBSDDetector, MasterPattern
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import refine_hr
 from de_ebsd.index.refine.highres import (
-    _ddc_dpc,
-    _residual_jacobian,
     _sobel_gradient_magnitude,
-    _standardize_tiled,
-    direction_cosines_from_pc,
+    direction_cosine_derivative,
+    direction_cosines_from_pattern_center,
     edge_importance_samples,
+    normalized_residual_jacobian,
+    standardize_tiled,
 )
 
 
@@ -90,7 +90,7 @@ def _seed(r_true: Rotation, deg: float, rng_seed: int) -> Rotation:
 # 0. the differentiable forward DC map reproduces the detector's own
 # --------------------------------------------------------------------------- #
 def test_direction_cosines_from_pc_matches_detector(detector):
-    """:func:`direction_cosines_from_pc` reproduces ``EBSDDetector.direction_cosines``."""
+    """:func:`direction_cosines_from_pattern_center` reproduces ``EBSDDetector.direction_cosines``."""
     ref = detector.direction_cosines(dtype=torch.float64).reshape(
         detector.nrows, detector.ncols, 3
     )
@@ -100,7 +100,7 @@ def test_direction_cosines_from_pc_matches_detector(detector):
         indexing="ij",
     )
     pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64)
-    mine = direction_cosines_from_pc(detector, pattern_center, rr, cc)
+    mine = direction_cosines_from_pattern_center(detector, pattern_center, rr, cc)
     assert torch.allclose(mine, ref, atol=1e-12)
 
 
@@ -126,7 +126,7 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     n_total = int(counts.shape[0])
     counts_ps = counts.index_select(0, tile_ids).to(dtype)
     e_raw = patterns.reshape(n_p, -1).gather(1, flat.long())
-    _, _, e_hat = _standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
+    _, _, e_hat = standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
 
     # evaluate at a seed ~2 deg off and pattern_center offset by +0.01 (a realistic coarse seed)
     q0 = quaternion_to_matrix(torch.as_tensor(np.asarray(r_true.data), dtype=dtype))
@@ -137,7 +137,7 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     pc_eval = torch.tensor(detector.pattern_center, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
 
     def analytic(r_mat, pattern_center):
-        dc = direction_cosines_from_pc(detector, pattern_center, rows, cols).detach()
+        dc = direction_cosines_from_pattern_center(detector, pattern_center, rows, cols).detach()
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
             m_raw = master.sample(v)
@@ -145,15 +145,15 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
         m = m_raw.detach()
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)
         dm_dw = torch.linalg.cross(dc, q, dim=-1)
-        ddc = _ddc_dpc(detector, pattern_center, rows, cols)
+        ddc = direction_cosine_derivative(detector, pattern_center, rows, cols)
         dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc)
         g_raw = torch.cat([dm_dw, dm_dpc], dim=-1)
-        return _residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
+        return normalized_residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
 
     def residual(r_mat, pattern_center):
-        dc = direction_cosines_from_pc(detector, pattern_center, rows, cols)
+        dc = direction_cosines_from_pattern_center(detector, pattern_center, rows, cols)
         m = master.sample(dc @ r_mat.transpose(-1, -2))
-        _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
+        _, _, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
         return e_hat - m_hat
 
     _, j_r = analytic(r_eval, pc_eval)  # (Np, K, 6)

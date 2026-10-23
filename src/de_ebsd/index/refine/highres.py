@@ -17,10 +17,10 @@ from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.levenberg import adapt_damping
 
-__all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
+__all__ = ["direction_cosines_from_pattern_center", "edge_importance_samples", "refine_hr"]
 
 
-def direction_cosines_from_pc(
+def direction_cosines_from_pattern_center(
     detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor
 ) -> torch.Tensor:
     """Sample-frame direction cosines at pixels ``(row, col)``, differentiable in ``pattern_center``.
@@ -47,11 +47,11 @@ def direction_cosines_from_pc(
     return dc / dc.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)
 
 
-def _ddc_dpc(detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+def direction_cosine_derivative(detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
     p = pattern_center.detach()
 
     def f(pc_arg: torch.Tensor) -> torch.Tensor:
-        return direction_cosines_from_pc(detector, pc_arg, rows, cols)
+        return direction_cosines_from_pattern_center(detector, pc_arg, rows, cols)
 
     cols_ddc = []
     for c in range(3):
@@ -156,7 +156,7 @@ def _seg_broadcast_sum(x: torch.Tensor, tile_ids: torch.Tensor, n_total: int) ->
     return sums.index_select(1, tile_ids)
 
 
-def _standardize_tiled(
+def standardize_tiled(
     x: torch.Tensor, tile_ids: torch.Tensor, counts_ps: torch.Tensor, n_total: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     mean = _seg_broadcast_sum(x, tile_ids, n_total) / counts_ps
@@ -165,7 +165,7 @@ def _standardize_tiled(
     return c, s, c / s
 
 
-def _residual_jacobian(
+def normalized_residual_jacobian(
     m: torch.Tensor,
     e_hat: torch.Tensor,
     g: torch.Tensor,
@@ -173,14 +173,14 @@ def _residual_jacobian(
     counts_ps: torch.Tensor,
     n_total: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    c, s, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
+    c, s, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
     g_mean = _seg_broadcast_sum(g, tile_ids, n_total) / counts_ps.view(1, -1, 1)
     nu = _seg_broadcast_sum(c.unsqueeze(-1) * g, tile_ids, n_total) / s.unsqueeze(-1)
     dm_hat = ((g - g_mean) - m_hat.unsqueeze(-1) * nu) / s.unsqueeze(-1)
     return e_hat - m_hat, -dm_hat
 
 
-def _hr_lm_refine(
+def levenberg_marquardt_refine(
     master,
     detector,
     rows,
@@ -200,7 +200,7 @@ def _hr_lm_refine(
     n_total = int(counts.shape[0])
     n_active = int((counts > 0).sum())
     counts_ps = counts.index_select(0, tile_ids).to(dtype)  # (K,)
-    _, _, e_hat = _standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
+    _, _, e_hat = standardize_tiled(e_raw, tile_ids, counts_ps, n_total)
 
     n_p = r0_mat.shape[0]
     r_mat = r0_mat.clone()
@@ -209,14 +209,14 @@ def _hr_lm_refine(
 
     # orientation-only: the pattern center never moves, so build its direction
     # cosines once instead of rebuilding them every step
-    dc_fixed = None if refine_pattern_center else direction_cosines_from_pc(detector, initial_pattern_center, rows, cols).detach()
+    dc_fixed = None if refine_pattern_center else direction_cosines_from_pattern_center(detector, initial_pattern_center, rows, cols).detach()
 
     def _ncc(r_cur, pc_cur):
-        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
+        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pattern_center(
             detector, pc_cur, rows, cols
         )
         m = master.sample(dc @ r_cur.transpose(-1, -2)).to(device=device, dtype=dtype)
-        _, _, m_hat = _standardize_tiled(m, tile_ids, counts_ps, n_total)
+        _, _, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
         return (e_hat * m_hat).sum(-1) / n_active
 
     seed_score = _ncc(r0_mat, initial_pattern_center).detach()
@@ -224,7 +224,7 @@ def _hr_lm_refine(
 
     for _ in range(n_steps):
         # (Np, K, 3); constant when the pattern center is fixed, so reuse the precompute
-        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pc(
+        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pattern_center(
             detector, pattern_center, rows, cols
         ).detach()
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
@@ -238,13 +238,13 @@ def _hr_lm_refine(
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)  # gM @ R -> (Np, K, 3)
         dm_dw = torch.linalg.cross(dc, q, dim=-1)  # dc x (gM @ R), (Np, K, 3)
         if refine_pattern_center:
-            ddc_dpc = _ddc_dpc(detector, pattern_center, rows, cols)  # (Np, K, 3, 3)
+            ddc_dpc = direction_cosine_derivative(detector, pattern_center, rows, cols)  # (Np, K, 3, 3)
             dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc_dpc)  # (Np, K, 3)
             g_raw = torch.cat([dm_dw, dm_dpc], dim=-1)  # (Np, K, 6)
         else:
             g_raw = dm_dw
 
-        res, j_r = _residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
+        res, j_r = normalized_residual_jacobian(m, e_hat, g_raw, tile_ids, counts_ps, n_total)
         with torch.no_grad():
             jtr = torch.einsum("pk,pki->pi", res, j_r)  # (Np, P)
             jtj = torch.einsum("pki,pkj->pij", j_r, j_r)  # (Np, P, P)
@@ -414,7 +414,7 @@ def refine_hr(
             # the master is noise-free, so its gradient marks true band edges; the
             # experimental gradient adds ~0.5 deg of scatter on real patterns
             with torch.no_grad():
-                dc_full = direction_cosines_from_pc(detector, initial_pattern_center[sl], full_rows, full_cols)
+                dc_full = direction_cosines_from_pattern_center(detector, initial_pattern_center[sl], full_rows, full_cols)
                 sim = master.sample(dc_full @ r0_mat[sl].transpose(-1, -2))
                 sim = sim.to(device=device, dtype=dtype).reshape(-1, hh, ww)
             rows, cols, flat, tile_ids, counts = edge_importance_samples(
@@ -425,7 +425,7 @@ def refine_hr(
                 p_chunk, n_tiles, samples_per_tile, all_pixels
             )
         e_raw = p_chunk.reshape(p_chunk.shape[0], -1).gather(1, flat.long())
-        rf, pf, sc = _hr_lm_refine(
+        rf, pf, sc = levenberg_marquardt_refine(
             master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], initial_pattern_center[sl],
             refine_pattern_center, n_steps, damping, keep_best, device, dtype,
         )
