@@ -24,12 +24,12 @@ import torch
 from orix.crystal_map import CrystalMap
 from orix.quaternion import Rotation
 
+from conftest import SI_MC_PATH
 from de_ebsd import EBSDDetector
 from de_ebsd.crystal import Crystal
 from de_ebsd.index import master_from_emsoft
 
-# real-file test target (maintainer's local copy; absent on most machines)
-_REAL_SI_MC = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+_REAL_SI_MC = SI_MC_PATH
 
 N_SITES = 2
 N_ENERGY = 2
