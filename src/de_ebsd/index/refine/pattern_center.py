@@ -214,7 +214,7 @@ def determine_pattern_center(
         pc_before = pc.clone()
         pc, r_mat, lam = _shared_pc_lm(
             seen, detector, rows, cols, r_mat, pc, e_hat, tile_ids, counts_ps, n_total,
-            n_active, lam, n_steps_pc, _seen_total, device, dtype,
+            lam, n_steps_pc, _seen_total, device, dtype,
             joint=refine_orientations,
         )
         pc_step_history.append(float((pc - pc_before).norm()))
@@ -254,7 +254,6 @@ def _shared_pc_lm(
     tile_ids,
     counts_ps,
     n_total,
-    n_active,
     lam,
     n_steps,
     total_fn,
