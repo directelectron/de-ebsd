@@ -93,11 +93,14 @@ BATCH = 256
 #: score into 750 MB per batch.
 SEARCH_CHUNK = 65_536
 
-#: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. On the twin
-#: scans of :data:`REFINE_STEPS_DEG`, rendered with a known random strain of 1e-3 and
-#: 3e-3, three took the orientation median from 0.14-0.20° (the stencil refine
-#: alone) to 0.073-0.076°; a fourth and a fifth changed nothing.
-DEFORMATION_ITERATIONS = 3
+#: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. The fit
+#: closes only about half of what is left each iteration, so too few stop short:
+#: on a 15 kV silicon indent, against CrossCourt's HR-EBSD, the four strongest
+#: strains reached 0.64-0.87 of their size at three iterations and 0.91-1.04 at
+#: seven; ten came no closer but scattered more (rms difference 5.0-6.5e-4 against
+#: 3.4-5.4e-4 at seven). Each iteration costs about half as much as indexing the
+#: pattern did.
+DEFORMATION_ITERATIONS = 7
 
 #: The central-difference step of the deformation's Jacobian, as a strain. Much
 #: smaller steps measure the bilinear master texture's facets rather than its slope.

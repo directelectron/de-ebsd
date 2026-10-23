@@ -237,7 +237,7 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
 
     The patterns come from the indexer's own projection, so this checks the fit and
     its conventions -- ``F = R U`` in the sample frame, the orientation that of the
-    deformed lattice -- not how closely a master matches a camera; on twin scans
+    deformed lattice -- not how closely a master matches a camera; on a real scan
     see :data:`DEFORMATION_ITERATIONS`."""
     rotations = _known()
     indexer = LiveIndexer(
