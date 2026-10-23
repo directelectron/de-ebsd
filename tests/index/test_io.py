@@ -198,13 +198,15 @@ def test_index_scan_recovers_grid_both_layouts(master, detector, scan_patterns):
 
 
 def test_index_scan_batch_chunking_matches_single_batch(master, detector, scan_patterns):
-    """``batch_size`` only bounds memory: chunked and unchunked results are identical."""
+    """``batch_size`` only bounds memory: chunked and unchunked results agree."""
     indexer = SphericalIndexer(master, detector, bandwidth=BANDWIDTH, device="cpu")
     xmap_full = indexer.index_scan(scan_patterns, shape=_SCAN_SHAPE, batch_size=None)
     xmap_chunk = indexer.index_scan(scan_patterns, shape=_SCAN_SHAPE, batch_size=5)
 
     assert np.array_equal(xmap_full.rotations.data, xmap_chunk.rotations.data)
-    assert np.array_equal(xmap_full.prop["quality"], xmap_chunk.prop["quality"])
+    # The CPU matrix kernels pick their blocking from the batch shape on some
+    # processors, so the correlation peak can differ in the last bits.
+    np.testing.assert_allclose(xmap_full.prop["quality"], xmap_chunk.prop["quality"], rtol=1e-6)
 
 
 def test_index_scan_accepts_cpu_numpy_array(master, detector, scan_patterns):
