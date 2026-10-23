@@ -100,9 +100,7 @@ class DictionaryIndexer:
         if b > 1:
             h, w = self.detector.nrows, self.detector.ncols
             if h % b or w % b:
-                raise ValueError(
-                    f"match_binning {b} must divide the detector shape {(h, w)}"
-                )
+                raise ValueError(f"match_binning {b} must divide the detector shape {(h, w)}")
             self._match_detector = replace(self.detector, shape=(h // b, w // b))
         else:
             self._match_detector = self.detector
@@ -113,8 +111,7 @@ class DictionaryIndexer:
 
         if dtype is None:
             has_tensor_cores = (
-                self.device.type == "cuda"
-                and torch.cuda.get_device_capability(self.device)[0] >= 7
+                self.device.type == "cuda" and torch.cuda.get_device_capability(self.device)[0] >= 7
             )
             dtype = torch.float16 if has_tensor_cores else torch.float32
         self.dtype = dtype
@@ -325,13 +322,11 @@ class DictionaryIndexer:
             rows, cols = int(shape[0]), int(shape[1])
             if rows * cols != patt.shape[0]:
                 raise ValueError(
-                    f"shape {(rows, cols)} implies {rows * cols} patterns but got "
-                    f"{patt.shape[0]}"
+                    f"shape {(rows, cols)} implies {rows * cols} patterns but got {patt.shape[0]}"
                 )
         else:
             raise ValueError(
-                "patterns must be (rows, cols, H, W) or (N, H, W), got shape "
-                f"{tuple(patt.shape)}"
+                f"patterns must be (rows, cols, H, W) or (N, H, W), got shape {tuple(patt.shape)}"
             )
 
         n = rows * cols

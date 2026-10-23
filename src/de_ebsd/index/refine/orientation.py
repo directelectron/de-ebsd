@@ -45,7 +45,9 @@ def _backproject(patt, detector, dirs, pattern_center, per_pattern):
         return e, mask
     es, masks = [], []
     for i in range(patt.shape[0]):
-        e_i, m_i = pattern_to_sphere(patt[i : i + 1], detector, dirs, pattern_center=pattern_center[i])
+        e_i, m_i = pattern_to_sphere(
+            patt[i : i + 1], detector, dirs, pattern_center=pattern_center[i]
+        )
         es.append(e_i)
         masks.append(m_i)
     return torch.cat(es, dim=0), torch.stack(masks, dim=0)
@@ -243,9 +245,7 @@ def refine_orientation(
     # the detached anchor: exactly the matrix MasterPattern.project builds
     q0 = torch.as_tensor(np.asarray(rotations.data), device=device, dtype=dtype).reshape(-1, 4)
     if q0.shape[0] != n_p:
-        raise ValueError(
-            f"rotations length {q0.shape[0]} != number of patterns {n_p}"
-        )
+        raise ValueError(f"rotations length {q0.shape[0]} != number of patterns {n_p}")
     r0_mat = quaternion_to_matrix(q0).detach()  # (Np, 3, 3)
 
     if directions is None:
@@ -273,8 +273,17 @@ def refine_orientation(
         with torch.no_grad():
             e_lm, mask_lm = _backproject(patt, detector, dirs, pc_init, per_pattern)
         r_final, score, hist = _lm_refine(
-            master, dirs, r0_mat, e_lm, mask_lm, n_iterations, damping, keep_best,
-            return_history, device, dtype,
+            master,
+            dirs,
+            r0_mat,
+            e_lm,
+            mask_lm,
+            n_iterations,
+            damping,
+            keep_best,
+            return_history,
+            device,
+            dtype,
         )
         from orix.quaternion import Rotation
 
@@ -293,7 +302,14 @@ def refine_orientation(
     params = [{"params": [w], "lr": learning_rate}]
     if refine_pattern_center:
         pc_param = pc_init.clone().requires_grad_(True)
-        params.append({"params": [pc_param], "lr": pattern_center_learning_rate if pattern_center_learning_rate is not None else learning_rate / 5.0})
+        params.append(
+            {
+                "params": [pc_param],
+                "lr": pattern_center_learning_rate
+                if pattern_center_learning_rate is not None
+                else learning_rate / 5.0,
+            }
+        )
     else:
         pc_param = pc_init
         # pattern center is fixed -> E does not change; back-project it once.

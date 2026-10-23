@@ -30,10 +30,10 @@ SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", "")
 NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", "")
 
 CRYSTALS = {
-    "si": dict(a=0.5431, space_group=227,
-               atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668),
-    "ni": dict(a=0.35236, space_group=225,
-               atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035),
+    "si": dict(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    ),
+    "ni": dict(a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035),
 }
 
 
@@ -49,9 +49,13 @@ def read_mc_params(path: str) -> dict:
         nml = f["NMLparameters/MCCLNameList"]
         get = lambda k: float(np.asarray(nml[k]).ravel()[0])  # noqa: E731
         return {
-            "sig": get("sig"), "omega": get("omega"), "ekev": get("EkeV"),
-            "ehistmin": get("Ehistmin"), "ebinsize": get("Ebinsize"),
-            "depthstep": get("depthstep"), "depthmax": get("depthmax"),
+            "sig": get("sig"),
+            "omega": get("omega"),
+            "ekev": get("EkeV"),
+            "ehistmin": get("Ehistmin"),
+            "ebinsize": get("Ebinsize"),
+            "depthstep": get("depthstep"),
+            "depthmax": get("depthmax"),
         }
 
 
@@ -75,20 +79,31 @@ def main() -> None:
     p = read_mc_params(mc_path)
     crystal = de.Crystal.from_parameters(**CRYSTALS[args.material])
     print(f"reference: {ref}")
-    print(f"MC params: tilt={p['sig']:g} deg, E {p['ehistmin']:g}..{p['ekev']:g} keV "
-          f"/ {p['ebinsize']:g}, depth {p['depthstep']:g}..{p['depthmax']:g} nm")
+    print(
+        f"MC params: tilt={p['sig']:g} deg, E {p['ehistmin']:g}..{p['ekev']:g} keV "
+        f"/ {p['ebinsize']:g}, depth {p['depthstep']:g}..{p['depthmax']:g} nm"
+    )
 
     native = simulate_depth_distribution(
-        crystal, p["ekev"], e_min_kev=p["ehistmin"], e_bin_kev=p["ebinsize"],
-        depth_step_nm=p["depthstep"], depth_max_nm=p["depthmax"],
-        n_electrons=args.n_electrons, tilt_deg=p["sig"], azimuth_deg=p["omega"],
-        device=args.device, seed=args.seed,
+        crystal,
+        p["ekev"],
+        e_min_kev=p["ehistmin"],
+        e_bin_kev=p["ebinsize"],
+        depth_step_nm=p["depthstep"],
+        depth_max_nm=p["depthmax"],
+        n_electrons=args.n_electrons,
+        tilt_deg=p["sig"],
+        azimuth_deg=p["omega"],
+        device=args.device,
+        seed=args.seed,
     )
 
     ref_yield = ref.accum_z.sum() / ref.n_total
     nat_yield = native.accum_z.sum() / native.n_total
-    print(f"\nbackscatter yield   EMsoft={ref_yield:.4f}   native={nat_yield:.4f}   "
-          f"(diff {abs(ref_yield - nat_yield):+.4f})")
+    print(
+        f"\nbackscatter yield   EMsoft={ref_yield:.4f}   native={nat_yield:.4f}   "
+        f"(diff {abs(ref_yield - nat_yield):+.4f})"
+    )
 
     print("\n  E (keV)   corr    meanz_ref  meanz_nat")
     correlations = []

@@ -83,7 +83,6 @@ def texture_of(masters, device, blur_deg: float = 0.0) -> torch.Tensor:
     return texture[None].contiguous()
 
 
-
 class LiveIndexer:
     """Index and refine EBSD patterns of several phases on the device.
 
@@ -168,7 +167,9 @@ class LiveIndexer:
         self.background = ScanBackground(self.refine_shape, self.device)
 
     def directions_at(self, pattern_center, shape) -> torch.Tensor:
-        detector = replace(self.detector, pattern_center=tuple(float(v) for v in pattern_center), shape=shape)
+        detector = replace(
+            self.detector, pattern_center=tuple(float(v) for v in pattern_center), shape=shape
+        )
         return detector.direction_cosines(device=self.device)
 
     def set_pattern_center(self, pattern_center) -> None:
@@ -179,7 +180,9 @@ class LiveIndexer:
         center overwrites the old one's in place: the dictionary is the largest
         thing on the device, and building it beside a copy of itself (or a list of
         its chunks) took two to three times its size."""
-        self.detector = replace(self.detector, pattern_center=tuple(float(v) for v in pattern_center))
+        self.detector = replace(
+            self.detector, pattern_center=tuple(float(v) for v in pattern_center)
+        )
         self.search_directions = self.directions_at(pattern_center, self.search_shape)
         self.refine_directions = self.directions_at(pattern_center, self.refine_shape)
         shape = (len(self.search_directions), len(self.rotations))
@@ -381,4 +384,3 @@ class LiveIndexer:
                 g, score = self.refine(refine_rows, phase, g)
             out.append((phase, g, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
-

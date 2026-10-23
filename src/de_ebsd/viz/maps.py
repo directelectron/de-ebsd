@@ -192,9 +192,7 @@ def show_correlation(correlation):
     if corr.ndim == 4:
         corr = corr[0]
     if corr.ndim != 3:
-        raise ValueError(
-            f"correlation must be (N, N, N) or (Np, N, N, N), got shape {corr.shape}"
-        )
+        raise ValueError(f"correlation must be (N, N, N) or (Np, N, N, N), got shape {corr.shape}")
 
     a_idx, b_idx, g_idx = (int(i) for i in np.unravel_index(int(np.argmax(corr)), corr.shape))
     peak = float(corr[a_idx, b_idx, g_idx])
@@ -251,7 +249,9 @@ def show_refinement(history):
     if hist.ndim == 1:
         hist = hist[:, None]
     if hist.ndim != 2:
-        raise ValueError(f"history must be (n_iterations, Np) or (n_iterations,), got shape {hist.shape}")
+        raise ValueError(
+            f"history must be (n_iterations, Np) or (n_iterations,), got shape {hist.shape}"
+        )
     n_iterations, n_p = hist.shape
     iters = np.arange(n_iterations, dtype=np.float64)
 
@@ -270,9 +270,7 @@ def show_refinement(history):
     for p in range(1, n_p):
         plot.add_line(hist[:, p], x_axis=iters, color="#4fc3f7", linewidth=1.0, alpha=0.5)
     if n_p > 1:
-        plot.add_line(
-            hist.mean(axis=1), x_axis=iters, color="#ff7043", linewidth=2.5, label="mean"
-        )
+        plot.add_line(hist.mean(axis=1), x_axis=iters, color="#ff7043", linewidth=2.5, label="mean")
     _ax_setter(plot, "set_title", "Refinement convergence")
     _ax_setter(plot, "set_xlabel", "iteration")
     _ax_setter(plot, "set_ylabel", "NCC")

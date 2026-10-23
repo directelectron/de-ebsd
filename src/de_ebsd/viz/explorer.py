@@ -25,6 +25,7 @@ from de_ebsd.viz.figures import apl
 
 __all__ = ["CrystalExplorer"]
 
+
 def _quaternion_to_matrix(q: np.ndarray) -> np.ndarray:
     return quaternion_to_matrix(torch.as_tensor(q, dtype=torch.float64)).numpy()
 

@@ -353,7 +353,9 @@ def _warped_rois(ref, detector, f, pattern_center, reference_pattern_center, cen
     return _sample(ref, grid).reshape(n, m, roi_size, roi_size)
 
 
-def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pattern_center, reference_pattern_center) -> torch.Tensor:
+def remap_reference(
+    reference: torch.Tensor, detector, f: torch.Tensor, pattern_center, reference_pattern_center
+) -> torch.Tensor:
     """Re-project a whole reference pattern into the deformed configuration.
 
     :func:`hrebsd` uses a region-only path internally; this is the full-frame version,
@@ -379,8 +381,14 @@ def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pattern_
     device, dtype = reference.device, reference.dtype
     f = torch.as_tensor(f, device=device, dtype=dtype).reshape(-1, 3, 3)
     n = f.shape[0]
-    pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
-    reference_pattern_center = torch.as_tensor(reference_pattern_center, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
+    pattern_center = (
+        torch.as_tensor(pattern_center, device=device, dtype=dtype).reshape(-1, 3).expand(n, 3)
+    )
+    reference_pattern_center = (
+        torch.as_tensor(reference_pattern_center, device=device, dtype=dtype)
+        .reshape(-1, 3)
+        .expand(n, 3)
+    )
     ref = reference.reshape(-1, detector.nrows, detector.ncols)
     if ref.shape[0] == 1:
         ref = ref.expand(n, -1, -1)
@@ -389,7 +397,12 @@ def remap_reference(reference: torch.Tensor, detector, f: torch.Tensor, pattern_
     cols = torch.arange(detector.ncols, device=device, dtype=dtype)
     rr, cc = torch.meshgrid(rows, cols, indexing="ij")
     grid = _reference_grid(
-        detector, f, pattern_center, reference_pattern_center, rr.reshape(1, -1).expand(n, -1), cc.reshape(1, -1).expand(n, -1)
+        detector,
+        f,
+        pattern_center,
+        reference_pattern_center,
+        rr.reshape(1, -1).expand(n, -1),
+        cc.reshape(1, -1).expand(n, -1),
     )
     return _sample(ref, grid.reshape(n, detector.nrows, detector.ncols, 2))
 
@@ -549,11 +562,19 @@ def hrebsd(
         raise ValueError("n_passes must be at least 1")
 
     pattern_center = detector.pattern_center if pattern_center is None else pattern_center
-    reference_pattern_center = pattern_center if reference_pattern_center is None else reference_pattern_center
+    reference_pattern_center = (
+        pattern_center if reference_pattern_center is None else reference_pattern_center
+    )
     pattern_center = torch.as_tensor(pattern_center, device=device, dtype=dtype).reshape(-1, 3)
-    reference_pattern_center = torch.as_tensor(reference_pattern_center, device=device, dtype=dtype).reshape(-1, 3)
+    reference_pattern_center = torch.as_tensor(
+        reference_pattern_center, device=device, dtype=dtype
+    ).reshape(-1, 3)
     pattern_center = pattern_center.expand(n, 3) if pattern_center.shape[0] == 1 else pattern_center
-    reference_pattern_center = reference_pattern_center.expand(n, 3) if reference_pattern_center.shape[0] == 1 else reference_pattern_center
+    reference_pattern_center = (
+        reference_pattern_center.expand(n, 3)
+        if reference_pattern_center.shape[0] == 1
+        else reference_pattern_center
+    )
 
     if n > batch:
         parts = [
@@ -606,7 +627,9 @@ def hrebsd(
     f_total = eye.clone()
     shifts = peak = residual = None
     for _ in range(n_passes):
-        ref_rois = _warped_rois(ref, detector, f_total, pattern_center, reference_pattern_center, centers, roi_size)
+        ref_rois = _warped_rois(
+            ref, detector, f_total, pattern_center, reference_pattern_center, centers, roi_size
+        )
         shifts, peak = _measure_shifts(test_rois, ref_rois, win, upsample, mask, whiten=whiten)
         # pixels -> gnomonic: both axes scale by 1 / nrows, y increasing upward
         q = torch.stack([shifts[..., 1], -shifts[..., 0]], dim=-1) / detector.nrows

@@ -110,7 +110,9 @@ def test_a_new_pattern_center_rebuilds_the_dictionary_in_place(master, point_gro
     moved = tuple(v + 0.02 for v in detector.pattern_center)
     indexer.set_pattern_center(moved)
     assert indexer.dictionary.data_ptr() == where
-    fresh = _small_indexer(master, point_group, replace(detector, pattern_center=moved), device="cpu")
+    fresh = _small_indexer(
+        master, point_group, replace(detector, pattern_center=moved), device="cpu"
+    )
     assert torch.allclose(indexer.dictionary, fresh.dictionary)
 
 
@@ -226,7 +228,9 @@ def test_center_maps_move_the_directions_to_another_center(master, point_group, 
     (m,) = indexer.center_maps([other])
     moved = indexer.refine_directions @ m.T
     moved = moved / moved.norm(dim=-1, keepdim=True)
-    expected = replace(detector, pattern_center=other, shape=indexer.refine_shape).direction_cosines()
+    expected = replace(
+        detector, pattern_center=other, shape=indexer.refine_shape
+    ).direction_cosines()
     assert torch.allclose(moved, expected, atol=1e-5)
 
 
@@ -272,9 +276,7 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
-    patterns = normalize_rows(
-        indexer.project(indexer.texture, g, phase, indexer.refine_directions)
-    )
+    patterns = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
     rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
     indexer.background.static = torch.ones(indexer.refine_shape)
     indexer.add_fits(phase, g)

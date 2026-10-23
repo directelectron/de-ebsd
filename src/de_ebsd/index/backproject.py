@@ -27,7 +27,9 @@ def _pc_components(
         pattern_center = torch.as_tensor(detector.pattern_center, device=device, dtype=dtype)
     else:
         if pattern_center.shape[-1] != 3:
-            raise ValueError(f"pattern_center must have last dim 3, got shape {tuple(pattern_center.shape)}")
+            raise ValueError(
+                f"pattern_center must have last dim 3, got shape {tuple(pattern_center.shape)}"
+            )
         pattern_center = pattern_center.to(device=device, dtype=dtype)
     return pattern_center[0], pattern_center[1], pattern_center[2]
 
@@ -87,9 +89,7 @@ def directions_to_pixels(
     col = (gn_x - x_min) / x_scale - 0.5
     row = (y_max - gn_y) / y_scale - 0.5
 
-    in_fov = (
-        (d_z > 0) & (gn_x >= x_min) & (gn_x <= x_max) & (gn_y >= y_min) & (gn_y <= y_max)
-    )
+    in_fov = (d_z > 0) & (gn_x >= x_min) & (gn_x <= x_max) & (gn_y >= y_min) & (gn_y <= y_max)
     return col, row, in_fov
 
 

@@ -28,9 +28,17 @@ def test_matches_kikuchipy_direction_cosines():
     shape, pattern_center = (37, 41), (0.42, 0.58, 0.64)
     sample_tilt, tilt, azimuthal = 70.0, 7.5, 3.0
 
-    ours = EBSDDetector(
-        shape=shape, pattern_center=pattern_center, sample_tilt=sample_tilt, tilt=tilt, azimuthal=azimuthal
-    ).direction_cosines(dtype=torch.float64).numpy()
+    ours = (
+        EBSDDetector(
+            shape=shape,
+            pattern_center=pattern_center,
+            sample_tilt=sample_tilt,
+            tilt=tilt,
+            azimuthal=azimuthal,
+        )
+        .direction_cosines(dtype=torch.float64)
+        .numpy()
+    )
 
     from kikuchipy.signals.util._master_pattern import _get_direction_cosines_from_detector
 

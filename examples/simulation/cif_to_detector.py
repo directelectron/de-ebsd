@@ -52,14 +52,23 @@ crystal.show()
 device = "cpu"
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(96, 128), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
-    sample_tilt=microscope.sample_tilt, px_size=50.0,
+    shape=(96, 128),
+    pattern_center=(0.45, 0.55, 0.60),
+    tilt=5.0,
+    sample_tilt=microscope.sample_tilt,
+    px_size=50.0,
 )
 depth = de.DepthDistribution.from_simulation(
-    crystal, microscope.energy_kev,
-    n_electrons=5_000, tilt_deg=microscope.sample_tilt,
-    e_min_kev=15.0, e_bin_kev=2.5, depth_max_nm=60.0, depth_step_nm=2.0,
-    seed=7, device=device,
+    crystal,
+    microscope.energy_kev,
+    n_electrons=5_000,
+    tilt_deg=microscope.sample_tilt,
+    e_min_kev=15.0,
+    e_bin_kev=2.5,
+    depth_max_nm=60.0,
+    depth_step_nm=2.0,
+    seed=7,
+    device=device,
 )
 print(depth)
 print("Bruker PC:", detector.pattern_center, "gnomonic bounds:", detector.gnomonic_bounds)
@@ -72,8 +81,12 @@ print("Bruker PC:", detector.pattern_center, "gnomonic bounds:", detector.gnomon
 # computing or refining this simulator.
 
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.05,
-    monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=100,
+    dmin=0.05,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 sim.structure_factors().show(n=12)
 

@@ -60,8 +60,10 @@ def reduce_to_fundamental_sector(
     ck = (cache_key, int(space_group)) if cache_key is not None else None
     if ck is not None and ck in _FZ_CACHE:
         reps_cpu, inverse_cpu = _FZ_CACHE[ck]
-        return (torch.as_tensor(reps_cpu, device=dev, dtype=dt),
-                torch.as_tensor(inverse_cpu, device=dev, dtype=torch.long))
+        return (
+            torch.as_tensor(reps_cpu, device=dev, dtype=dt),
+            torch.as_tensor(inverse_cpu, device=dev, dtype=torch.long),
+        )
 
     from orix.quaternion.symmetry import get_point_group
     from orix.vector import Vector3d

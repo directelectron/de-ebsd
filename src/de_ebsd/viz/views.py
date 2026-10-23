@@ -116,10 +116,10 @@ def _metadata_card(metadata: dict[str, str | int | float | None]) -> str:
       border:1px solid var(--jp-border-color2,#3b4252);border-radius:6px;
       padding:8px 10px;max-width:940px;display:flex;gap:18px;align-items:baseline;flex-wrap:wrap">
       <strong style="font-size:13px">{name}</strong>
-      <span>{symbol} ({int(metadata['space_group'])})</span>
+      <span>{symbol} ({int(metadata["space_group"])})</span>
       <span>cell {cell} nm</span>
-      <span>{int(metadata['atom_count'])} atoms</span>
-      <span>ρ {float(metadata['density_g_cm3']):.2f} g/cm³</span>
+      <span>{int(metadata["atom_count"])} atoms</span>
+      <span>ρ {float(metadata["density_g_cm3"]):.2f} g/cm³</span>
       <span>{escape(str(backend))}</span>
     </div>
     """

@@ -61,7 +61,9 @@ def master() -> MasterPattern:
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
     """Wide field of view: the pattern-center/rotation degeneracy breaks as (angle)^2."""
-    return EBSDDetector(shape=(256, 256), pattern_center=(0.5, 0.5, 0.6), sample_tilt=70.0, tilt=0.0)
+    return EBSDDetector(
+        shape=(256, 256), pattern_center=(0.5, 0.5, 0.6), sample_tilt=70.0, tilt=0.0
+    )
 
 
 _R = torch.tensor(
@@ -88,7 +90,9 @@ def _render(master, detector, f=None, pattern_center=None, rot=_R):
     ground truth independent of :func:`remap_reference`, which shares geometry code
     with the thing under test.
     """
-    pattern_center = torch.as_tensor(detector.pattern_center if pattern_center is None else pattern_center, dtype=DT)
+    pattern_center = torch.as_tensor(
+        detector.pattern_center if pattern_center is None else pattern_center, dtype=DT
+    )
     rows = torch.arange(detector.nrows, dtype=DT)
     cols = torch.arange(detector.ncols, dtype=DT)
     rr, cc = torch.meshgrid(rows, cols, indexing="ij")
@@ -113,7 +117,9 @@ def _rotation(axis, angle):
 
 def _exact_shifts(detector, f, centers, pattern_center=None):
     """Exact projective displacement ``(M, 2)`` of each region center, in pixels."""
-    pattern_center = torch.as_tensor(detector.pattern_center if pattern_center is None else pattern_center, dtype=DT)[None]
+    pattern_center = torch.as_tensor(
+        detector.pattern_center if pattern_center is None else pattern_center, dtype=DT
+    )[None]
     ray = detector_rays(detector, pattern_center, centers[:, 0], centers[:, 1])
     row1, col1 = _pixels_from_ray(detector, pattern_center, torch.einsum("ij,nkj->nki", f, ray))
     return torch.stack([row1[0] - centers[:, 0], col1[0] - centers[:, 1]], dim=-1)
@@ -154,7 +160,9 @@ def test_identity_remap_matches_plain_extraction(master, detector):
     """``F = I`` with equal pattern centers must not move a single pixel."""
     ref = _render(master, detector)[None]
     pattern_center = torch.as_tensor(detector.pattern_center, dtype=DT)
-    same = remap_reference(ref, detector, torch.eye(3, dtype=DT)[None], pattern_center, pattern_center)
+    same = remap_reference(
+        ref, detector, torch.eye(3, dtype=DT)[None], pattern_center, pattern_center
+    )
     assert float((same - ref).abs().max()) < 1e-12
 
 
@@ -216,7 +224,9 @@ def test_solver_inverts_exact_shifts(detector):
     q = _px_to_gnomonic(detector, _exact_shifts(detector, torch.eye(3, dtype=DT) + beta, centers))
     pattern_center = torch.as_tensor(detector.pattern_center, dtype=DT)[None]
     got, rms = _solve_beta(
-        _design(detector, pattern_center, centers), q[None], torch.ones(1, centers.shape[0], dtype=DT)
+        _design(detector, pattern_center, centers),
+        q[None],
+        torch.ones(1, centers.shape[0], dtype=DT),
     )
     assert float((got[0] - beta).abs().max()) < 1e-5
     assert float(rms[0]) < 1e-6
@@ -239,7 +249,9 @@ def test_single_pass_phantom_strain_scales_as_theta_squared(detector, deg):
     )
     pattern_center = torch.as_tensor(detector.pattern_center, dtype=DT)[None]
     got, _ = _solve_beta(
-        _design(detector, pattern_center, centers), q[None], torch.ones(1, centers.shape[0], dtype=DT)
+        _design(detector, pattern_center, centers),
+        q[None],
+        torch.ones(1, centers.shape[0], dtype=DT),
     )
     strain = 0.5 * (got[0] + got[0].T)
     rot = 0.5 * (got[0] - got[0].T)
@@ -264,7 +276,9 @@ def test_shift_noise_propagates_to_strain(detector, sigma_px, tol):
     q = q + torch.randn(q.shape, dtype=DT) * sigma_px / detector.nrows
     pattern_center = torch.as_tensor(detector.pattern_center, dtype=DT)[None]
     got, _ = _solve_beta(
-        _design(detector, pattern_center, centers), q[None], torch.ones(1, centers.shape[0], dtype=DT)
+        _design(detector, pattern_center, centers),
+        q[None],
+        torch.ones(1, centers.shape[0], dtype=DT),
     )
     assert float((got[0] - beta).abs().max()) < tol
 
@@ -386,7 +400,13 @@ def test_pattern_center_difference_changes_the_geometry(master, detector):
     reference_pattern_center = pattern_center + np.array([4e-3, 5e-3, 3e-3])
     ref = _render(master, detector, pattern_center=reference_pattern_center)
     test = _render(master, detector, pattern_center=pattern_center)
-    good = _run(test, ref, detector, pattern_center=pattern_center, reference_pattern_center=reference_pattern_center)
+    good = _run(
+        test,
+        ref,
+        detector,
+        pattern_center=pattern_center,
+        reference_pattern_center=reference_pattern_center,
+    )
     bad = _run(test, ref, detector, pattern_center=pattern_center)
     assert float(good.beta[0].abs().max()) < float(bad.beta[0].abs().max())
 

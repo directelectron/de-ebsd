@@ -84,9 +84,7 @@ class Microscope:
         """
         from de_ebsd.viz.widgets import MicroscopeWidget
 
-        return MicroscopeWidget.from_setup(
-            microscope=self, detector=detector, crystal=crystal
-        )
+        return MicroscopeWidget.from_setup(microscope=self, detector=detector, crystal=crystal)
 
     def __repr__(self) -> str:
         return (

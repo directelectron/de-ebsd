@@ -54,9 +54,7 @@ _KNOWN_EULER_DEG = np.array(
 @pytest.fixture(scope="module")
 def crystal() -> Crystal:
     """A cubic Ni crystal (Fm-3m, point group m-3m) for phase / symmetry derivation."""
-    return Crystal.from_parameters(
-        a=0.352, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))]
-    )
+    return Crystal.from_parameters(a=0.352, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))])
 
 
 @pytest.fixture(scope="module")
@@ -163,13 +161,17 @@ def test_match_binning_recovers_same_and_shrinks(master, detector, crystal, poin
     internal. (Full-resolution accuracy is retained by refining separately.)
     """
     b = 2
-    idx_full = DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
-                                 dtype=torch.float32)
-    idx_bin = DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
-                                dtype=torch.float32, match_binning=b)
+    idx_full = DictionaryIndexer(
+        master, detector, resolution=RESOLUTION, device="cpu", dtype=torch.float32
+    )
+    idx_bin = DictionaryIndexer(
+        master, detector, resolution=RESOLUTION, device="cpu", dtype=torch.float32, match_binning=b
+    )
     # dictionary shrinks by b**2 in the pixel axis; same orientation count
     assert idx_bin.dictionary.shape == (
-        (detector.nrows // b) * (detector.ncols // b), idx_full.n_dict)
+        (detector.nrows // b) * (detector.ncols // b),
+        idx_full.n_dict,
+    )
     assert idx_bin.n_dict == idx_full.n_dict
 
     r_true = Rotation.from_euler(np.deg2rad(_KNOWN_EULER_DEG))
@@ -184,8 +186,14 @@ def test_match_binning_recovers_same_and_shrinks(master, detector, crystal, poin
 def test_match_binning_must_divide_detector(master, detector):
     """match_binning that does not divide the detector shape raises clearly."""
     with pytest.raises(ValueError, match="must divide"):
-        DictionaryIndexer(master, detector, resolution=RESOLUTION, device="cpu",
-                          dtype=torch.float32, match_binning=3)  # 70 not divisible by 3
+        DictionaryIndexer(
+            master,
+            detector,
+            resolution=RESOLUTION,
+            device="cpu",
+            dtype=torch.float32,
+            match_binning=3,
+        )  # 70 not divisible by 3
 
 
 def test_batched_equals_single(indexer, master, detector):

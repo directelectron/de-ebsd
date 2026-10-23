@@ -26,8 +26,13 @@ def test_bloch_prism_registered():
 
 def test_prism_matches_bloch_reference(si_sf):
     """PRISM (matrix_exp) equals the eig backend to machine precision (fp64)."""
-    inp = SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                           device=torch.device("cpu"), dtype=torch.float64)
+    inp = SimulationInputs(
+        structure_factors=si_sf,
+        bethe=BetheParameters(),
+        monte_carlo=None,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
     oracle = resolve_backend("bloch")
     oracle.prepare(inp)
     prism = resolve_backend("bloch_prism")
@@ -45,8 +50,13 @@ def test_prism_matches_bloch_reference(si_sf):
 
 def test_prism_batches_across_strong_counts(si_sf):
     """Directions spanning many strong-beam counts (multiple buckets) all match."""
-    inp = SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                           device=torch.device("cpu"), dtype=torch.float64)
+    inp = SimulationInputs(
+        structure_factors=si_sf,
+        bethe=BetheParameters(),
+        monte_carlo=None,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
     oracle = resolve_backend("bloch")
     oracle.prepare(inp)
     prism = resolve_backend("bloch_prism")
@@ -66,14 +76,24 @@ def test_prism_complex64_matches_reference(si_sf):
     accuracy for speed/memory. This guards that the fast dtype stays a faithful
     approximation (measured rel err ~2e-5) rather than drifting silently.
     """
-    inp64 = SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                             device=torch.device("cpu"), dtype=torch.float64)
+    inp64 = SimulationInputs(
+        structure_factors=si_sf,
+        bethe=BetheParameters(),
+        monte_carlo=None,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
     oracle = resolve_backend("bloch")
     oracle.prepare(inp64)
 
     prism = BlochPrismBackend(cdtype=torch.complex64)
-    inp32 = SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                             device=torch.device("cpu"), dtype=torch.float32)
+    inp32 = SimulationInputs(
+        structure_factors=si_sf,
+        bethe=BetheParameters(),
+        monte_carlo=None,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
     prism.prepare(inp32)
 
     d = _dirs(24, seed=1)
@@ -93,8 +113,15 @@ def test_bloch_solve_is_differentiable(si_sf):
     the project is built for. Validated against complex finite differences.
     """
     prism = resolve_backend("bloch_prism")
-    prism.prepare(SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                                   device=torch.device("cpu"), dtype=torch.float64))
+    prism.prepare(
+        SimulationInputs(
+            structure_factors=si_sf,
+            bethe=BetheParameters(),
+            monte_carlo=None,
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        )
+    )
     u0 = prism.u_lut.detach().clone()
     prism.u_lut = u0.clone().requires_grad_(True)
 
@@ -132,8 +159,15 @@ def test_intensity_differentiable_wrt_positions(si_sf):
 
     crystal = si_sf.crystal
     prism = resolve_backend("bloch_prism")
-    prism.prepare(SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                                   device=torch.device("cpu"), dtype=torch.float64))
+    prism.prepare(
+        SimulationInputs(
+            structure_factors=si_sf,
+            bethe=BetheParameters(),
+            monte_carlo=None,
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        )
+    )
     base = [torch.as_tensor(np.asarray(p), dtype=torch.float64) for p in crystal.positions]
     d = _dirs(4, seed=1)
 
@@ -161,8 +195,15 @@ def test_intensity_differentiable_wrt_debye_waller(si_sf):
 
     crystal = si_sf.crystal
     prism = resolve_backend("bloch_prism")
-    prism.prepare(SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                                   device=torch.device("cpu"), dtype=torch.float64))
+    prism.prepare(
+        SimulationInputs(
+            structure_factors=si_sf,
+            bethe=BetheParameters(),
+            monte_carlo=None,
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        )
+    )
     d = _dirs(4, seed=2)
     b0 = float(crystal.sites[0].debye_waller)
 

@@ -4,6 +4,7 @@ Values are transcribed verbatim from EMsoft (EMsoftOO) ``mod_global.f90`` so tha
 the structure-factor and wavelength results are bit-for-bit comparable with
 EMsoft's Fortran implementation.
 """
+
 from __future__ import annotations
 
 import math
@@ -71,6 +72,7 @@ def interaction_constant(voltage_kv: float, v0mod: float = 0.0) -> float:
     gamma = relativistic_correction(voltage_kv)
     sigma = 2.0 * C_PI * C_RESTMASS * gamma * C_CHARGE * lam
     return 1.0e-18 * sigma / C_PLANCK**2
+
 
 # --- numerical floors for guarding a division or a norm ---------------------
 #: Smallest divisor allowed in double-precision arithmetic.

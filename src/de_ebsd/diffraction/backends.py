@@ -61,7 +61,9 @@ def classify_reflections(
     # prepend the incident beam g = 0
     hkl = np.concatenate([np.zeros((1, 3), dtype=np.int64), refl.hkl[keep]])
     sg_c = np.concatenate([[0.0], sg[keep]])
-    u_mod = np.concatenate([[np.abs(structure_factors.lookup(np.zeros(3, dtype=np.int64)))], refl.u_mod[keep]])
+    u_mod = np.concatenate(
+        [[np.abs(structure_factors.lookup(np.zeros(3, dtype=np.int64)))], refl.u_mod[keep]]
+    )
     forbidden = np.concatenate([[False], refl.forbidden[keep]])
 
     status = partition_strong_weak(hkl, sg_c, forbidden, structure_factors, bethe)

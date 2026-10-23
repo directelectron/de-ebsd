@@ -42,7 +42,9 @@ class BlochPrismBackend(BlochWaveBackend):
 
     # ---- setup ---------------------------------------------------------- #
     def prepare(self, inputs: SimulationInputs) -> None:
-        super().prepare(inputs)  # structure_factors, bethe, depth profile, Sgh LUT, kn, gzero, n_atoms, hmax
+        super().prepare(
+            inputs
+        )  # structure_factors, bethe, depth profile, Sgh LUT, kn, gzero, n_atoms, hmax
         dev = torch.device(self.device if self.device is not None else "cpu")
         self.tdev = dev
         self.off = 2 * self.hmax
@@ -60,11 +62,12 @@ class BlochPrismBackend(BlochWaveBackend):
         self.n_beams = self.hkl_aug.shape[0]
         u0 = float(np.abs(self.structure_factors.lookup(np.zeros(3, np.int64))))
         self.u_mod = torch.as_tensor(
-            np.concatenate([[u0], master.u_mod]), device=dev, dtype=self.rdtype)
-        self.forbidden = torch.as_tensor(
-            np.concatenate([[False], master.forbidden]), device=dev)
+            np.concatenate([[u0], master.u_mod]), device=dev, dtype=self.rdtype
+        )
+        self.forbidden = torch.as_tensor(np.concatenate([[False], master.forbidden]), device=dev)
         self.g_cart = torch.as_tensor(
-            self.structure_factors.crystal.g_cartesian(master.hkl), device=dev, dtype=self.rdtype)
+            self.structure_factors.crystal.g_cartesian(master.hkl), device=dev, dtype=self.rdtype
+        )
 
     def _lookup(self, lut: torch.Tensor, hkl: torch.Tensor) -> torch.Tensor:
         i = hkl + self.off
@@ -73,10 +76,12 @@ class BlochPrismBackend(BlochWaveBackend):
     # ---- depth integration via the scattering matrix -------------------- #
     def _calc_lgh(self, a: torch.Tensor) -> torch.Tensor:
         phase = 2.0 * np.pi * self.depthstep / (2.0 * self.kn)
-        step = torch.complex(torch.zeros((), device=self.tdev, dtype=self.rdtype),
-                             torch.as_tensor(phase, device=self.tdev, dtype=self.rdtype))
-        sigma = torch.linalg.matrix_exp(step * a)          # exp(i phase A)
-        psi = sigma[:, :, self.gzero].clone()              # psi_1 = Sigma e_gzero
+        step = torch.complex(
+            torch.zeros((), device=self.tdev, dtype=self.rdtype),
+            torch.as_tensor(phase, device=self.tdev, dtype=self.rdtype),
+        )
+        sigma = torch.linalg.matrix_exp(step * a)  # exp(i phase A)
+        psi = sigma[:, :, self.gzero].clone()  # psi_1 = Sigma e_gzero
         lgh = torch.zeros_like(a)
         for n in range(self.n_depths):
             lgh = lgh + self.lambda_t[n] * (psi.conj()[:, :, None] * psi[:, None, :])
@@ -89,14 +94,15 @@ class BlochPrismBackend(BlochWaveBackend):
         total = k_all.shape[0]
         out = torch.empty(total, device=self.tdev, dtype=self.out_dtype)
         for m0 in range(0, total, self.block):
-            k = k_all[m0:m0 + self.block]
+            k = k_all[m0 : m0 + self.block]
             strong, weak, sg = self._classify(k)
             counts = strong.sum(1)
             for s in torch.unique(counts).tolist():
                 sub = torch.nonzero(counts == s, as_tuple=False).squeeze(1)
                 for b0 in range(0, sub.shape[0], self.matmul_batch):
-                    self._bucket(int(s), sub[b0:b0 + self.matmul_batch],
-                                 strong, weak, sg, out, m0)
+                    self._bucket(
+                        int(s), sub[b0 : b0 + self.matmul_batch], strong, weak, sg, out, m0
+                    )
         return out
 
     def _classify(self, k: torch.Tensor):
@@ -106,11 +112,10 @@ class BlochPrismBackend(BlochWaveBackend):
         weak = torch.zeros_like(strong)
         sg_all = torch.empty(d, self.n_beams, device=self.tdev, dtype=self.rdtype)
         for c0 in range(0, d, self.class_chunk):
-            kc = k[c0:c0 + self.class_chunk]
+            kc = k[c0 : c0 + self.class_chunk]
             c = kc.shape[0]
             sg = excitation_errors(self.g_cart, kc, self.lam)
-            sg = torch.cat(
-                [torch.zeros(c, 1, device=self.tdev, dtype=self.rdtype), sg], dim=1)
+            sg = torch.cat([torch.zeros(c, 1, device=self.tdev, dtype=self.rdtype), sg], dim=1)
             absg = sg.abs()
             cand = (absg / (self.lam * self.u_mod.clamp_min(1e-300))) <= bethe.cutoff
             cand[:, self.forbidden] = absg[:, self.forbidden] <= bethe.sg_double
@@ -119,7 +124,7 @@ class BlochPrismBackend(BlochWaveBackend):
             # gather the candidate beams to a padded [c, Cmax] index list
             cc = cand.sum(1)
             cmax = int(cc.max().item())
-            nz = cand.nonzero(as_tuple=False)                  # [T, 2], row-sorted
+            nz = cand.nonzero(as_tuple=False)  # [T, 2], row-sorted
             rows = nz[:, 0]
             starts = torch.zeros(c, dtype=torch.long, device=self.tdev)
             starts[1:] = cc.cumsum(0)[:-1]
@@ -130,14 +135,20 @@ class BlochPrismBackend(BlochWaveBackend):
             creal[rows, within] = True
 
             # Bethe min over candidate h only
-            absg_c = absg.gather(1, cidx)                      # [c, Cmax]
-            hkl_c = self.hkl_aug[cidx]                         # [c, Cmax, 3]
-            u = self._lookup(
-                self.u_lut, hkl_c[:, :, None, :] - hkl_c[:, None, :, :]).abs().to(self.rdtype)
+            absg_c = absg.gather(1, cidx)  # [c, Cmax]
+            hkl_c = self.hkl_aug[cidx]  # [c, Cmax, 3]
+            u = (
+                self._lookup(self.u_lut, hkl_c[:, :, None, :] - hkl_c[:, None, :, :])
+                .abs()
+                .to(self.rdtype)
+            )
             good = (u > _R._FORBIDDEN_TOL) & creal[:, None, :]
-            rh = torch.where(good, (absg_c[:, :, None] / self.lam) / u.clamp_min(1e-300),
-                             torch.full_like(u, 1.0e4))
-            m_c = rh.min(dim=2).values                         # [c, Cmax]
+            rh = torch.where(
+                good,
+                (absg_c[:, :, None] / self.lam) / u.clamp_min(1e-300),
+                torch.full_like(u, 1.0e4),
+            )
+            m_c = rh.min(dim=2).values  # [c, Cmax]
             st_c = (m_c <= bethe.strong) & creal
             wk_c = (m_c > bethe.strong) & (m_c <= bethe.weak) & creal
 
@@ -149,24 +160,24 @@ class BlochPrismBackend(BlochWaveBackend):
             st[:, self.forbidden] = False
             wk[:, self.forbidden] = False
             wk[:, 0] = False
-            strong[c0:c0 + c] = st
-            weak[c0:c0 + c] = wk
-            sg_all[c0:c0 + c] = sg
+            strong[c0 : c0 + c] = st
+            weak[c0 : c0 + c] = wk
+            sg_all[c0 : c0 + c] = sg
         return strong, weak, sg_all
 
     def _bucket(self, s, sub, strong, weak, sg, out, c0):
         b = sub.shape[0]
         st, wk, sgs = strong[sub], weak[sub], sg[sub]
-        s_idx = st.nonzero(as_tuple=False)[:, 1].reshape(b, s)   # ascending -> g0 first
-        hkl_s = self.hkl_aug[s_idx]                              # [b, s, 3]
-        sg_s = sgs.gather(1, s_idx)                              # [b, s]
+        s_idx = st.nonzero(as_tuple=False)[:, 1].reshape(b, s)  # ascending -> g0 first
+        hkl_s = self.hkl_aug[s_idx]  # [b, s, 3]
+        sg_s = sgs.gather(1, s_idx)  # [b, s]
 
         wc = wk.sum(1)
         w_max = int(wc.max().item()) if b else 0
         a = self._lookup(self.u_lut, hkl_s[:, :, None, :] - hkl_s[:, None, :, :]).clone()
         weak_diag = torch.zeros(b, s, device=self.tdev, dtype=self.rdtype)
         if w_max > 0:
-            nz = wk.nonzero(as_tuple=False)                     # [T, 2], row-sorted
+            nz = wk.nonzero(as_tuple=False)  # [T, 2], row-sorted
             rows, cols = nz[:, 0], nz[:, 1]
             starts = torch.zeros(b, dtype=torch.long, device=self.tdev)
             starts[1:] = wc.cumsum(0)[:-1]

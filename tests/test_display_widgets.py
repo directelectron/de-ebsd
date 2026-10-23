@@ -61,7 +61,9 @@ def test_setup_widget_round_trip():
     from de_ebsd.viz.widgets import MicroscopeWidget
 
     microscope = de.Microscope(energy=15e3, sample_tilt=68.0)
-    detector = de.EBSDDetector(shape=(240, 320), pattern_center=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0)
+    detector = de.EBSDDetector(
+        shape=(240, 320), pattern_center=(0.4, 0.6, 0.55), tilt=6.0, sample_tilt=68.0
+    )
     widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
 
     assert widget.energy_kev == pytest.approx(15.0)
@@ -112,8 +114,12 @@ def test_compact_microscope_widget_round_trip():
 
     microscope = de.Microscope(energy=18e3, sample_tilt=69.0, azimuthal=2.5)
     detector = de.EBSDDetector(
-        shape=(256, 384), pattern_center=(0.42, 0.58, 0.61), tilt=4.0, px_size=0.75,
-        sample_tilt=69.0, azimuthal=2.5,
+        shape=(256, 384),
+        pattern_center=(0.42, 0.58, 0.61),
+        tilt=4.0,
+        px_size=0.75,
+        sample_tilt=69.0,
+        azimuthal=2.5,
     )
     widget = MicroscopeWidget.from_setup(microscope=microscope, detector=detector)
     assert widget.energy_kev == pytest.approx(18.0)

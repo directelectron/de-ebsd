@@ -89,11 +89,13 @@ class _DiffsimsElasticScatteringAdapter:
         self._occupancies = np.asarray([site.occupancy for site, _ in atoms], dtype=float)
         self._b_angstrom2 = np.asarray([site.debye_waller * 100 for site, _ in atoms])
         self._coeffs = np.asarray([parameters[site.element] for site, _ in atoms])
-        if (not np.isfinite(self._positions).all()
-                or not np.isfinite(self._occupancies).all()
-                or not np.isfinite(self._b_angstrom2).all()
-                or np.any((self._occupancies < 0) | (self._occupancies > 1))
-                or np.any(self._b_angstrom2 < 0)):
+        if (
+            not np.isfinite(self._positions).all()
+            or not np.isfinite(self._occupancies).all()
+            or not np.isfinite(self._b_angstrom2).all()
+            or np.any((self._occupancies < 0) | (self._occupancies > 1))
+            or np.any(self._b_angstrom2 < 0)
+        ):
             raise ValueError("atoms require finite positions, occupancy in [0, 1], and B >= 0")
 
     def elastic_intensities(self, hkl: np.ndarray, g_nm: np.ndarray) -> np.ndarray:
@@ -359,9 +361,9 @@ class KinematicPatternModel:
             transverse_norm = transverse_norm[front]
             # The spot position is set by the transverse Ewald intersection,
             # not by the off-sphere g_z of a finite-width rel-rod.
-            slopes = transverse / np.sqrt(
-                np.maximum(1.0 - transverse_norm**2, _GEOMETRY_TOL)
-            )[:, None]
+            slopes = (
+                transverse / np.sqrt(np.maximum(1.0 - transverse_norm**2, _GEOMETRY_TOL))[:, None]
+            )
             in_view = np.all(np.abs(slopes) <= bound + _GEOMETRY_TOL, axis=1)
             selected_idx = selected_idx[in_view]
             slopes = slopes[in_view]

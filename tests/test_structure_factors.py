@@ -56,6 +56,7 @@ def test_ucg_gradients_match_finite_difference():
     fd_o = (op - om) / 2e-5
     assert abs(float(o.grad) - fd_o) / (abs(fd_o) + 1e-12) < 1e-5
 
+
 # Complex U_g in nm^-2 dumped from EMsoft's ``EMqg`` utility (mod_diffraction
 # ``CalcUcg``, WK branch) for Si.xtal at 20 kV with B = 0.0045 nm^2. Real part is
 # the elastic amplitude, imaginary part the WK absorptive (anomalous) term.

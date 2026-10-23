@@ -97,7 +97,9 @@ def test_refine_sharpens_coarse_orientation(master, detector, indexer):
     patterns = master.project(detector, r_true, rescale=True)  # (4, H, W)
 
     coarse, _ = indexer.index(patterns)
-    refined, score = indexer.refine(patterns, rotations=coarse, n_iterations=100, learning_rate=0.05)
+    refined, score = indexer.refine(
+        patterns, rotations=coarse, n_iterations=100, learning_rate=0.05
+    )
 
     assert refined.size == r_true.size
     assert tuple(score.shape) == (r_true.size,)
@@ -106,8 +108,7 @@ def test_refine_sharpens_coarse_orientation(master, detector, indexer):
         dis_refined = _dis(r_true[i], refined[i])
         assert dis_coarse < 1.5 * GRID_STEP_DEG  # coarse really is only cell-accurate
         assert dis_refined < 0.3 * dis_coarse, (
-            f"orientation {i}: refined {dis_refined:.3f} not < 0.3x coarse "
-            f"{dis_coarse:.3f} deg"
+            f"orientation {i}: refined {dis_refined:.3f} not < 0.3x coarse {dis_coarse:.3f} deg"
         )
         assert dis_refined < 0.5, f"orientation {i}: refined {dis_refined:.3f} deg > 0.5"
     assert torch.isfinite(score).all()
@@ -159,7 +160,9 @@ def test_refine_correct_seed_does_not_drift(master, detector, indexer):
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG))
     patterns = master.project(detector, r_true, rescale=True)
 
-    refined, score = indexer.refine(patterns, rotations=r_true, n_iterations=100, learning_rate=0.05)
+    refined, score = indexer.refine(
+        patterns, rotations=r_true, n_iterations=100, learning_rate=0.05
+    )
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.3  # interpolation-limited, tiny
     assert float(score.min()) > 0.99
@@ -192,14 +195,18 @@ def test_refine_recovers_perturbed_pattern_center(master):
     coarse, _ = idx_seed.index(patterns)
 
     refined, score, reference_pattern_center = idx_seed.refine(
-        patterns, rotations=coarse, pattern_center=pc_seed, refine_pattern_center=True, n_iterations=200, learning_rate=0.05
+        patterns,
+        rotations=coarse,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_iterations=200,
+        learning_rate=0.05,
     )
     refined_err = float((reference_pattern_center - pc_true_t).norm())
 
     assert tuple(reference_pattern_center.shape) == (3,)
     assert refined_err < 0.25 * seed_err, (
-        f"pattern center not recovered: seed err {seed_err:.4f} -> refined "
-        f"{refined_err:.4f}"
+        f"pattern center not recovered: seed err {seed_err:.4f} -> refined {refined_err:.4f}"
     )
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.5
@@ -278,7 +285,9 @@ def test_batched_matches_single(master, detector, indexer):
     patterns = master.project(detector, r_true, rescale=True)
     coarse, _ = indexer.index(patterns)
 
-    refined_b, score_b = indexer.refine(patterns, rotations=coarse, n_iterations=100, learning_rate=0.05)
+    refined_b, score_b = indexer.refine(
+        patterns, rotations=coarse, n_iterations=100, learning_rate=0.05
+    )
     for i in range(r_true.size):
         refined_s, score_s = indexer.refine(
             patterns[i], rotations=coarse[i], n_iterations=100, learning_rate=0.05
@@ -301,7 +310,12 @@ def test_per_pattern_pattern_center(master):
     pc_seed = pc_true_t[None].repeat(2, 1) + 0.015  # (2, 3) per-pattern seed
 
     refined, score, reference_pattern_center = idx.refine(
-        patterns, rotations=coarse, pattern_center=pc_seed, refine_pattern_center=True, n_iterations=200, learning_rate=0.05
+        patterns,
+        rotations=coarse,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_iterations=200,
+        learning_rate=0.05,
     )
     assert tuple(reference_pattern_center.shape) == (2, 3)
     for i in range(2):
@@ -391,13 +405,13 @@ def test_refine_stable_under_moderate_noise(master, detector, indexer):
     rng = np.random.default_rng(0)
     r_true = Rotation.from_euler(np.deg2rad(_EULER_DEG[2:4]))  # two asymmetric
     clean = master.project(detector, r_true, rescale=True)  # (2, H, W) in [-1, 1]
-    noise = torch.as_tensor(
-        rng.normal(0.0, 0.25, size=tuple(clean.shape)), dtype=clean.dtype
-    )
+    noise = torch.as_tensor(rng.normal(0.0, 0.25, size=tuple(clean.shape)), dtype=clean.dtype)
     patterns = clean + noise
     coarse = indexer.index(patterns)[0]
 
-    refined, score = indexer.refine(patterns, rotations=coarse, n_iterations=100)  # default learning_rate
+    refined, score = indexer.refine(
+        patterns, rotations=coarse, n_iterations=100
+    )  # default learning_rate
     assert torch.isfinite(score).all()
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < GRID_STEP_DEG  # converges toward truth
@@ -567,7 +581,12 @@ def test_lm_and_adam_both_run_and_history(master, detector, indexer):
 
     for method, n_iterations in (("adam", 20), ("lm", 8)):
         out = refine_orientation(
-            patterns, master, detector, coarse, method=method, n_iterations=n_iterations,
+            patterns,
+            master,
+            detector,
+            coarse,
+            method=method,
+            n_iterations=n_iterations,
             return_history=True,
         )
         assert len(out) == 3
@@ -601,13 +620,24 @@ def test_lm_refine_pc_falls_back_to_adam(master):
     # LM is orientation-only, so refine_pattern_center=True must transparently use the Adam path --
     # which still recovers both the orientation and the pattern center.
     out = refine_orientation(
-        patterns, master, det_seed, coarse, pattern_center=pc_seed, refine_pattern_center=True, method="lm",
-        directions=idx_seed._dirs, n_iterations=200, learning_rate=0.05, device="cpu",
+        patterns,
+        master,
+        det_seed,
+        coarse,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        method="lm",
+        directions=idx_seed._dirs,
+        n_iterations=200,
+        learning_rate=0.05,
+        device="cpu",
     )
     assert len(out) == 3  # (rotation, score, pattern_center) -- the pattern_center IS returned
     refined, score, reference_pattern_center = out
     assert tuple(reference_pattern_center.shape) == (3,)
-    assert float((reference_pattern_center - pc_true_t).norm()) < 0.25 * seed_err  # pattern_center genuinely refined
+    assert (
+        float((reference_pattern_center - pc_true_t).norm()) < 0.25 * seed_err
+    )  # pattern_center genuinely refined
     for i in range(r_true.size):
         assert _dis(r_true[i], refined[i]) < 0.5
 

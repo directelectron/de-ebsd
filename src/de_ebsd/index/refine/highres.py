@@ -48,7 +48,9 @@ def direction_cosines_from_pattern_center(
     return dc / dc.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)
 
 
-def direction_cosine_derivative(detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+def direction_cosine_derivative(
+    detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor
+) -> torch.Tensor:
     p = pattern_center.detach()
 
     def f(pc_arg: torch.Tensor) -> torch.Tensor:
@@ -139,9 +141,7 @@ def edge_importance_samples(
                 if k < samples_per_tile:  # pad short tiles by repeating their best pixel
                     sel = torch.cat([sel, sel[:, :1].expand(np_, samples_per_tile - k)], dim=1)
                 flat_cols.append(sel)
-                tid_cols.append(
-                    torch.full((samples_per_tile,), t, device=device, dtype=torch.long)
-                )
+                tid_cols.append(torch.full((samples_per_tile,), t, device=device, dtype=torch.long))
             flat = torch.cat(flat_cols, dim=1)  # (Np, K)
             tile_ids = torch.cat(tid_cols)  # (K,)
             counts = torch.bincount(tile_ids, minlength=n_total)
@@ -210,11 +210,19 @@ def levenberg_marquardt_refine(
 
     # orientation-only: the pattern center never moves, so build its direction
     # cosines once instead of rebuilding them every step
-    dc_fixed = None if refine_pattern_center else direction_cosines_from_pattern_center(detector, initial_pattern_center, rows, cols).detach()
+    dc_fixed = (
+        None
+        if refine_pattern_center
+        else direction_cosines_from_pattern_center(
+            detector, initial_pattern_center, rows, cols
+        ).detach()
+    )
 
     def _ncc(r_cur, pc_cur):
-        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pattern_center(
-            detector, pc_cur, rows, cols
+        dc = (
+            dc_fixed
+            if dc_fixed is not None
+            else direction_cosines_from_pattern_center(detector, pc_cur, rows, cols)
         )
         m = master.sample(dc @ r_cur.transpose(-1, -2)).to(device=device, dtype=dtype)
         _, _, m_hat = standardize_tiled(m, tile_ids, counts_ps, n_total)
@@ -225,9 +233,13 @@ def levenberg_marquardt_refine(
 
     for _ in range(n_steps):
         # (Np, K, 3); constant when the pattern center is fixed, so reuse the precompute
-        dc = dc_fixed if dc_fixed is not None else direction_cosines_from_pattern_center(
-            detector, pattern_center, rows, cols
-        ).detach()
+        dc = (
+            dc_fixed
+            if dc_fixed is not None
+            else direction_cosines_from_pattern_center(
+                detector, pattern_center, rows, cols
+            ).detach()
+        )
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
@@ -239,7 +251,9 @@ def levenberg_marquardt_refine(
         q = torch.einsum("pka,pab->pkb", g_m, r_mat)  # gM @ R -> (Np, K, 3)
         dm_dw = torch.linalg.cross(dc, q, dim=-1)  # dc x (gM @ R), (Np, K, 3)
         if refine_pattern_center:
-            ddc_dpc = direction_cosine_derivative(detector, pattern_center, rows, cols)  # (Np, K, 3, 3)
+            ddc_dpc = direction_cosine_derivative(
+                detector, pattern_center, rows, cols
+            )  # (Np, K, 3, 3)
             dm_dpc = torch.einsum("pkb,pkbc->pkc", q, ddc_dpc)  # (Np, K, 3)
             g_raw = torch.cat([dm_dw, dm_dpc], dim=-1)  # (Np, K, 6)
         else:
@@ -389,7 +403,9 @@ def refine_hr(
     if batch_size is not None:
         bs = int(batch_size)
     else:
-        per = k * (36 if refine_pattern_center else 12)  # bytes/pattern of the dominant intermediate
+        per = k * (
+            36 if refine_pattern_center else 12
+        )  # bytes/pattern of the dominant intermediate
         if sample_by == "master":
             # the seed render also holds a (bs, H*W, 3) direction-cosine block
             per = max(per, int(detector.nrows) * int(detector.ncols) * 12)
@@ -415,7 +431,9 @@ def refine_hr(
             # the master is noise-free, so its gradient marks true band edges; the
             # experimental gradient adds ~0.5 deg of scatter on real patterns
             with torch.no_grad():
-                dc_full = direction_cosines_from_pattern_center(detector, initial_pattern_center[sl], full_rows, full_cols)
+                dc_full = direction_cosines_from_pattern_center(
+                    detector, initial_pattern_center[sl], full_rows, full_cols
+                )
                 sim = master.sample(dc_full @ r0_mat[sl].transpose(-1, -2))
                 sim = sim.to(device=device, dtype=dtype).reshape(-1, hh, ww)
             rows, cols, flat, tile_ids, counts = edge_importance_samples(
@@ -427,8 +445,21 @@ def refine_hr(
             )
         e_raw = p_chunk.reshape(p_chunk.shape[0], -1).gather(1, flat.long())
         rf, pf, sc = levenberg_marquardt_refine(
-            master, detector, rows, cols, e_raw, tile_ids, counts, r0_mat[sl], initial_pattern_center[sl],
-            refine_pattern_center, n_steps, damping, keep_best, device, dtype,
+            master,
+            detector,
+            rows,
+            cols,
+            e_raw,
+            tile_ids,
+            counts,
+            r0_mat[sl],
+            initial_pattern_center[sl],
+            refine_pattern_center,
+            n_steps,
+            damping,
+            keep_best,
+            device,
+            dtype,
         )
         r_parts.append(rf)
         pc_parts.append(pf)

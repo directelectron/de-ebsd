@@ -106,8 +106,14 @@ def test_pc_recovery(which, off, master, smooth_master, detector):
     seed_err = float((initial_pattern_center - pc_true).norm())
 
     reference_pattern_center, info = determine_pattern_center(
-        patterns, mp, detector, r_true, pattern_center=initial_pattern_center, n_rounds=8,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        mp,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=8,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     ref_err = float((reference_pattern_center - pc_true).norm())
 
@@ -139,24 +145,39 @@ def test_single_pattern_degenerate_ensemble_reliable(master, detector):
     patterns = master.project(detector, r_true, rescale=True)
     g = torch.Generator().manual_seed(5)
     patterns = patterns + 0.3 * patterns.std() * torch.randn(
-        patterns.shape, generator=g, dtype=patterns.dtype)
+        patterns.shape, generator=g, dtype=patterns.dtype
+    )
     initial_pattern_center = pc_true + 0.03
 
-    single = np.array([
-        float(
-            (
-                determine_pattern_center(
-                    patterns[i:i + 1], master, detector, r_true[i:i + 1], pattern_center=initial_pattern_center,
-                    n_rounds=12, n_tiles=_NT, samples_per_tile=_SPT,
-                )[0]
-                - pc_true
-            ).norm()
-        )
-        for i in range(n)
-    ])
+    single = np.array(
+        [
+            float(
+                (
+                    determine_pattern_center(
+                        patterns[i : i + 1],
+                        master,
+                        detector,
+                        r_true[i : i + 1],
+                        pattern_center=initial_pattern_center,
+                        n_rounds=12,
+                        n_tiles=_NT,
+                        samples_per_tile=_SPT,
+                    )[0]
+                    - pc_true
+                ).norm()
+            )
+            for i in range(n)
+        ]
+    )
     pc_ens, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=12,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=12,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     ens = float((pc_ens - pc_true).norm())
 
@@ -184,9 +205,14 @@ def test_multiple_seeds_converge_to_same_pc(master, detector):
     refined = []
     for off in seeds:
         reference_pattern_center, _ = determine_pattern_center(
-            patterns, master, detector, r_true,
+            patterns,
+            master,
+            detector,
+            r_true,
             pattern_center=pc_true + torch.tensor(off, dtype=torch.float64),
-            n_rounds=8, n_tiles=_NT, samples_per_tile=_SPT,
+            n_rounds=8,
+            n_tiles=_NT,
+            samples_per_tile=_SPT,
         )
         refined.append(reference_pattern_center)
         assert float((reference_pattern_center - pc_true).norm()) < 0.005
@@ -210,15 +236,29 @@ def test_refine_orientations_true_and_false_both_recover(master, detector):
     # (a) coarse-perturbed seeds, orientations co-refined
     seed_r = _perturb(r_true, 1.0, seed=10)
     pc_a, _ = determine_pattern_center(
-        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, n_rounds=12, refine_orientations=True,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        seed_r,
+        pattern_center=initial_pattern_center,
+        n_rounds=12,
+        refine_orientations=True,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert float((pc_a - pc_true).norm()) < 0.003
 
     # (b) true orientations held fixed -> PC alone, near-exact
     pc_b, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=6, refine_orientations=False,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=6,
+        refine_orientations=False,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert float((pc_b - pc_true).norm()) < 5e-4
 
@@ -242,19 +282,40 @@ def test_workflow_orientation_refine_after_calibration(master, detector):
     seed_r = _perturb(r_true, 1.0, seed=20)
 
     pc_cal, rot_cal, info = determine_pattern_center(
-        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, n_rounds=18,
-        n_tiles=_NT, samples_per_tile=_SPT, return_orientations=True,
+        patterns,
+        master,
+        detector,
+        seed_r,
+        pattern_center=initial_pattern_center,
+        n_rounds=18,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        return_orientations=True,
     )
     assert isinstance(rot_cal, Rotation) and rot_cal.size == n
     assert float((pc_cal - pc_true).norm()) < 8e-4  # tight enough for sub-0.1-deg orient
 
     good, _ = refine_hr(
-        patterns, master, detector, seed_r, pattern_center=pc_cal, refine_pattern_center=False,
-        n_tiles=_NT, samples_per_tile=_SPT, n_steps=30,
+        patterns,
+        master,
+        detector,
+        seed_r,
+        pattern_center=pc_cal,
+        refine_pattern_center=False,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        n_steps=30,
     )
     bad, _ = refine_hr(
-        patterns, master, detector, seed_r, pattern_center=initial_pattern_center, refine_pattern_center=False,
-        n_tiles=_NT, samples_per_tile=_SPT, n_steps=30,
+        patterns,
+        master,
+        detector,
+        seed_r,
+        pattern_center=initial_pattern_center,
+        refine_pattern_center=False,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        n_steps=30,
     )
     good_dis = np.array([_dis(r_true[i], good[i]) for i in range(n)])
     bad_dis = np.array([_dis(r_true[i], bad[i]) for i in range(n)])
@@ -278,12 +339,24 @@ def test_numpy_and_torch_input_agree(master, detector):
     initial_pattern_center = pc_true + 0.02
 
     pc_t, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=4,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=4,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     pc_n, _ = determine_pattern_center(
-        patterns.cpu().numpy(), master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=4,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns.cpu().numpy(),
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=4,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert torch.allclose(pc_t, pc_n, atol=1e-9)
 
@@ -296,8 +369,15 @@ def test_return_orientations_and_info_fields(master, detector):
     initial_pattern_center = pc_true + 0.03
 
     out = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=6,
-        n_tiles=_NT, samples_per_tile=_SPT, return_orientations=True,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=6,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        return_orientations=True,
     )
     assert len(out) == 3
     reference_pattern_center, rotation, info = out
@@ -314,8 +394,14 @@ def test_return_orientations_and_info_fields(master, detector):
 
     # without the flag, only (pattern_center, info)
     two = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=2,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=2,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert len(two) == 2 and tuple(two[0].shape) == (3,) and isinstance(two[1], dict)
 
@@ -327,14 +413,26 @@ def test_single_pattern_and_batch_shapes(master, detector):
     initial_pattern_center = torch.tensor(detector.pattern_center, dtype=torch.float64) + 0.02
 
     pc_single, _ = determine_pattern_center(
-        patterns[0], master, detector, r_true[0], pattern_center=initial_pattern_center, n_rounds=2,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns[0],
+        master,
+        detector,
+        r_true[0],
+        pattern_center=initial_pattern_center,
+        n_rounds=2,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert tuple(pc_single.shape) == (3,)
 
     pc_batch, _ = determine_pattern_center(
-        patterns, master, detector, r_true, pattern_center=initial_pattern_center, n_rounds=2,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        master,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=2,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert tuple(pc_batch.shape) == (3,)
 
@@ -346,13 +444,24 @@ def test_shape_validation(master, detector):
 
     with pytest.raises(ValueError, match="rotations length"):
         determine_pattern_center(
-            patterns, master, detector, _orientations(3, seed=6), n_rounds=1,
-            n_tiles=_NT, samples_per_tile=_SPT,
+            patterns,
+            master,
+            detector,
+            _orientations(3, seed=6),
+            n_rounds=1,
+            n_tiles=_NT,
+            samples_per_tile=_SPT,
         )
     with pytest.raises(ValueError, match="pattern_center must be"):
         determine_pattern_center(
-            patterns, master, detector, r_true, pattern_center=torch.zeros(2), n_rounds=1,
-            n_tiles=_NT, samples_per_tile=_SPT,
+            patterns,
+            master,
+            detector,
+            r_true,
+            pattern_center=torch.zeros(2),
+            n_rounds=1,
+            n_tiles=_NT,
+            samples_per_tile=_SPT,
         )
 
 
@@ -366,8 +475,15 @@ def test_cuda_path(master, detector):
     initial_pattern_center = pc_true + 0.03
 
     reference_pattern_center, info = determine_pattern_center(
-        patterns, master_cuda, detector, r_true, pattern_center=initial_pattern_center, n_rounds=8,
-        n_tiles=_NT, samples_per_tile=_SPT, device="cuda",
+        patterns,
+        master_cuda,
+        detector,
+        r_true,
+        pattern_center=initial_pattern_center,
+        n_rounds=8,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        device="cuda",
     )
     assert reference_pattern_center.device.type == "cuda"
     assert float((reference_pattern_center.cpu() - pc_true).norm()) < 0.005
@@ -385,12 +501,25 @@ def test_a_sharp_master_is_reached_from_outside_its_basin(detector):
     initial_pattern_center = pc_true + torch.tensor((0.03, -0.03, 0.03), dtype=torch.float64)
 
     reference_pattern_center, info = determine_pattern_center(
-        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pattern_center=initial_pattern_center, n_rounds=8,
-        n_tiles=_NT, samples_per_tile=_SPT,
+        patterns,
+        sharp,
+        detector,
+        _perturb(r_true, 1.0, seed=4),
+        pattern_center=initial_pattern_center,
+        n_rounds=8,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
     )
     assert float((reference_pattern_center - pc_true).norm()) < 0.005, info
     pc_flat, _ = determine_pattern_center(
-        patterns, sharp, detector, _perturb(r_true, 1.0, seed=4), pattern_center=initial_pattern_center, n_rounds=8,
-        n_tiles=_NT, samples_per_tile=_SPT, blur=None,
+        patterns,
+        sharp,
+        detector,
+        _perturb(r_true, 1.0, seed=4),
+        pattern_center=initial_pattern_center,
+        n_rounds=8,
+        n_tiles=_NT,
+        samples_per_tile=_SPT,
+        blur=None,
     )
     assert float((pc_flat - pc_true).norm()) > 0.02

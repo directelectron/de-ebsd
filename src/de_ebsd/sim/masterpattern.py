@@ -118,8 +118,9 @@ class MasterPattern:
             pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(DIVISION_FLOOR) - 1.0
         return pattern.reshape(-1, detector.nrows, detector.ncols)
 
-    def to_stereographic(self, n: int = 501, hemisphere: str = "north",
-                         energy_kev: float | None = None) -> torch.Tensor:
+    def to_stereographic(
+        self, n: int = 501, hemisphere: str = "north", energy_kev: float | None = None
+    ) -> torch.Tensor:
         """Resample one hemisphere into a stereographic (equal-angle) image."""
         sign = 1.0 if hemisphere == "north" else -1.0
         coords = torch.linspace(-1.0, 1.0, n, device=self.device)
@@ -190,9 +191,7 @@ class MasterPattern:
         if projection == "sphere":
             if texture_height < 8:
                 raise ValueError("texture_height must be >= 8")
-            texture = self.to_equirectangular(
-                height=int(texture_height), energy_kev=energy_kev
-            )
+            texture = self.to_equirectangular(height=int(texture_height), energy_kev=energy_kev)
             return sphere_figure(
                 texture.detach().cpu().numpy(), title=f"Master pattern ({label})", **kwargs
             )

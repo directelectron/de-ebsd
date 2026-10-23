@@ -61,9 +61,7 @@ def _disorientation_deg(r_a: Rotation, r_b: Rotation) -> float:
 @pytest.fixture(scope="module")
 def crystal() -> Crystal:
     """Cubic silicon (Fd-3m, space group 227) -- a non-trivial point group (m-3m)."""
-    return Crystal.from_parameters(
-        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
-    )
+    return Crystal.from_parameters(a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))])
 
 
 @pytest.fixture(scope="module")
@@ -184,9 +182,7 @@ def test_index_scan_recovers_grid_both_layouts(master, detector, scan_patterns):
         assert xmap.size == r_true.size
         assert np.isfinite(xmap.prop["quality"]).all()
         assert xmap.phases[0].point_group.name == "m-3m"  # auto-derived from metadata
-        dis = [
-            _disorientation_deg(r_true[i], xmap.rotations[i]) for i in range(r_true.size)
-        ]
+        dis = [_disorientation_deg(r_true[i], xmap.rotations[i]) for i in range(r_true.size)]
         assert max(dis) < TOL_DEG, f"worst cell {max(dis):.2f} deg > {TOL_DEG:.2f} deg"
 
     # both layouts give the identical map
@@ -198,9 +194,7 @@ def test_index_scan_recovers_grid_both_layouts(master, detector, scan_patterns):
     for r in range(rows):
         for c in range(cols):
             flat = r * cols + c
-            assert (
-                _disorientation_deg(xmap_flat[r, c].rotations[0], r_true[flat]) < TOL_DEG
-            )
+            assert _disorientation_deg(xmap_flat[r, c].rotations[0], r_true[flat]) < TOL_DEG
 
 
 def test_index_scan_batch_chunking_matches_single_batch(master, detector, scan_patterns):

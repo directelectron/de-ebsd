@@ -28,13 +28,23 @@ import de_ebsd as de
 
 device = "cpu"  # change to "cuda" on a CUDA-capable workstation
 crystal = de.Crystal.from_parameters(
-    a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035,
+    a=0.35236,
+    space_group=225,
+    atoms=[("Ni", (0.0, 0.0, 0.0))],
+    debye_waller=0.0035,
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 depth = de.DepthDistribution.from_simulation(
-    crystal, microscope.energy_kev, n_electrons=10_000,
-    tilt_deg=microscope.sample_tilt, e_min_kev=15.0, e_bin_kev=2.5,
-    depth_max_nm=60.0, depth_step_nm=2.0, seed=11, device=device,
+    crystal,
+    microscope.energy_kev,
+    n_electrons=10_000,
+    tilt_deg=microscope.sample_tilt,
+    e_min_kev=15.0,
+    e_bin_kev=2.5,
+    depth_max_nm=60.0,
+    depth_step_nm=2.0,
+    seed=11,
+    device=device,
 )
 counts = depth.accum_z.sum(axis=(2, 3))
 assert np.all(counts.sum(axis=1) > 0), "Increase electron count to populate every energy bin."
@@ -63,7 +73,12 @@ histogram
 # transport depth weights for each energy. Explicitly use a dynamical backend.
 
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=100,
+    dmin=0.05,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float64, energy_resolved=True, chunk_size=512)
 assert master.data.shape == (3, 2, 2 * sim.npx + 1, 2 * sim.npx + 1)
@@ -82,13 +97,18 @@ master.show(projection="sphere", energy_kev=20.0, texture_height=128, n_grid=64)
 # and a consistent energy-integration convention.
 
 detector = de.EBSDDetector(
-    shape=(80, 100), pattern_center=(0.48, 0.58, 0.62), sample_tilt=microscope.sample_tilt, tilt=5.0,
+    shape=(80, 100),
+    pattern_center=(0.48, 0.58, 0.62),
+    sample_tilt=microscope.sample_tilt,
+    tilt=5.0,
 )
 orientation = Rotation.from_euler([[35.0, 45.0, 10.0]], degrees=True)
-patterns = torch.stack([
-    master.project(detector, orientation, energy_kev=float(energy), rescale=False)[0]
-    for energy in master.energies_kev
-])
+patterns = torch.stack(
+    [
+        master.project(detector, orientation, energy_kev=float(energy), rescale=False)[0]
+        for energy in master.energies_kev
+    ]
+)
 assert patterns.shape == (3, 80, 100) and torch.isfinite(patterns).all()
 figure, axes = apl.subplots(1, 3, figsize=(900, 300))
 for ax, energy, pattern in zip(np.ravel(axes), master.energies_kev, patterns, strict=True):

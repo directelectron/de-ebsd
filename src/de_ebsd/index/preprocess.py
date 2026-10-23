@@ -18,7 +18,6 @@ __all__ = [
 ]
 
 
-
 def _as_stack(patterns, device, dtype):
     x = torch.as_tensor(patterns, device=device, dtype=dtype)
     if x.ndim == 2:
@@ -108,9 +107,7 @@ def remove_static_background(
     stack, restore = _as_stack(patterns, device, dtype)
     bg = torch.as_tensor(static_bg, device=stack.device, dtype=dtype)
     if bg.shape != stack.shape[-2:]:
-        raise ValueError(
-            f"static_bg shape {tuple(bg.shape)} != detector {tuple(stack.shape[-2:])}"
-        )
+        raise ValueError(f"static_bg shape {tuple(bg.shape)} != detector {tuple(stack.shape[-2:])}")
     out = _rescale01(_apply(stack, bg[None], operation))
     return restore(out)
 

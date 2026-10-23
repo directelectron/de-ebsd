@@ -36,9 +36,7 @@ _SCAN_EULER_DEG = np.array(
 
 @pytest.fixture(scope="module")
 def crystal():
-    return Crystal.from_parameters(
-        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
-    )
+    return Crystal.from_parameters(a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))])
 
 
 @pytest.fixture(scope="module")

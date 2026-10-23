@@ -85,12 +85,14 @@ class EBSDDetector:
         height = self.nrows * self.px_size / 1000.0
         width = self.ncols * self.px_size / 1000.0
         x, y, z = self.pattern_center
-        corners = np.array([
-            [-x * width, y * height, z * height],
-            [(1 - x) * width, y * height, z * height],
-            [(1 - x) * width, -(1 - y) * height, z * height],
-            [-x * width, -(1 - y) * height, z * height],
-        ])
+        corners = np.array(
+            [
+                [-x * width, y * height, z * height],
+                [(1 - x) * width, y * height, z * height],
+                [(1 - x) * width, -(1 - y) * height, z * height],
+                [-x * width, -(1 - y) * height, z * height],
+            ]
+        )
         return corners @ sample_to_detector_matrix(
             self.sample_tilt, self.tilt, self.azimuthal, self.twist
         )
@@ -99,9 +101,10 @@ class EBSDDetector:
     def pattern_center_sample_mm(self) -> np.ndarray:
         """Perpendicular foot from impact to screen, in sample coordinates."""
         distance = self.pattern_center[2] * self.nrows * self.px_size / 1000.0
-        return distance * sample_to_detector_matrix(
-            self.sample_tilt, self.tilt, self.azimuthal, self.twist
-        )[2]
+        return (
+            distance
+            * sample_to_detector_matrix(self.sample_tilt, self.tilt, self.azimuthal, self.twist)[2]
+        )
 
     def direction_cosines(
         self,

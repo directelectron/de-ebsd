@@ -91,9 +91,7 @@ def _seed(r_true: Rotation, deg: float, rng_seed: int) -> Rotation:
 # --------------------------------------------------------------------------- #
 def test_direction_cosines_from_pc_matches_detector(detector):
     """:func:`direction_cosines_from_pattern_center` reproduces ``EBSDDetector.direction_cosines``."""
-    ref = detector.direction_cosines(dtype=torch.float64).reshape(
-        detector.nrows, detector.ncols, 3
-    )
+    ref = detector.direction_cosines(dtype=torch.float64).reshape(detector.nrows, detector.ncols, 3)
     rr, cc = torch.meshgrid(
         torch.arange(detector.nrows, dtype=torch.float64),
         torch.arange(detector.ncols, dtype=torch.float64),
@@ -134,7 +132,9 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
     r_eval = q0 @ rotation_vector_to_matrix(math.radians(2.0) * axis)
-    pc_eval = torch.tensor(detector.pattern_center, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
+    pc_eval = (
+        torch.tensor(detector.pattern_center, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
+    )
 
     def analytic(r_mat, pattern_center):
         dc = direction_cosines_from_pattern_center(detector, pattern_center, rows, cols).detach()
@@ -206,8 +206,15 @@ def test_joint_orientation_and_pc_recovery(master, detector):
     seed_pc_err = float((pc_seed - pc_true).norm())
 
     refined, score, refined_pattern_center = refine_hr(
-        patterns, master, detector, seed, pattern_center=pc_seed, refine_pattern_center=True,
-        n_tiles=8, samples_per_tile=8, n_steps=25,
+        patterns,
+        master,
+        detector,
+        seed,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_tiles=8,
+        samples_per_tile=8,
+        n_steps=25,
     )
     refined_pc_err = float((refined_pattern_center - pc_true).norm())
 
@@ -234,8 +241,15 @@ def test_joint_recovery_per_pattern_pc(master, detector):
     pc_seed = pc_true[None].repeat(3, 1) + 0.01  # (3, 3) per-pattern seed
 
     refined, score, refined_pattern_center = refine_hr(
-        patterns, master, detector, seed, pattern_center=pc_seed, refine_pattern_center=True,
-        n_tiles=8, samples_per_tile=8, n_steps=25,
+        patterns,
+        master,
+        detector,
+        seed,
+        pattern_center=pc_seed,
+        refine_pattern_center=True,
+        n_tiles=8,
+        samples_per_tile=8,
+        n_steps=25,
     )
     assert tuple(refined_pattern_center.shape) == (3, 3)
     for i in range(r_true.size):
@@ -262,9 +276,7 @@ def test_edge_sampling_prefers_edges_and_spreads(master, detector):
     # importance sampling: the selected pixels are higher-gradient than a random pick
     sel_grad = grad.gather(1, flat.long()).mean()
     rng = np.random.default_rng(0)
-    rand_idx = torch.as_tensor(
-        rng.integers(0, grad.shape[1], size=flat.shape), dtype=torch.long
-    )
+    rand_idx = torch.as_tensor(rng.integers(0, grad.shape[1], size=flat.shape), dtype=torch.long)
     rand_grad = grad.gather(1, rand_idx).mean()
     assert float(sel_grad) > 1.5 * float(rand_grad), (
         f"selected mean |grad| {float(sel_grad):.4f} not >> random {float(rand_grad):.4f}"
@@ -303,14 +315,26 @@ def test_tiled_beats_global_under_intensity_ramp(master, detector):
     seed = _seed(r_true, 1.0, rng_seed=2)
     # tiled: many small tiles, each locally normalized (the ramp is ~flat within a tile)
     tiled, _ = refine_hr(
-        ramped, master, detector, seed, refine_pattern_center=False,
-        n_tiles=16, samples_per_tile=8, n_steps=30,
+        ramped,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=16,
+        samples_per_tile=8,
+        n_steps=30,
     )
     # global: a single tile -> one mean/norm over the whole detector, which cannot remove
     # the spatially-varying ramp
     glob, _ = refine_hr(
-        ramped, master, detector, seed, refine_pattern_center=False,
-        n_tiles=1, samples_per_tile=16 * 16 * 8, n_steps=30,
+        ramped,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=1,
+        samples_per_tile=16 * 16 * 8,
+        n_steps=30,
     )
     tiled_dis = np.array([_dis(r_true[i], tiled[i]) for i in range(r_true.size)])
     glob_dis = np.array([_dis(r_true[i], glob[i]) for i in range(r_true.size)])
@@ -332,12 +356,24 @@ def test_more_samples_do_not_hurt(master, detector):
     seed = _seed(r_true, 1.5, rng_seed=7)
 
     few, _ = refine_hr(
-        patterns, master, detector, seed, refine_pattern_center=False,
-        n_tiles=6, samples_per_tile=2, n_steps=8,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=6,
+        samples_per_tile=2,
+        n_steps=8,
     )
     many, _ = refine_hr(
-        patterns, master, detector, seed, refine_pattern_center=False,
-        n_tiles=6, samples_per_tile=16, n_steps=8,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=6,
+        samples_per_tile=16,
+        n_steps=8,
     )
     few_dis = np.array([_dis(r_true[i], few[i]) for i in range(r_true.size)])
     many_dis = np.array([_dis(r_true[i], many[i]) for i in range(r_true.size)])
@@ -352,12 +388,24 @@ def test_all_pixels_agrees_with_dense_sample(master, detector):
     seed = _seed(r_true, 1.0, rng_seed=9)
 
     dense, _ = refine_hr(
-        patterns, master, detector, seed, refine_pattern_center=False,
-        n_tiles=8, samples_per_tile=32, n_steps=20,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=8,
+        samples_per_tile=32,
+        n_steps=20,
     )
     allpix, score = refine_hr(
-        patterns, master, detector, seed, refine_pattern_center=False,
-        n_tiles=8, all_pixels=True, n_steps=20,
+        patterns,
+        master,
+        detector,
+        seed,
+        refine_pattern_center=False,
+        n_tiles=8,
+        all_pixels=True,
+        n_steps=20,
     )
     for i in range(r_true.size):
         assert _dis(r_true[i], allpix[i]) < 0.1  # the reference path recovers truth
@@ -390,7 +438,9 @@ def test_single_and_numpy_input(master, detector):
     assert pattern.ndim == 2
     seed = _seed(r_true, 1.0, rng_seed=4)
 
-    refined, score = refine_hr(pattern, master, detector, seed, refine_pattern_center=False, n_steps=15)
+    refined, score = refine_hr(
+        pattern, master, detector, seed, refine_pattern_center=False, n_steps=15
+    )
     assert refined.size == 1
     assert tuple(score.shape) == (1,)
     assert _dis(r_true[0], refined[0]) < 0.1
@@ -402,7 +452,9 @@ def test_batched_matches_single(master, detector):
     patterns = master.project(detector, r_true, rescale=True)
     seed = _seed(r_true, 1.0, rng_seed=6)
 
-    batched, score_b = refine_hr(patterns, master, detector, seed, refine_pattern_center=False, n_steps=15)
+    batched, score_b = refine_hr(
+        patterns, master, detector, seed, refine_pattern_center=False, n_steps=15
+    )
     for i in range(r_true.size):
         single, score_s = refine_hr(
             patterns[i], master, detector, seed[i], refine_pattern_center=False, n_steps=15
@@ -430,8 +482,14 @@ def test_cuda_path(master, detector):
     seed = _seed(r_true, 1.0, rng_seed=8)
 
     refined, score, refined_pattern_center = refine_hr(
-        pattern, master_cuda, detector, seed, pattern_center=(pc_true + 0.01), refine_pattern_center=True,
-        n_steps=25, device="cuda",
+        pattern,
+        master_cuda,
+        detector,
+        seed,
+        pattern_center=(pc_true + 0.01),
+        refine_pattern_center=True,
+        n_steps=25,
+        device="cuda",
     )
     assert score.device.type == "cuda"
     assert refined_pattern_center.device.type == "cuda"

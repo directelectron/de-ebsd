@@ -42,18 +42,32 @@ from de_ebsd.viz import show_map, show_match, show_refinement
 
 device = "cpu"
 crystal = de.Crystal.from_parameters(
-    a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035,
+    a=0.35236,
+    space_group=225,
+    atoms=[("Ni", (0.0, 0.0, 0.0))],
+    debye_waller=0.0035,
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(60, 80), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
-    sample_tilt=microscope.sample_tilt, px_size=100.0,
+    shape=(60, 80),
+    pattern_center=(0.45, 0.55, 0.60),
+    tilt=5.0,
+    sample_tilt=microscope.sample_tilt,
+    px_size=100.0,
 )
 depth = de.DepthDistribution.single_energy(
-    microscope.energy_kev, thickness=40.0, depth_step=2.0, decay_length=15.0,
+    microscope.energy_kev,
+    thickness=40.0,
+    depth_step=2.0,
+    decay_length=15.0,
 )
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=100,
+    dmin=0.05,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float32)
 print(master)
@@ -70,11 +84,13 @@ rows, cols = 10, 14
 row_idx, col_idx = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
 grain = (col_idx >= cols // 2 + (row_idx - rows / 2) * 0.35).astype(int)
 grain_euler = np.array([[15.0, 35.0, 25.0], [205.0, 60.0, 130.0]])
-euler = grain_euler[grain.ravel()] + np.column_stack([
-    2.0 * col_idx.ravel() / cols,        # a gentle gradient across the grain
-    1.5 * row_idx.ravel() / rows,
-    np.zeros(rows * cols),
-])
+euler = grain_euler[grain.ravel()] + np.column_stack(
+    [
+        2.0 * col_idx.ravel() / cols,  # a gentle gradient across the grain
+        1.5 * row_idx.ravel() / rows,
+        np.zeros(rows * cols),
+    ]
+)
 truth = Rotation.from_euler(euler, degrees=True)
 clean = master.project(detector, truth)
 print(f"{rows * cols} patterns of shape {tuple(clean.shape[-2:])}")
@@ -88,7 +104,7 @@ print(f"{rows * cols} patterns of shape {tuple(clean.shape[-2:])}")
 # not a detector-response model: no energy weighting, no gain or blur.
 
 rng = np.random.default_rng(0)
-py, px = np.mgrid[0:detector.nrows, 0:detector.ncols]
+py, px = np.mgrid[0 : detector.nrows, 0 : detector.ncols]
 static_bg = 0.6 + 0.4 * np.exp(-(((py - 20) / 45.0) ** 2 + ((px - 40) / 60.0) ** 2))
 raw = clean.numpy() * static_bg + rng.normal(0.0, 0.03, clean.shape)
 
@@ -103,8 +119,10 @@ raw = clean.numpy() * static_bg + rng.normal(0.0, 0.03, clean.shape)
 # is the removal of the *spatially varying* background the NCC cannot absorb.
 
 patterns = remove_background(raw, static_bg=static_bg, operation="divide", device=device)
-print(f"preprocessed {tuple(patterns.shape)}, range "
-      f"[{float(patterns.min()):.2f}, {float(patterns.max()):.2f}]")
+print(
+    f"preprocessed {tuple(patterns.shape)}, range "
+    f"[{float(patterns.min()):.2f}, {float(patterns.max()):.2f}]"
+)
 
 # %%
 # Build the dictionary
@@ -127,10 +145,16 @@ print(f"preprocessed {tuple(patterns.shape)}, range "
 # and let a coarser grid work. Pseudo-symmetric phases need finer still.
 
 indexer = DictionaryIndexer(
-    master, detector, resolution=2.5, device=device, dtype=torch.float32,
+    master,
+    detector,
+    resolution=2.5,
+    device=device,
+    dtype=torch.float32,
 )
-print(f"point group {indexer.point_group.name}, "
-      f"{indexer.n_dict} dictionary orientations at {indexer.resolution} deg")
+print(
+    f"point group {indexer.point_group.name}, "
+    f"{indexer.n_dict} dictionary orientations at {indexer.resolution} deg"
+)
 
 # %%
 # Index the scan
@@ -170,7 +194,9 @@ show_match(patterns[point], master, detector, xmap.rotations[point])
 # analytic Jacobian) converges in ~12 steps where Adam needs ~60.
 
 refined, score, history = indexer.refine(
-    patterns, rotations=xmap.rotations, return_history=True,
+    patterns,
+    rotations=xmap.rotations,
+    return_history=True,
 )
 show_refinement(history)
 
@@ -194,10 +220,14 @@ def disorientation_deg(rotations):
 
 coarse_err = disorientation_deg(xmap.rotations)
 refined_err = disorientation_deg(refined)
-print(f"coarse  : median {np.median(coarse_err):6.3f} deg, max {coarse_err.max():6.3f} deg, "
-      f"mean NCC {float(xmap.prop['quality'].mean()):.3f}")
-print(f"refined : median {np.median(refined_err):6.3f} deg, max {refined_err.max():6.3f} deg, "
-      f"mean NCC {float(score.mean()):.3f}")
+print(
+    f"coarse  : median {np.median(coarse_err):6.3f} deg, max {coarse_err.max():6.3f} deg, "
+    f"mean NCC {float(xmap.prop['quality'].mean()):.3f}"
+)
+print(
+    f"refined : median {np.median(refined_err):6.3f} deg, max {refined_err.max():6.3f} deg, "
+    f"mean NCC {float(score.mean()):.3f}"
+)
 
 # %%
 # The refined map

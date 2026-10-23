@@ -65,15 +65,13 @@ class SphericalIndexer:
         # pin the plan to the master's real dtype so master and patterns transform
         # identically; the plan requires a real float type
         master_dtype = getattr(getattr(master, "data", None), "dtype", torch.float64)
-        self.dtype = master_dtype if master_dtype in (torch.float32, torch.float64) else (
-            torch.float64
+        self.dtype = (
+            master_dtype if master_dtype in (torch.float32, torch.float64) else (torch.float64)
         )
         self._eps = torch.finfo(self.dtype).eps
 
         # the plan does NOT auto-move from its CPU/float64 default, so pin it here
-        self.sht = SphericalHarmonicTransform(
-            self.bandwidth, device=self.device, dtype=self.dtype
-        )
+        self.sht = SphericalHarmonicTransform(self.bandwidth, device=self.device, dtype=self.dtype)
 
         # quadrature directions M = (L+1)*(2L+2)
         self._dirs = self.sht.grid_directions().reshape(-1, 3)
@@ -110,12 +108,8 @@ class SphericalIndexer:
         _, w = pattern_to_sphere(zero, self.detector, self._dirs)
         w_lm = self.sht.forward(w.reshape(self.sht.n_theta, self.sht.n_phi))
         # master mean and second moment over the rotated FOV, aligned elementwise with X
-        s1 = so3_cross_correlation(
-            self.a_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
-        s2 = so3_cross_correlation(
-            self.a2_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
+        s1 = so3_cross_correlation(self.a_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d)
+        s2 = so3_cross_correlation(self.a2_lm, w_lm, self.bandwidth, wigner_d_cached=self._wig_d)
         a_w = math.sqrt(4.0 * math.pi) * w_lm[0].real  # FOV spherical area
         denom = (s2 - s1**2 / a_w.clamp_min(self._eps)).clamp_min(self._eps).sqrt()
         self._w_lm = w_lm
@@ -168,13 +162,9 @@ class SphericalIndexer:
         mean = (samples * w).sum(-1, keepdim=True) / denom
         var = ((samples - mean) ** 2 * w).sum(-1, keepdim=True) / denom
         e = ((samples - mean) / var.clamp_min(self._eps).sqrt()) * w
-        b_lm = self.sht.forward(
-            e.reshape(*e.shape[:-1], self.sht.n_theta, self.sht.n_phi)
-        )
+        b_lm = self.sht.forward(e.reshape(*e.shape[:-1], self.sht.n_theta, self.sht.n_phi))
 
-        c = so3_cross_correlation(
-            self.a_lm, b_lm, self.bandwidth, wigner_d_cached=self._wig_d
-        )
+        c = so3_cross_correlation(self.a_lm, b_lm, self.bandwidth, wigner_d_cached=self._wig_d)
         n_grid = 2 * self.bandwidth + 2
 
         if normalize:
@@ -310,13 +300,11 @@ class SphericalIndexer:
             rows, cols = int(shape[0]), int(shape[1])
             if rows * cols != patt.shape[0]:
                 raise ValueError(
-                    f"shape {(rows, cols)} implies {rows * cols} patterns but got "
-                    f"{patt.shape[0]}"
+                    f"shape {(rows, cols)} implies {rows * cols} patterns but got {patt.shape[0]}"
                 )
         else:
             raise ValueError(
-                "patterns must be (rows, cols, H, W) or (N, H, W), got shape "
-                f"{tuple(patt.shape)}"
+                f"patterns must be (rows, cols, H, W) or (N, H, W), got shape {tuple(patt.shape)}"
             )
 
         n = rows * cols

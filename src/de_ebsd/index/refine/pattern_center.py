@@ -165,9 +165,7 @@ def determine_pattern_center(
     pattern_center = pattern_center.clone()
 
     # fixed band-edge samples + per-tile normalization, computed once (patterns never move)
-    rows, cols, flat, tile_ids, counts = edge_importance_samples(
-        patt, n_tiles, samples_per_tile
-    )
+    rows, cols, flat, tile_ids, counts = edge_importance_samples(patt, n_tiles, samples_per_tile)
     e_raw = patt.reshape(n_p, -1).gather(1, flat.long())  # (N, K) raw experimental
     n_total = int(counts.shape[0])
     n_active = int((counts > 0).sum())
@@ -205,8 +203,21 @@ def determine_pattern_center(
         if refine_orientations:
             pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
             r_mat, _, _ = levenberg_marquardt_refine(
-                seen, detector, rows, cols, e_raw, tile_ids, counts, r_mat, pc_bc,
-                False, n_orientation_steps, damping, keep_best, device, dtype,
+                seen,
+                detector,
+                rows,
+                cols,
+                e_raw,
+                tile_ids,
+                counts,
+                r_mat,
+                pc_bc,
+                False,
+                n_orientation_steps,
+                damping,
+                keep_best,
+                device,
+                dtype,
             )
 
         # 2. shared-PC block -- LM on the 3-vector, normal equations summed over all
@@ -214,8 +225,21 @@ def determine_pattern_center(
         # step already accounts for how each orientation would compensate it
         pc_before = pattern_center.clone()
         pattern_center, r_mat, damping = _shared_pc_lm(
-            seen, detector, rows, cols, r_mat, pattern_center, e_hat, tile_ids, counts_ps, n_total,
-            damping, n_pattern_center_steps, _seen_total, device, dtype,
+            seen,
+            detector,
+            rows,
+            cols,
+            r_mat,
+            pattern_center,
+            e_hat,
+            tile_ids,
+            counts_ps,
+            n_total,
+            damping,
+            n_pattern_center_steps,
+            _seen_total,
+            device,
+            dtype,
             joint=refine_orientations,
         )
         pc_step_history.append(float((pattern_center - pc_before).norm()))
@@ -275,7 +299,9 @@ def _shared_pc_lm(
 
     for _ in range(n_steps):
         pc_bc = pattern_center[None].expand(n_p, 3).contiguous()
-        dc = direction_cosines_from_pattern_center(detector, pc_bc, rows, cols).detach()  # (N, K, 3)
+        dc = direction_cosines_from_pattern_center(
+            detector, pc_bc, rows, cols
+        ).detach()  # (N, K, 3)
         # one reverse-mode grid_sample pass -> per-point master gradient dM/dv
         with torch.enable_grad():
             v = (dc @ r_mat.transpose(-1, -2)).detach().requires_grad_(True)
@@ -299,7 +325,9 @@ def _shared_pc_lm(
             jtj = torch.einsum("pki,pkj->pij", j_r, j_r)  # per pattern, (N, P, P)
             if joint:
                 a = jtj[:, :3, :3]
-                a = a + damping * torch.diag_embed(torch.diagonal(a, dim1=-2, dim2=-1).clamp_min(1e-9))
+                a = a + damping * torch.diag_embed(
+                    torch.diagonal(a, dim1=-2, dim2=-1).clamp_min(1e-9)
+                )
                 b = jtj[:, :3, 3:]  # (N, 3, 3) orientation-PC coupling
                 c = jtj[:, 3:, 3:].sum(0)
                 c = c + damping * torch.diag_embed(torch.diagonal(c).clamp_min(1e-9))

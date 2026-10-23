@@ -136,7 +136,11 @@ def sample_texture(
     lead = directions.shape[:-1]
     square = sphere_to_square(directions.reshape(-1, 3)) / SQRT_PI_HALF
     values = F.grid_sample(
-        texture, square.view(1, 1, -1, 2), mode="bilinear", align_corners=True, padding_mode="border"
+        texture,
+        square.view(1, 1, -1, 2),
+        mode="bilinear",
+        align_corners=True,
+        padding_mode="border",
     ).view(texture.shape[1], *lead)
     channel = (directions[..., 2] < 0).long()
     if phase is not None:

@@ -265,8 +265,9 @@ def differentiable_ucg_lut(
     if positions is None:
         positions = [torch.as_tensor(p, device=dev, dtype=torch.float64) for p in crystal.positions]
     if occupancies is None:
-        occupancies = [torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64)
-                       for s in crystal.sites]
+        occupancies = [
+            torch.as_tensor(s.occupancy, device=dev, dtype=torch.float64) for s in crystal.sites
+        ]
     dw = debye_waller if debye_waller is not None else [None] * len(crystal.sites)
 
     ucg = torch.zeros(len(hkl_box), device=dev, dtype=dtype)
@@ -279,7 +280,8 @@ def differentiable_ucg_lut(
         else:  # torch WK amplitude, differentiable in the Debye-Waller factor
             ul = torch.sqrt(b.to(dev, torch.float64) * DWWK)
             f_unique = wk_scattering_factor_torch(
-                z, g_unique_t, ul, energy_kev, absorption=absorption)
+                z, g_unique_t, ul, energy_kev, absorption=absorption
+            )
             f_t = f_unique.to(dtype)[inverse_t]
         # structure-factor phase sum over the site's atoms (differentiable in pos)
         phase = torch.exp(-2j * np.pi * (hkl_t @ pos.to(dev, torch.float64).T)).sum(dim=1)

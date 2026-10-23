@@ -51,8 +51,8 @@ def test_weak_beams_perturb_matrix(si_sf):
     k = _unit([0.35, 0.15, 1.0])
     with_weak = build_dynamical_matrix(si_sf, classify_reflections(si_sf, k, BetheParameters()))
     no_weak = build_dynamical_matrix(
-        si_sf, classify_reflections(si_sf, k, BetheParameters(strong=8.0, weak=8.000001,
-                                                              cutoff=8.000001))
+        si_sf,
+        classify_reflections(si_sf, k, BetheParameters(strong=8.0, weak=8.000001, cutoff=8.000001)),
     )
     assert np.all(np.isfinite(with_weak))
     # the two matrices describe the same strong set differently sized or valued
@@ -82,8 +82,13 @@ def test_bloch_backend_intensities(si_sf):
     """The Bloch backend returns finite, non-uniform backscatter intensities."""
     backend = BlochWaveBackend()
     backend.prepare(
-        SimulationInputs(structure_factors=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                         device=torch.device("cpu"), dtype=torch.float32)
+        SimulationInputs(
+            structure_factors=si_sf,
+            bethe=BetheParameters(),
+            monte_carlo=None,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
     )
     v = torch.randn(12, 3)
     v = v / v.norm(dim=-1, keepdim=True)

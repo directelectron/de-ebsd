@@ -16,7 +16,14 @@ import torch
 
 from de_ebsd.core.constants import DIVISION_FLOOR
 
-__all__ = ["axis_angle_matrix", "matrix_to_quaternion", "quaternion_to_matrix", "rotate_vectors", "rotation_vector_to_matrix", "skew_matrix"]
+__all__ = [
+    "axis_angle_matrix",
+    "matrix_to_quaternion",
+    "quaternion_to_matrix",
+    "rotate_vectors",
+    "rotation_vector_to_matrix",
+    "skew_matrix",
+]
 
 
 def quaternion_to_matrix(q: torch.Tensor) -> torch.Tensor:
@@ -60,9 +67,12 @@ def rotation_vector_to_matrix(w: torch.Tensor) -> torch.Tensor:
     th = th2.clamp_min(DIVISION_FLOOR).sqrt()
     small = th2 < 1e-12
     a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
-    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(DIVISION_FLOOR))
+    b = torch.where(
+        small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(DIVISION_FLOOR)
+    )
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
     return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)
+
 
 def axis_angle_matrix(axis: np.ndarray, angle_deg: float) -> np.ndarray:
     """Rotation matrix about *axis* by *angle_deg* degrees (right-handed)."""

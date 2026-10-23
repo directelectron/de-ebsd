@@ -35,8 +35,13 @@ def _smooth_field(v: torch.Tensor) -> torch.Tensor:
     """
     nx, ny, nz = v[..., 0], v[..., 1], v[..., 2]
     return (
-        1.5 + 0.6 * nx + 0.3 * ny + 0.2 * nz
-        + 0.4 * nx * ny - 0.25 * (nx**2 - ny**2) + 0.15 * ny * nz
+        1.5
+        + 0.6 * nx
+        + 0.3 * ny
+        + 0.2 * nz
+        + 0.4 * nx * ny
+        - 0.25 * (nx**2 - ny**2)
+        + 0.15 * ny * nz
     )
 
 
@@ -58,7 +63,9 @@ def master() -> MasterPattern:
 
 @pytest.fixture(scope="module")
 def detector() -> EBSDDetector:
-    return EBSDDetector(shape=(180, 180), pattern_center=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0)
+    return EBSDDetector(
+        shape=(180, 180), pattern_center=(0.5, 0.5, 0.62), sample_tilt=70.0, tilt=5.0
+    )
 
 
 @pytest.fixture(scope="module")
@@ -122,9 +129,7 @@ def test_fov_mask_matches_gnomonic_bounds(master, detector, directions):
     gn_y = comp[..., 1] / comp[..., 2]
     x_min, x_max, y_min, y_max = detector.gnomonic_bounds
     expected = (
-        (comp[..., 2] > 0)
-        & (gn_x >= x_min) & (gn_x <= x_max)
-        & (gn_y >= y_min) & (gn_y <= y_max)
+        (comp[..., 2] > 0) & (gn_x >= x_min) & (gn_x <= x_max) & (gn_y >= y_min) & (gn_y <= y_max)
     )
     assert torch.equal(mask > 0, expected)
 
@@ -193,9 +198,12 @@ def test_autograd_into_pattern_center_matches_fd(master, detector, directions):
     margin = 0.05
     interior = (
         in_fov
-        & ((col - col.round()).abs() > margin) & ((row - row.round()).abs() > margin)
-        & (col > margin) & (col < detector.ncols - 1 - margin)
-        & (row > margin) & (row < detector.nrows - 1 - margin)
+        & ((col - col.round()).abs() > margin)
+        & ((row - row.round()).abs() > margin)
+        & (col > margin)
+        & (col < detector.ncols - 1 - margin)
+        & (row > margin)
+        & (row < detector.nrows - 1 - margin)
     )
     weights = (weights * interior.to(torch.float64)).detach()
 
@@ -242,6 +250,4 @@ def test_shape_validation(detector, directions):
     with pytest.raises(ValueError):
         pattern_to_sphere(torch.zeros(10, 10), detector, directions)
     with pytest.raises(ValueError):
-        pattern_to_sphere(
-            torch.zeros(detector.nrows, detector.ncols), detector, directions[:, :2]
-        )
+        pattern_to_sphere(torch.zeros(detector.nrows, detector.ncols), detector, directions[:, :2])

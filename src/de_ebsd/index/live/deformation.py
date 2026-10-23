@@ -73,7 +73,6 @@ def polar_parts(beta: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return (u @ vt).to(beta.dtype), (stretch - eye).to(beta.dtype)
 
 
-
 def center_maps(detector, pattern_centers, device) -> torch.Tensor:
     """``(N, 3, 3)`` maps taking the refine's directions at the *detector*'s pattern
     center to those at each of *pattern_centers* ``(N, 3)``, up to length. *detector* is at the refine shape.
@@ -90,7 +89,9 @@ def center_maps(detector, pattern_centers, device) -> torch.Tensor:
 
     def screen(pattern_center):
         # (col, row, 1) -> the unnormalized screen position, as direction_cosines
-        b = replace(detector, pattern_center=tuple(float(v) for v in pattern_center)).gnomonic_bounds
+        b = replace(
+            detector, pattern_center=tuple(float(v) for v in pattern_center)
+        ).gnomonic_bounds
         x_scale, y_scale = (b[1] - b[0]) / detector.ncols, (b[3] - b[2]) / detector.nrows
         z = float(pattern_center[2])
         return np.array(
@@ -105,7 +106,10 @@ def center_maps(detector, pattern_centers, device) -> torch.Tensor:
         detector.sample_tilt, detector.tilt, detector.azimuthal, detector.twist
     )
     to_index = np.linalg.inv(screen(detector.pattern_center)) @ frame
-    maps = [frame.T @ screen(pattern_center) @ to_index for pattern_center in np.asarray(pattern_centers, float)]
+    maps = [
+        frame.T @ screen(pattern_center) @ to_index
+        for pattern_center in np.asarray(pattern_centers, float)
+    ]
     return torch.as_tensor(np.stack(maps), device=device, dtype=torch.float32)
 
 

@@ -61,7 +61,9 @@ def refine_pattern_center(
             scores.append(found_score.mean())
             refined.append(found)
         g = refined[0]
-        pattern_center = pattern_center + step * parabola_offset(torch.stack(scores).double().cpu()[None])[0]
+        pattern_center = (
+            pattern_center + step * parabola_offset(torch.stack(scores).double().cpu()[None])[0]
+        )
     center = tuple(float(v) for v in pattern_center)
     indexer.set_pattern_center(center)
     return center

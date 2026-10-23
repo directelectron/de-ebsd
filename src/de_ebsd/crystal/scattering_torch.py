@@ -63,13 +63,13 @@ def _rih1(x1, x2, x3, table: torch.Tensor) -> torch.Tensor:
     big2 = x2 > 20.0
     x2s = torch.where(big2, x2, torch.ones_like(x2))
     x2e = torch.where(big2, torch.zeros_like(x2), x2)
-    out = torch.where(big2, torch.exp(x2 - x1) * _rih2(x2s, table) / x2s,
-                      torch.exp(-x1) * _ei(x2e))
+    out = torch.where(big2, torch.exp(x2 - x1) * _rih2(x2s, table) / x2s, torch.exp(-x1) * _ei(x2e))
     big3 = x3 > 20.0
     x3s = torch.where(big3, x3, torch.ones_like(x3))
     x3e = torch.where(big3, torch.zeros_like(x3), x3)
-    out = out - torch.where(big3, torch.exp(x3 - x1) * _rih2(x3s, table) / x3s,
-                            torch.exp(-x1) * _ei(x3e))
+    out = out - torch.where(
+        big3, torch.exp(x3 - x1) * _rih2(x3s, table) / x3s, torch.exp(-x1) * _ei(x3e)
+    )
     return out
 
 
@@ -139,13 +139,15 @@ def _weko(a: np.ndarray, b: np.ndarray, s: torch.Tensor) -> torch.Tensor:
         argu_safe = torch.where(mid, argu, torch.ones_like(argu))
         total = total + torch.where(small, ai * bi * (1.0 - 0.5 * argu), torch.zeros_like(s))
         total = total + torch.where(large, ai * inv_s2, torch.zeros_like(s))
-        total = total + torch.where(mid, ai * (1.0 - torch.exp(-argu_safe)) * inv_s2,
-                                    torch.zeros_like(s))
+        total = total + torch.where(
+            mid, ai * (1.0 - torch.exp(-argu_safe)) * inv_s2, torch.zeros_like(s)
+        )
     return total
 
 
-def _fphon(g: torch.Tensor, ul: torch.Tensor, a: np.ndarray, b: np.ndarray,
-           table: torch.Tensor) -> torch.Tensor:
+def _fphon(
+    g: torch.Tensor, ul: torch.Tensor, a: np.ndarray, b: np.ndarray, table: torch.Tensor
+) -> torch.Tensor:
     fp2 = _FOURPI_PHON * _FOURPI_PHON
     a1 = np.asarray(a) * fp2
     b1 = np.asarray(b) / fp2
@@ -153,10 +155,12 @@ def _fphon(g: torch.Tensor, ul: torch.Tensor, a: np.ndarray, b: np.ndarray,
     out = torch.zeros_like(g)
     for j in range(4):
         out = out + a1[j] * a1[j] * (
-            dewa * _ri1(b1[j], b1[j], g, table) - _ri2(b1[j], b1[j], g, ul, table))
+            dewa * _ri1(b1[j], b1[j], g, table) - _ri2(b1[j], b1[j], g, ul, table)
+        )
         for i in range(j):
             out = out + 2.0 * a1[j] * a1[i] * (
-                dewa * _ri1(b1[i], b1[j], g, table) - _ri2(b1[i], b1[j], g, ul, table))
+                dewa * _ri1(b1[i], b1[j], g, table) - _ri2(b1[i], b1[j], g, ul, table)
+            )
     return out
 
 
@@ -172,16 +176,27 @@ def _fcore(g: torch.Tensor, z: int, voltage_kv: float) -> torch.Tensor:
     kappa = thetae / ta
     k2, o2 = kappa * kappa, omega * omega
 
-    x1 = omega / ((1.0 + o2) * torch.sqrt(o2 + 4.0 * k2)) * torch.log(
-        (omega + torch.sqrt(o2 + 4.0 * k2)) / (2.0 * kappa))
-    x2 = 1.0 / torch.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2) * torch.log(
-        (1.0 + 2.0 * k2 + o2 + torch.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2))
-        / (2.0 * kappa * np.sqrt(1.0 + k2)))
+    x1 = (
+        omega
+        / ((1.0 + o2) * torch.sqrt(o2 + 4.0 * k2))
+        * torch.log((omega + torch.sqrt(o2 + 4.0 * k2)) / (2.0 * kappa))
+    )
+    x2 = (
+        1.0
+        / torch.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2)
+        * torch.log(
+            (1.0 + 2.0 * k2 + o2 + torch.sqrt((1.0 + o2) ** 2 + 4.0 * k2 * o2))
+            / (2.0 * kappa * np.sqrt(1.0 + k2))
+        )
+    )
     x3_small = 1.0 / (4.0 * (1.0 + k2))
     big = omega > 1.0e-2
     omega_safe = torch.where(big, omega, torch.ones_like(omega))
-    x3_big = 1.0 / (omega_safe * torch.sqrt(o2 + 4.0 * (1.0 + k2))) * torch.log(
-        (omega_safe + torch.sqrt(o2 + 4.0 * (1.0 + k2))) / (2.0 * np.sqrt(1.0 + k2)))
+    x3_big = (
+        1.0
+        / (omega_safe * torch.sqrt(o2 + 4.0 * (1.0 + k2)))
+        * torch.log((omega_safe + torch.sqrt(o2 + 4.0 * (1.0 + k2))) / (2.0 * np.sqrt(1.0 + k2)))
+    )
     x3 = torch.where(big, x3_big, torch.full_like(omega, x3_small))
 
     hi = (2 * z) / (ta * ta) * (-x1 + x2 - x3)

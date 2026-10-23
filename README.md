@@ -39,24 +39,28 @@ fused CUDA kernels of live indexing need CuPy: `uv sync --extra live`.
 ```python
 import de_ebsd as de
 
-crystal    = de.Crystal.from_parameters(
+crystal = de.Crystal.from_parameters(
     a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))]
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
-sim        = de.MasterPatternSimulator(
-    crystal, microscope, npx=500, dmin=0.05, bethe=de.BetheParameters(),
+sim = de.MasterPatternSimulator(
+    crystal,
+    microscope,
+    npx=500,
+    dmin=0.05,
+    bethe=de.BetheParameters(),
     # backend="bloch_prism" is the default: the batched dynamical solve.
     # "bloch" is the one-direction-at-a-time float64 reference it reproduces.
 )
 
 # every stage is inspectable (all figures render through anyplotlib):
-sim.structure_factors().show()        # |U_g| per family, absences, V_0
-sim.reflections(k=(0, 0, 1)).show()   # Bethe strong / weak split for one beam
+sim.structure_factors().show()  # |U_g| per family, absences, V_0
+sim.reflections(k=(0, 0, 1)).show()  # Bethe strong / weak split for one beam
 sim.dynamical_matrix(k=(0, 0, 1)).show()
 
-master = sim.compute(device="cuda")   # -> MasterPattern
-master.show(projection="lambert")     # also "stereographic" and "sphere"
-sim.crystal.show()                     # real 3-D expanded crystal structure
+master = sim.compute(device="cuda")  # -> MasterPattern
+master.show(projection="lambert")  # also "stereographic" and "sphere"
+sim.crystal.show()  # real 3-D expanded crystal structure
 
 # refine and recompute (structure factors are reused when still valid):
 better = sim.refine(npx=1000, dmin=0.04)
@@ -85,7 +89,10 @@ for example one read from an EMsoft Monte Carlo file.
 
 ```python
 from de_ebsd.index import (
-    DictionaryIndexer, SphericalIndexer, refine_orientation, remove_background,
+    DictionaryIndexer,
+    SphericalIndexer,
+    refine_orientation,
+    remove_background,
 )
 
 patterns = remove_background(raw, static_bg=static_bg, operation="divide")

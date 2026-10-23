@@ -31,18 +31,30 @@ def test_probe_footprint_and_roundtrip():
 
 
 def test_detector_physical_geometry_matches_projection():
-    detector = EBSDDetector(shape=(4, 6), pattern_center=(.45, .55, .6), px_size=400,
-                            sample_tilt=57.4, tilt=22.7, azimuthal=13, twist=9)
+    detector = EBSDDetector(
+        shape=(4, 6),
+        pattern_center=(0.45, 0.55, 0.6),
+        px_size=400,
+        sample_tilt=57.4,
+        tilt=22.7,
+        azimuthal=13,
+        twist=9,
+    )
     corners = detector.corners_sample_mm
     assert np.linalg.norm(corners[1] - corners[0]) == pytest.approx(2.4)
     assert np.linalg.norm(corners[3] - corners[0]) == pytest.approx(1.6)
-    assert np.linalg.norm(detector.pattern_center_sample_mm) == pytest.approx(.96)
+    assert np.linalg.norm(detector.pattern_center_sample_mm) == pytest.approx(0.96)
     # Interpolate each pixel center on the physical screen; its unit vector
     # must equal the one the diffraction projection actually uses.
-    centers = np.array([
-        corners[0] + (j+.5)/6*(corners[1]-corners[0]) + (i+.5)/4*(corners[3]-corners[0])
-        for i in range(4) for j in range(6)
-    ])
+    centers = np.array(
+        [
+            corners[0]
+            + (j + 0.5) / 6 * (corners[1] - corners[0])
+            + (i + 0.5) / 4 * (corners[3] - corners[0])
+            for i in range(4)
+            for j in range(6)
+        ]
+    )
     directions = centers / np.linalg.norm(centers, axis=1, keepdims=True)
     assert np.allclose(directions, detector.direction_cosines(dtype=torch.float64).numpy())
 
@@ -53,20 +65,42 @@ def test_browser_geometry_matches_python(angles):
     if node is None:
         pytest.skip("Node is optional; required only for renderer geometry parity")
     sigma, tilt, azimuth, twist = angles
-    detector = EBSDDetector(shape=(80, 100), pattern_center=(.45, .55, .6), px_size=400,
-                            sample_tilt=sigma, tilt=tilt, azimuthal=azimuth, twist=twist)
+    detector = EBSDDetector(
+        shape=(80, 100),
+        pattern_center=(0.45, 0.55, 0.6),
+        px_size=400,
+        sample_tilt=sigma,
+        tilt=tilt,
+        azimuthal=azimuth,
+        twist=twist,
+    )
     widget = detector.show()
-    state = {key: getattr(widget, key) for key in (
-        "sample_tilt", "detector_tilt", "azimuthal", "twist", "detector_rows",
-        "detector_cols", "pcx", "pcy", "pcz", "px_size", "probe_diameter_nm",
-    )}
+    state = {
+        key: getattr(widget, key)
+        for key in (
+            "sample_tilt",
+            "detector_tilt",
+            "azimuthal",
+            "twist",
+            "detector_rows",
+            "detector_cols",
+            "pcx",
+            "pcy",
+            "pcz",
+            "px_size",
+            "probe_diameter_nm",
+        )
+    }
     from de_ebsd.viz import widgets
 
     module = Path(widgets.__file__).with_name("setup_widget.js").as_uri()
-    code = (f"import {{setupGeometry}} from {json.dumps(module)};"
-            f"console.log(JSON.stringify(setupGeometry({json.dumps(state)})));")
-    result = subprocess.run([node, "--input-type=module", "-e", code],
-                            capture_output=True, text=True, check=True)
+    code = (
+        f"import {{setupGeometry}} from {json.dumps(module)};"
+        f"console.log(JSON.stringify(setupGeometry({json.dumps(state)})));"
+    )
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", code], capture_output=True, text=True, check=True
+    )
     geometry = json.loads(result.stdout)
     assert np.allclose(geometry["corners"], detector.corners_sample_mm)
     assert np.allclose(geometry["pc"], detector.pattern_center_sample_mm)
@@ -96,12 +130,13 @@ def test_depth_widget_uses_real_profile_and_cutoff():
     widget.slice_index = 4
     assert depth.n_depths == 20  # inspecting never truncates the source
     assert "PRISM propagation point" in widget.to_html()
-    assert 'application/vnd.jupyter.widget-view+json' in widget._repr_mimebundle_()[0]
+    assert "application/vnd.jupyter.widget-view+json" in widget._repr_mimebundle_()[0]
 
 
 def test_energy_selection_and_empty_energy():
-    depth = DepthDistribution(np.array([15., 20.]), 2.,
-                              np.array([0, 0, 0, 0, 1, 2, 1, 0.]).reshape(2, 4, 1, 1), 4)
+    depth = DepthDistribution(
+        np.array([15.0, 20.0]), 2.0, np.array([0, 0, 0, 0, 1, 2, 1, 0.0]).reshape(2, 4, 1, 1), 4
+    )
     widget = depth.show(energy_kev=15)
     assert widget.energy_index == 0
     assert widget.profiles[0] == [0, 0, 0, 0]
@@ -116,4 +151,4 @@ def test_portable_html_is_self_contained_and_escapes_labels():
     assert widget.crystal_label not in html
     assert "setupGeometry" in html
     assert "cdn.jsdelivr" not in html
-    assert 'application/vnd.jupyter.widget-view+json' in widget._repr_mimebundle_()[0]
+    assert "application/vnd.jupyter.widget-view+json" in widget._repr_mimebundle_()[0]

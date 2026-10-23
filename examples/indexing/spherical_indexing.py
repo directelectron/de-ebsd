@@ -39,18 +39,32 @@ from de_ebsd.viz import show_correlation, show_map, show_match, show_refinement
 
 device = "cpu"
 crystal = de.Crystal.from_parameters(
-    a=0.35236, space_group=225, atoms=[("Ni", (0.0, 0.0, 0.0))], debye_waller=0.0035,
+    a=0.35236,
+    space_group=225,
+    atoms=[("Ni", (0.0, 0.0, 0.0))],
+    debye_waller=0.0035,
 )
 microscope = de.Microscope(energy=20e3, sample_tilt=70.0)
 detector = de.EBSDDetector(
-    shape=(60, 80), pattern_center=(0.45, 0.55, 0.60), tilt=5.0,
-    sample_tilt=microscope.sample_tilt, px_size=100.0,
+    shape=(60, 80),
+    pattern_center=(0.45, 0.55, 0.60),
+    tilt=5.0,
+    sample_tilt=microscope.sample_tilt,
+    px_size=100.0,
 )
 depth = de.DepthDistribution.single_energy(
-    microscope.energy_kev, thickness=40.0, depth_step=2.0, decay_length=15.0,
+    microscope.energy_kev,
+    thickness=40.0,
+    depth_step=2.0,
+    decay_length=15.0,
 )
 sim = de.MasterPatternSimulator(
-    crystal, microscope, npx=100, dmin=0.05, monte_carlo=depth, backend="bloch_prism",
+    crystal,
+    microscope,
+    npx=100,
+    dmin=0.05,
+    monte_carlo=depth,
+    backend="bloch_prism",
 )
 master = sim.compute(device=device, dtype=torch.float32)
 symmetry = phase_from_crystal(crystal).point_group
@@ -69,16 +83,18 @@ rows, cols = 6, 8
 row_idx, col_idx = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
 grain = (col_idx >= cols // 2 + (row_idx - rows / 2) * 0.35).astype(int)
 grain_euler = np.array([[15.0, 35.0, 25.0], [205.0, 60.0, 130.0]])
-euler = grain_euler[grain.ravel()] + np.column_stack([
-    2.0 * col_idx.ravel() / cols,
-    1.5 * row_idx.ravel() / rows,
-    np.zeros(rows * cols),
-])
+euler = grain_euler[grain.ravel()] + np.column_stack(
+    [
+        2.0 * col_idx.ravel() / cols,
+        1.5 * row_idx.ravel() / rows,
+        np.zeros(rows * cols),
+    ]
+)
 truth = Rotation.from_euler(euler, degrees=True)
 truth_o = Orientation(truth.data, symmetry=symmetry)
 
 rng = np.random.default_rng(0)
-py, px = np.mgrid[0:detector.nrows, 0:detector.ncols]
+py, px = np.mgrid[0 : detector.nrows, 0 : detector.ncols]
 static_bg = 0.6 + 0.4 * np.exp(-(((py - 20) / 45.0) ** 2 + ((px - 40) / 60.0) ** 2))
 clean = master.project(detector, truth).numpy()
 raw = clean * static_bg + rng.normal(0.0, 0.03, clean.shape)
@@ -102,8 +118,10 @@ print(f"{rows * cols} patterns of shape {tuple(patterns.shape[-2:])}")
 
 indexer = SphericalIndexer(master, detector, bandwidth=68, device=device)
 rotations, quality, surface = indexer.index(patterns[:1], return_surface=True)
-print(f"L = {indexer.bandwidth}, SOFT grid step "
-      f"{360 / (2 * indexer.bandwidth + 2):.2f} deg, surface {tuple(surface.shape)}")
+print(
+    f"L = {indexer.bandwidth}, SOFT grid step "
+    f"{360 / (2 * indexer.bandwidth + 2):.2f} deg, surface {tuple(surface.shape)}"
+)
 show_correlation(surface)
 
 # %%
@@ -142,9 +160,11 @@ for bandwidth in (40, 53, 68):
     rot, _ = trial.index(probe)
     elapsed = time.perf_counter() - start
     error = Orientation(rot.data, symmetry=symmetry).angle_with(probe_truth, degrees=True)
-    print(f"L = {bandwidth:3d}  step {360 / (2 * bandwidth + 2):5.2f} deg  "
-          f"median error {np.median(error):5.2f} deg  "
-          f"max {error.max():5.2f} deg  {elapsed:5.2f} s for {probe.shape[0]} patterns")
+    print(
+        f"L = {bandwidth:3d}  step {360 / (2 * bandwidth + 2):5.2f} deg  "
+        f"median error {np.median(error):5.2f} deg  "
+        f"max {error.max():5.2f} deg  {elapsed:5.2f} s for {probe.shape[0]} patterns"
+    )
 
 # %%
 # Index the scan
@@ -167,9 +187,7 @@ xmap = indexer.index_scan(scan, step=0.5, batch_size=16)
 print(xmap)
 show_map(xmap, value="both")
 
-coarse_error = Orientation(xmap.rotations.data, symmetry=symmetry).angle_with(
-    truth_o, degrees=True
-)
+coarse_error = Orientation(xmap.rotations.data, symmetry=symmetry).angle_with(truth_o, degrees=True)
 print(f"coarse: median {np.median(coarse_error):.3f} deg, max {coarse_error.max():.3f} deg")
 
 # %%
@@ -183,13 +201,19 @@ print(f"coarse: median {np.median(coarse_error):.3f} deg, max {coarse_error.max(
 # makes it monotone, so a seed is never made worse.
 
 refined, score, history = indexer.refine(
-    patterns, rotations=xmap.rotations, n_iterations=60, learning_rate=0.02, return_history=True,
+    patterns,
+    rotations=xmap.rotations,
+    n_iterations=60,
+    learning_rate=0.02,
+    return_history=True,
 )
 show_refinement(history)
 
 refined_error = Orientation(refined.data, symmetry=symmetry).angle_with(truth_o, degrees=True)
-print(f"refined: median {np.median(refined_error):.3f} deg, "
-      f"max {refined_error.max():.3f} deg, mean NCC {float(score.mean()):.3f}")
+print(
+    f"refined: median {np.median(refined_error):.3f} deg, "
+    f"max {refined_error.max():.3f} deg, mean NCC {float(score.mean()):.3f}"
+)
 
 # %%
 # The refined match
