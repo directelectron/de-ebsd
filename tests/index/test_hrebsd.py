@@ -36,11 +36,10 @@ import pytest
 import torch
 
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.geometry import sample_to_detector_tensor
+from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.index.crosscorr import (
     _design,
-    _gnomonic,
     _measure_shifts,
     _pixels_from_ray,
     _solve_beta,
@@ -108,7 +107,7 @@ def _render(master, detector, f=None, pc=None, rot=_R):
     rows = torch.arange(detector.nrows, dtype=DT)
     cols = torch.arange(detector.ncols, dtype=DT)
     rr, cc = torch.meshgrid(rows, cols, indexing="ij")
-    ray = _gnomonic(detector, pc, rr.reshape(-1), cc.reshape(-1))
+    ray = detector_rays(detector, pc, rr.reshape(-1), cc.reshape(-1))
     if f is not None:
         ray = ray @ torch.linalg.inv(torch.as_tensor(f, dtype=DT)).T
     om = sample_to_detector_tensor(detector, ray.device, DT)
@@ -130,7 +129,7 @@ def _rotation(axis, angle):
 def _exact_shifts(detector, f, centers, pc=None):
     """Exact projective displacement ``(M, 2)`` of each region center, in pixels."""
     pc = torch.as_tensor(detector.pc if pc is None else pc, dtype=DT)[None]
-    ray = _gnomonic(detector, pc, centers[:, 0], centers[:, 1])
+    ray = detector_rays(detector, pc, centers[:, 0], centers[:, 1])
     row1, col1 = _pixels_from_ray(detector, pc, torch.einsum("ij,nkj->nki", f, ray))
     return torch.stack([row1[0] - centers[:, 0], col1[0] - centers[:, 1]], dim=-1)
 

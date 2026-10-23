@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from de_ebsd.core.geometry import sample_to_detector_tensor
+from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 
 __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
@@ -41,16 +41,8 @@ def direction_cosines_from_pc(
     leading dims of the ``(..., K)`` fractional ``rows``/``cols``. Returns unit
     direction cosines ``(..., K, 3)``.
     """
-    device, dtype = rows.device, rows.dtype
-    om = sample_to_detector_tensor(detector, device, dtype)
-    aspect = detector.ncols / detector.nrows
-    pcx = pc[..., 0].unsqueeze(-1)
-    pcy = pc[..., 1].unsqueeze(-1)
-    pcz = pc[..., 2].unsqueeze(-1)
-    x_d = aspect * ((cols + 0.5) / detector.ncols - pcx)
-    y_d = pcy - (rows + 0.5) / detector.nrows
-    z_d = pcz + torch.zeros_like(x_d)
-    ray = torch.stack([x_d, y_d, z_d], dim=-1)  # (..., K, 3)
+    om = sample_to_detector_tensor(detector, rows.device, rows.dtype)
+    ray = detector_rays(detector, pc, rows, cols)  # (..., K, 3)
     dc = ray @ om  # sample-frame ray (rows: v @ om, matching direction_cosines)
     return dc / dc.norm(dim=-1, keepdim=True).clamp_min(_EPS)
 
