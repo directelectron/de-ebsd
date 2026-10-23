@@ -12,6 +12,7 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 from de_ebsd.crystal.structure_factors import StructureFactors, compute_structure_factors
 from de_ebsd.diffraction.backends import (
@@ -156,7 +157,7 @@ class MasterPatternSimulator:
             calling thread, inside the loop, so it should be quick and never
             block; an exception raised in it stops the simulation.
         """
-        device = torch.device(device) if device is not None else torch.device("cpu")
+        device = resolve_device(device)
         backend = resolve_backend(self.backend)
 
         # depth-integrating backends need a Monte Carlo exit-depth profile; when

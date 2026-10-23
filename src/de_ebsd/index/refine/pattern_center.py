@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.highres import (
     direction_cosine_derivative,
@@ -137,7 +138,7 @@ def determine_pattern_center(
         geometry), ``"pc_step"`` (L2 magnitude of the final round's PC move -- small
         means converged), ``"pc_step_history"``, and ``"n_rounds"``.
     """
-    device = master.data.device if device is None else torch.device(device)
+    device = resolve_device(device, master.data.device)
     dtype = master.data.dtype
     if master.data.device != device:
         master = master.to(device)

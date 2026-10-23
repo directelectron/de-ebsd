@@ -16,6 +16,7 @@ import math
 
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.spherical.correlation import so3_cross_correlation
 from de_ebsd.index.spherical.harmonics import SphericalHarmonicTransform
@@ -59,13 +60,7 @@ class SphericalIndexer:
         self.bandwidth = int(bandwidth)
         self.energy_kev = energy_kev
 
-        if device is not None:
-            self.device = torch.device(device)
-        else:
-            master_device = getattr(master, "device", None)
-            self.device = torch.device(master_device) if master_device is not None else (
-                torch.device("cpu")
-            )
+        self.device = resolve_device(device, getattr(master, "device", "cpu"))
 
         # pin the plan to the master's real dtype so master and patterns transform
         # identically; the plan requires a real float type

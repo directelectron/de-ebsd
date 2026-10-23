@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import C_PI, DWWK, PREF_COEF, PREG, SWK, electron_wavelength_nm
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 from de_ebsd.crystal.scattering import atomic_number, wk_scattering_factor
 from de_ebsd.crystal.scattering_torch import wk_scattering_factor_torch
@@ -248,7 +249,7 @@ def differentiable_ucg_lut(
     ``d(intensity)/d(crystal parameter)``. Lattice gradients (through ``g``)
     remain a further step.
     """
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     hmax = _hmax_for_dmin(crystal, dmin)
     m = 2 * hmax
     rng = np.arange(-m, m + 1)

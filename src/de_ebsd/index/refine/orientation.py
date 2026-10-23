@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import DIVISION_FLOOR
+from de_ebsd.core.device import resolve_device
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.refine.levenberg import adapt_damping
@@ -225,7 +226,7 @@ def refine_orientation(
     if n_iters is None:
         n_iters = 12 if method == "lm" else 60
 
-    device = master.data.device if device is None else torch.device(device)
+    device = resolve_device(device, master.data.device)
     dtype = master.data.dtype
     # master.data.device drives sampling, so move the master to honor `device`
     if master.data.device != device:

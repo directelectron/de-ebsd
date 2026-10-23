@@ -37,6 +37,7 @@ from dataclasses import replace
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
@@ -134,7 +135,7 @@ class LiveIndexer:
 
         if len(masters) != len(point_groups):
             raise ValueError("one point group per master")
-        self.device = torch.device(device) if device is not None else masters[0].device
+        self.device = resolve_device(device, masters[0].device)
         if dtype is None:
             tensor_cores = (
                 self.device.type == "cuda" and torch.cuda.get_device_capability(self.device)[0] >= 7

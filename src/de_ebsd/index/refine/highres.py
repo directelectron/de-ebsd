@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.constants import DIVISION_FLOOR
+from de_ebsd.core.device import resolve_device
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.levenberg import adapt_damping
@@ -348,7 +349,7 @@ def refine_hr(
     pattern_center : torch.Tensor
         Only when ``refine_pattern_center``: the refined pattern center, shaped like the input.
     """
-    device = master.data.device if device is None else torch.device(device)
+    device = resolve_device(device, master.data.device)
     dtype = master.data.dtype
     if master.data.device != device:
         master = master.to(device)

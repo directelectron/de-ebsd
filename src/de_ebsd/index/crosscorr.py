@@ -58,6 +58,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import DIVISION_FLOOR
+from de_ebsd.core.device import resolve_device
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 
 __all__ = ["HREBSDResult", "hrebsd", "remap_reference", "roi_centers"]
@@ -523,7 +524,7 @@ def hrebsd(
         Detector-frame tensors, the raw region shifts, and a per-point residual.
     """
     patt = torch.as_tensor(patterns)
-    device = patt.device if device is None else torch.device(device)
+    device = resolve_device(device, patt.device)
     dtype = patt.dtype if patt.is_floating_point() else torch.float32
     patt = patt.to(device=device, dtype=dtype)
     if patt.ndim == 2:

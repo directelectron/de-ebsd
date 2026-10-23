@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
+from de_ebsd.core.device import resolve_device
 from de_ebsd.index.preprocess import normalize_rows
 
 # orientations projected per chunk when building the dictionary, so a large
@@ -108,13 +109,7 @@ class DictionaryIndexer:
 
         self.point_group = self._resolve_point_group(master, point_group)
 
-        if device is not None:
-            self.device = torch.device(device)
-        else:
-            master_device = getattr(master, "device", None)
-            self.device = (
-                torch.device(master_device) if master_device is not None else torch.device("cpu")
-            )
+        self.device = resolve_device(device, getattr(master, "device", "cpu"))
 
         if dtype is None:
             has_tensor_cores = (

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import C_AVOGADRO
+from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
 
 if TYPE_CHECKING:
@@ -314,7 +315,7 @@ def simulate_depth_distribution(
     if e_min_kev is None:
         e_min_kev = beam_energy_kev - 5.0
 
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     gen = torch.Generator(device=dev)
     if seed is not None:
         gen.manual_seed(int(seed))
@@ -458,7 +459,7 @@ def soft_depth_histogram(
     contribution is only accumulated from the second step on (an electron must
     have entered the bulk).
     """
-    dev = torch.device(device) if device is not None else torch.device("cpu")
+    dev = resolve_device(device)
     gen = torch.Generator(device=dev)
     if seed is not None:
         gen.manual_seed(int(seed))

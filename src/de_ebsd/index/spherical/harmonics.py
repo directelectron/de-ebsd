@@ -13,6 +13,8 @@ import math
 import numpy as np
 import torch
 
+from de_ebsd.core.device import resolve_device
+
 __all__ = [
     "SphericalHarmonicTransform",
     "forward_sht",
@@ -215,7 +217,7 @@ class SphericalHarmonicTransform:
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("dtype must be a real floating type (float32 or float64)")
         self.bandwidth = int(bandwidth)
-        self.device = torch.device(device) if device is not None else torch.device("cpu")
+        self.device = resolve_device(device)
         self.dtype = dtype
         self.cdtype = torch.complex128 if dtype == torch.float64 else torch.complex64
 
