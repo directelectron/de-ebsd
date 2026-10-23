@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-__all__ = ["sample_to_detector_matrix", "sample_to_detector_tensor"]
+__all__ = ["detector_rays", "sample_to_detector_matrix", "sample_to_detector_tensor"]
 
 
 def _rodrigues_step(basis: np.ndarray, axis_row: int, angle: float) -> np.ndarray:
@@ -44,3 +44,24 @@ def sample_to_detector_tensor(detector, device, dtype: torch.dtype) -> torch.Ten
         detector.sample_tilt, detector.tilt, detector.azimuthal, detector.twist
     )
     return torch.as_tensor(om, device=device, dtype=dtype)
+
+
+def detector_rays(detector, pc: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor):
+    """Detector-frame rays ``(..., K, 3)`` through fractional pixels, for a pattern center.
+
+    The un-normalized ray is
+
+        ``x_d = aspect * ((col + 0.5) / ncols - pcx)``,
+        ``y_d = pcy - (row + 0.5) / nrows``,
+        ``z_d = pcz``,
+
+    in pure torch arithmetic, so it differentiates in ``pc`` (unlike the
+    ``grid_sample`` back-projection). ``pc`` is ``(..., 3)`` and broadcasts against
+    the ``(..., K)`` ``rows`` and ``cols``.
+    """
+    aspect = detector.ncols / detector.nrows
+    pcx, pcy, pcz = pc[..., 0:1], pc[..., 1:2], pc[..., 2:3]
+    x_d = aspect * ((cols + 0.5) / detector.ncols - pcx)
+    y_d = pcy - (rows + 0.5) / detector.nrows
+    z_d = pcz + torch.zeros_like(x_d)
+    return torch.stack([x_d, y_d, z_d], dim=-1)

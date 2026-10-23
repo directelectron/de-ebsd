@@ -4,7 +4,7 @@
 cross-correlates it against the master over all of SO(3) via spherical harmonics
 and the Wigner-D transform (after EMSphInx; Lenthe, Singh & De Graef, 2019).
 :class:`DictionaryIndexer` is the brute-force template-matching alternative.
-Both emit orix objects for kikuchipy. See INDEXING_DESIGN.md.
+Both emit orix objects for kikuchipy.
 """
 
 from __future__ import annotations

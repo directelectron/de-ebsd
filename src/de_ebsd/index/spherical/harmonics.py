@@ -3,7 +3,7 @@
 Forward and inverse SHT for band-limited functions on the sphere, with the
 associated Legendre functions built by stable upward recursion.
 :class:`SphericalHarmonicTransform` caches the grid and basis so the master and
-every pattern are expanded identically. See INDEXING_DESIGN.md (I1).
+every pattern are expanded identically.
 """
 
 from __future__ import annotations

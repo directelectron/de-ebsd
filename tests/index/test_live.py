@@ -25,10 +25,10 @@ from de_ebsd.index.live import (
     DEFORMATION_MAX_STEP,
     MIN_FRAMES_FOR_STATIC,
     LiveIndexer,
-    _normalized_rows,
     _pick,
     _texture,
 )
+from de_ebsd.index.preprocess import normalize_rows
 
 fused = pytest.mark.skipif(
     not _kernels.available("cuda") or not torch.cuda.is_available(),
@@ -213,9 +213,9 @@ def test_fused_score_is_the_normalized_cross_correlation(master, detector):
     )
     bases = torch.zeros(28, dtype=torch.int64, device="cuda")
     directions = detector.direction_cosines(device="cuda")
-    rows = _normalized_rows(torch.randn(4, len(directions), device="cuda"))
+    rows = normalize_rows(torch.randn(4, len(directions), device="cuda"))
     got = _kernels.score(texture, g, bases, directions, rows, 7)
-    simulated = _normalized_rows(_kernels.project(texture, g, bases, directions)).view(4, 7, -1)
+    simulated = normalize_rows(_kernels.project(texture, g, bases, directions)).view(4, 7, -1)
     expected = (simulated * rows[:, None]).sum(-1).flatten()
     assert torch.allclose(got, expected, atol=1e-5)
 
@@ -252,7 +252,7 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     strain = torch.as_tensor(e, dtype=torch.float32)
     deformed = g @ torch.linalg.inv(torch.eye(3) + strain)
     phase = torch.zeros(len(g), dtype=torch.int64)
-    rows = _normalized_rows(
+    rows = normalize_rows(
         indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
     )
     off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.2, degrees=True)
@@ -274,10 +274,10 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
-    patterns = _normalized_rows(
+    patterns = normalize_rows(
         indexer._project(indexer.texture, g, phase, indexer.refine_directions)
     )
-    rows = _normalized_rows(patterns - 0.5 * patterns.mean(0))
+    rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
     indexer.static = torch.ones(indexer.refine_shape)
     indexer.add_fits(phase, g)
     _, with_ghost, score = indexer.refine_deformation(rows, phase, g, ghost=indexer.ghost)
@@ -296,9 +296,9 @@ def test_a_fit_cannot_run_away(master, point_group, detector):
     )
     g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
     phase = torch.zeros(2, dtype=torch.int64)
-    rows = _normalized_rows(indexer._project(indexer.texture, g, phase, indexer.refine_directions))
+    rows = normalize_rows(indexer._project(indexer.texture, g, phase, indexer.refine_directions))
     noise = torch.randn(1, rows.shape[1], generator=torch.Generator().manual_seed(1))
-    rows[1] = _normalized_rows(noise)[0]
+    rows[1] = normalize_rows(noise)[0]
     _, strain, score = indexer.refine_deformation(rows, phase, g, iterations=10)
     assert strain[0].abs().max() < 1e-5 and score[0] > 0.999
     # strain is the symmetric part of eight numbers that each moved this far at most
@@ -323,7 +323,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     deformed = g @ torch.linalg.inv(torch.eye(3) + torch.as_tensor(e, dtype=torch.float32))
     phase = torch.zeros(len(g), dtype=torch.int64)
     sharp = indexer._project(indexer.texture, deformed, phase, indexer.refine_directions)
-    rows = _normalized_rows(_gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
+    rows = normalize_rows(_gaussian_blur(sharp.view(-1, 64, 64), 2.0, 4.0).flatten(1))
 
     def fit(**options):
         return indexer.refine_deformation(rows, phase, g, **options)[1]

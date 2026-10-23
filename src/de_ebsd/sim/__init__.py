@@ -2,7 +2,7 @@
 
 The crystallography lives in :mod:`de_ebsd.crystal`, the diffraction physics in
 :mod:`de_ebsd.diffraction`, and the electron transport in
-:mod:`de_ebsd.sim.montecarlo`. See DESIGN.md.
+:mod:`de_ebsd.sim.montecarlo`.
 """
 
 from de_ebsd.sim.detector import EBSDDetector

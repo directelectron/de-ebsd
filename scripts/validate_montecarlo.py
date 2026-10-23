@@ -26,8 +26,8 @@ import de_ebsd as de
 from de_ebsd.sim.montecarlo.depth import DepthDistribution
 from de_ebsd.sim.montecarlo.transport import simulate_depth_distribution
 
-SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
-NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")
+SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", "")
+NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", "")
 
 CRYSTALS = {
     "si": dict(a=0.5431, space_group=227,

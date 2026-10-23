@@ -1,7 +1,7 @@
 """Validate de_ebsd master patterns against EMsoft reference data.
 
 EMsoft is the validation *oracle* only -- de_ebsd computes the master pattern
-itself (see DESIGN.md). This script builds the same crystal, simulates, and
+itself. This script builds the same crystal, simulates, and
 correlates against a reference EMsoft master pattern:
 
 - Ni: ``kikuchipy.data.nickel_ebsd_master_pattern_small`` (20 keV, npx = 200),
@@ -20,7 +20,7 @@ The exit-depth profile that weights the Bloch depth integration comes from the
 EMsoft Monte Carlo file when one is supplied; otherwise de_ebsd falls back to
 its own single-energy exponential model (``DepthDistribution.single_energy``),
 so the simulation stays runnable with no EMsoft input. A native Monte Carlo
-that removes this last runtime dependency is on the roadmap (DESIGN.md).
+that removes this last runtime dependency is on the roadmap.
 
 Usage::
 
@@ -41,14 +41,13 @@ import de_ebsd as de
 from de_ebsd.core.lambert import master_pattern_grid
 
 # Reference EMsoft HDF5 paths. Overridable per material via the environment or
-# the --mc flag; the built-in fallbacks are the maintainer's local paths and are
-# not expected to exist elsewhere (the files are not redistributed).
-SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+# the --mc flag; there is no default, because the files are not redistributed.
+SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", "")
 # Optional Monte Carlo exit-depth statistics for Ni (kikuchipy ships only the
 # master pattern, not the MC run). Generate with EMsoft (EMMCOpenCL on Ni.xtal,
 # same settings as Si_MC). If absent the Bloch backend falls back to de_ebsd's
 # own single-energy depth model, which washes out the dynamical contrast.
-NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", r"D:\emsoft\EMdata\Ni_MC.h5")
+NI_MC_PATH = os.environ.get("DE_EBSD_NI_MC", "")
 
 
 def load_reference_ni() -> tuple[de.MasterPattern, dict]:
@@ -119,7 +118,7 @@ def main() -> None:
         "--mc", default=None,
         help="EMsoft reference HDF5 for this material (Si: the reference+MC run; "
              "Ni: optional exit-depth MC to refine the depth profile). Overrides "
-             "DE_EBSD_{SI,NI}_MC and the built-in default.")
+             "DE_EBSD_{SI,NI}_MC.")
     parser.add_argument("--html", default=None, help="save a side-by-side figure to this file")
     args = parser.parse_args()
 
@@ -177,7 +176,7 @@ def main() -> None:
     print(f"Pearson correlation  total: {r_all:+.4f}")
     if master.metadata["backend"] == "kinematical":
         print("(kinematical placeholder: band positions align, band profiles do not; "
-              "full parity requires the Bloch-wave backend, DESIGN.md M2)")
+              "full parity requires the Bloch-wave backend)")
 
     if args.html:
         from de_ebsd.viz.patterns import hemispheres_figure

@@ -57,7 +57,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from de_ebsd.core.geometry import sample_to_detector_tensor
+from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 
 __all__ = ["HREBSDResult", "hrebsd", "remap_reference", "roi_centers"]
 
@@ -69,24 +69,8 @@ _EPS = 1e-12
 # ---------------------------------------------------------------------------
 
 
-def _gnomonic(detector, pc: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor):
-    """Detector-frame rays ``(x_d, y_d, z_d)`` at fractional pixels, per ``pc``.
-
-    The un-normalized form of
-    :func:`~de_ebsd.index.refine.highres.direction_cosines_from_pc`, before the
-    rotation into the sample frame -- HR-EBSD works entirely in the detector frame.
-    ``pc`` is ``(..., 3)`` and broadcasts against ``(..., K)`` rows and cols.
-    """
-    aspect = detector.ncols / detector.nrows
-    pcx, pcy, pcz = pc[..., 0:1], pc[..., 1:2], pc[..., 2:3]
-    x_d = aspect * ((cols + 0.5) / detector.ncols - pcx)
-    y_d = pcy - (rows + 0.5) / detector.nrows
-    z_d = pcz + torch.zeros_like(x_d)
-    return torch.stack([x_d, y_d, z_d], dim=-1)
-
-
 def _pixels_from_ray(detector, pc: torch.Tensor, ray: torch.Tensor):
-    """Inverse of :func:`_gnomonic`: the fractional ``(row, col)`` a ray lands on.
+    """The fractional ``(row, col)`` a ray lands on: the inverse of ``detector_rays``.
 
     ``col + 0.5 = ncols * pcx + nrows * pcz * (r1 / r3)`` and
     ``row + 0.5 = nrows * pcy - nrows * pcz * (r2 / r3)``. Both gnomonic axes scale
@@ -288,7 +272,7 @@ def _design(detector, pc: torch.Tensor, centers: torch.Tensor):
     Free parameters are ``[b11, b12, b13, b21, b22, b23, b31, b32]`` with
     ``b33 = -(b11 + b22)``; rows are the gnomonic ``(qx, qy)`` of each region.
     """
-    ray = _gnomonic(detector, pc, centers[:, 0], centers[:, 1])  # (N, M, 3)
+    ray = detector_rays(detector, pc, centers[:, 0], centers[:, 1])  # (N, M, 3)
     x, y, z = ray[..., 0], ray[..., 1], ray[..., 2]
     o = torch.zeros_like(x)
     a9 = torch.stack(
@@ -340,7 +324,7 @@ def _reference_grid(detector, f, pc, pc_ref, rows, cols):
     content at ``F^-1 r``. Leaving through the test pattern center and re-entering
     through the reference's also absorbs their pattern-center difference, exactly.
     """
-    ray = _gnomonic(detector, pc, rows, cols)  # (N, K, 3)
+    ray = detector_rays(detector, pc, rows, cols)  # (N, K, 3)
     ray_ref = torch.einsum("nij,nkj->nki", torch.linalg.inv(f), ray)
     row_ref, col_ref = _pixels_from_ray(detector, pc_ref, ray_ref)
     gx = 2.0 * (col_ref + 0.5) / detector.ncols - 1.0

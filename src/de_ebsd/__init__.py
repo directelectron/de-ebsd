@@ -16,8 +16,6 @@ patterns back to orientations and :mod:`~de_ebsd.viz` drawing everything::
 
     detector = de.EBSDDetector(shape=(480, 480), pc=(0.5, 0.5, 0.6))
     patterns = master.project(detector, orientation=rotation)  # orix Rotation
-
-See DESIGN.md for the architecture and INDEXING_DESIGN.md for the indexer.
 """
 
 from __future__ import annotations

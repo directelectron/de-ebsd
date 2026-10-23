@@ -3,7 +3,7 @@
 The inverse of the forward projection: each sphere direction is mapped to a
 fractional detector pixel and bilinearly sampled, giving E(n) on a supplied
 direction set plus the field-of-view mask. Differentiable in the pattern
-center, which is what makes PC refinement possible. See INDEXING_DESIGN.md (I3).
+center, which is what makes PC refinement possible.
 """
 
 from __future__ import annotations

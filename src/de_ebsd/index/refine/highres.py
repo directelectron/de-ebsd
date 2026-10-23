@@ -3,7 +3,7 @@
 Instead of a whole back-projected direction set, ``refine_hr`` importance-samples
 a few thousand high-gradient band-edge pixels -- the ones that actually carry the
 orientation and pattern-center signal -- and runs Levenberg-Marquardt on those.
-Refines orientation and pattern center jointly. See INDEXING_DESIGN.md (I6).
+Refines orientation and pattern center jointly.
 """
 
 from __future__ import annotations
@@ -12,24 +12,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from de_ebsd.core.geometry import sample_to_detector_tensor
-from de_ebsd.core.rotation import quaternion_to_matrix
-from de_ebsd.index.refine.orientation import _skew
+from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 
 __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
 
 _EPS = 1e-12
-
-
-def _rotvec_to_matrix(w: torch.Tensor) -> torch.Tensor:
-    k = _skew(w)
-    th2 = (w * w).sum(-1)  # (...,)
-    th = th2.clamp_min(_EPS).sqrt()
-    small = th2 < 1e-12
-    a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
-    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(_EPS))
-    eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
-    return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)
 
 
 def direction_cosines_from_pc(
@@ -53,16 +41,8 @@ def direction_cosines_from_pc(
     leading dims of the ``(..., K)`` fractional ``rows``/``cols``. Returns unit
     direction cosines ``(..., K, 3)``.
     """
-    device, dtype = rows.device, rows.dtype
-    om = sample_to_detector_tensor(detector, device, dtype)
-    aspect = detector.ncols / detector.nrows
-    pcx = pc[..., 0].unsqueeze(-1)
-    pcy = pc[..., 1].unsqueeze(-1)
-    pcz = pc[..., 2].unsqueeze(-1)
-    x_d = aspect * ((cols + 0.5) / detector.ncols - pcx)
-    y_d = pcy - (rows + 0.5) / detector.nrows
-    z_d = pcz + torch.zeros_like(x_d)
-    ray = torch.stack([x_d, y_d, z_d], dim=-1)  # (..., K, 3)
+    om = sample_to_detector_tensor(detector, rows.device, rows.dtype)
+    ray = detector_rays(detector, pc, rows, cols)  # (..., K, 3)
     dc = ray @ om  # sample-frame ray (rows: v @ om, matching direction_cosines)
     return dc / dc.norm(dim=-1, keepdim=True).clamp_min(_EPS)
 
@@ -271,7 +251,7 @@ def _hr_lm_refine(
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
             a = jtj + lam[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, P)
-            r_new = r_mat @ _rotvec_to_matrix(delta[:, :3])
+            r_new = r_mat @ rotation_vector_to_matrix(delta[:, :3])
             pc_new = pc + delta[:, 3:6] if refine_pc else pc
             new_score = _ncc(r_new, pc_new)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,

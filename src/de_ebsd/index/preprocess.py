@@ -16,6 +16,7 @@ __all__ = [
 ]
 
 _EPS = 1e-12
+_ROW_NORM_FLOOR = 1e-6
 
 
 def _as_stack(patterns, device, dtype):
@@ -51,6 +52,13 @@ def _apply(pattern, background, operation):
     if operation == "divide":
         return pattern / background.clamp_min(_EPS)
     raise ValueError(f"operation must be 'subtract' or 'divide', got {operation!r}")
+
+
+def normalize_rows(x: torch.Tensor) -> torch.Tensor:
+    """Each row of *x* shifted to zero mean and scaled to unit length, so a dot product
+    of two rows is their normalized cross-correlation."""
+    x = x - x.mean(-1, keepdim=True)
+    return x / x.norm(dim=-1, keepdim=True).clamp_min(_ROW_NORM_FLOOR)
 
 
 def _gaussian_kernel_1d(std, truncate, device, dtype):

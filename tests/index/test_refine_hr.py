@@ -36,9 +36,9 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import refine_hr
 from de_ebsd.index.refine.highres import (
     _ddc_dpc,
@@ -48,31 +48,12 @@ from de_ebsd.index.refine.highres import (
     direction_cosines_from_pc,
     edge_importance_samples,
 )
-from de_ebsd.index.refine.orientation import _skew
-
-
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like field: bright Gaussian bands about great circles."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
 
 
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A band master: 12 great-circle bands, distinctive with clear high-gradient edges."""
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-    npx = 160
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master()
 
 
 @pytest.fixture(scope="module")
@@ -152,7 +133,7 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     rng = np.random.default_rng(3)
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
-    r_eval = q0 @ torch.matrix_exp(_skew(math.radians(2.0) * axis))
+    r_eval = q0 @ torch.matrix_exp(skew_matrix(math.radians(2.0) * axis))
     pc_eval = torch.tensor(detector.pc, dtype=dtype)[None].expand(n_p, 3).contiguous() + 0.01
 
     def analytic(r_mat, pc):
@@ -181,8 +162,8 @@ def test_6dof_jacobian_matches_finite_differences(master, detector):
     for k in range(3):  # orientation block via matrix_exp perturbation
         d = torch.zeros(n_p, 3, dtype=dtype)
         d[:, k] = eps
-        rp = residual(r_eval @ torch.matrix_exp(_skew(d)), pc_eval)
-        rm = residual(r_eval @ torch.matrix_exp(_skew(-d)), pc_eval)
+        rp = residual(r_eval @ torch.matrix_exp(skew_matrix(d)), pc_eval)
+        rm = residual(r_eval @ torch.matrix_exp(skew_matrix(-d)), pc_eval)
         j_fd[..., k] = (rp - rm) / (2 * eps)
     for k in range(3):  # pattern-center block via additive perturbation
         dp = torch.zeros(n_p, 3, dtype=dtype)

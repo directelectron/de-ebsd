@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 
+from conftest import SI_MC_PATH
 from de_ebsd import Crystal
 from de_ebsd.core.constants import C_AVOGADRO
 from de_ebsd.crystal.scattering import atomic_weight
@@ -385,7 +386,7 @@ def test_simulator_defaults_to_native_mc(si_crystal, microscope):
 # --------------------------------------------------------------------------- #
 # M-MC.4: validation against EMsoft accum_z (needs the reference file)
 # --------------------------------------------------------------------------- #
-_SI_MC = os.environ.get("DE_EBSD_SI_MC", r"D:\emsoft\EMdata\Si_MC.h5")
+_SI_MC = SI_MC_PATH
 
 
 @pytest.mark.skipif(not os.path.exists(_SI_MC), reason="EMsoft Si_MC.h5 reference not available")

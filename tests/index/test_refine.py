@@ -34,15 +34,14 @@ import pytest
 import torch
 from orix.quaternion import Rotation
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.lambert import master_pattern_grid
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import refine_orientation
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.refine.orientation import (
     _fov_directions,
     _lm_residual_jacobian,
-    _skew,
     _standardize,
 )
 from de_ebsd.index.spherical.indexer import SphericalIndexer
@@ -51,28 +50,10 @@ BANDWIDTH = 20
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)  # ~8.57 deg SOFT cell at L = 20
 
 
-def _band_field(v: torch.Tensor, poles: torch.Tensor, amps: torch.Tensor, width: float):
-    """A smooth Kikuchi-band-like field: bright Gaussian bands about great circles."""
-    d = v.to(torch.float64) @ poles.T
-    return (amps * torch.exp(-(d / width) ** 2)).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """The I4 band master: 12 great-circle bands, distinctive yet near-uniform norm."""
-    g = torch.Generator().manual_seed(7)
-    poles = torch.randn(12, 3, generator=g, dtype=torch.float64)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(12, generator=g, dtype=torch.float64)
-    npx = 160
-    north = master_pattern_grid(npx, dtype=torch.float64)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.11), _band_field(south, poles, amps, 0.11)],
-        dim=0,
-    )[None]  # (1, 2, n, n)
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master()
 
 
 @pytest.fixture(scope="module")
@@ -481,7 +462,7 @@ def test_lm_analytic_jacobian_matches_finite_differences(master, detector):
     rng = np.random.default_rng(3)
     axis = torch.as_tensor(rng.normal(size=(n_p, 3)), dtype=dtype)
     axis = axis / axis.norm(dim=-1, keepdim=True)
-    r_eval = q0 @ torch.matrix_exp(_skew(math.radians(2.0) * axis))
+    r_eval = q0 @ torch.matrix_exp(skew_matrix(math.radians(2.0) * axis))
 
     _, j_r, _ = _lm_residual_jacobian(master, dirs, r_eval, e_hat, device, dtype)
 
@@ -495,8 +476,8 @@ def test_lm_analytic_jacobian_matches_finite_differences(master, detector):
     for k in range(3):
         d = torch.zeros(n_p, 3, dtype=dtype)
         d[:, k] = eps
-        r_plus = residual(r_eval @ torch.matrix_exp(_skew(d)))
-        r_minus = residual(r_eval @ torch.matrix_exp(_skew(-d)))
+        r_plus = residual(r_eval @ torch.matrix_exp(skew_matrix(d)))
+        r_minus = residual(r_eval @ torch.matrix_exp(skew_matrix(-d)))
         j_fd[..., k] = (r_plus - r_minus) / (2 * eps)
 
     rel = (j_r - j_fd).abs() / j_fd.abs().clamp_min(1e-9)

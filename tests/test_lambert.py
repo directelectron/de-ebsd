@@ -78,11 +78,11 @@ def test_master_pattern_grid_conventions():
 
 
 def test_matches_validated_reference_values():
-    """Anchor against nn_hrebsd/kikuchipy's _vector2lambert conventions."""
+    """Anchor against kikuchipy's _vector2lambert conventions."""
     v = torch.tensor([[0.3, 0.4, 0.866025], [-0.5, 0.1, -0.860233]], dtype=torch.float64)
     v = v / v.norm(dim=-1, keepdim=True)
     xy = sphere_to_square(v)
-    # values computed with the validated nn_hrebsd implementation
+    # values computed with the validated reference implementation
     x, y, z = v[0]
     sq = math.sqrt(2 * (1 - abs(z.item())))
     assert xy[0, 1].item() == pytest.approx(sq * math.sqrt(math.pi) / 2, abs=1e-12)

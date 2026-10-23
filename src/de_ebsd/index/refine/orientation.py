@@ -5,30 +5,19 @@ master pattern sampled at trial-rotated directions -- both differentiable, so a
 coarse seed sharpens to sub-grid-cell accuracy. ``method="adam"`` is first-order
 and supports pattern-center refinement; ``method="lm"`` is a batched
 Gauss-Newton with an analytic Jacobian, ~2x faster but orientation-only.
-See INDEXING_DESIGN.md (I6).
 """
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import torch
 
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
 
 __all__ = ["refine_orientation"]
 
 _EPS = 1e-12
-
-
-def _skew(w: torch.Tensor) -> torch.Tensor:
-    zero = torch.zeros_like(w[..., 0])
-    row0 = torch.stack([zero, -w[..., 2], w[..., 1]], dim=-1)
-    row1 = torch.stack([w[..., 2], zero, -w[..., 0]], dim=-1)
-    row2 = torch.stack([-w[..., 1], w[..., 0], zero], dim=-1)
-    return torch.stack([row0, row1, row2], dim=-2)
 
 
 def _masked_ncc(a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -41,14 +30,6 @@ def _masked_ncc(a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor) -> torch.T
     na = (a0 * a0).sum(-1).clamp_min(_EPS).sqrt()
     nb = (b0 * b0).sum(-1).clamp_min(_EPS).sqrt()
     return num / (na * nb)
-
-
-def _fibonacci_directions(n: int, device, dtype) -> torch.Tensor:
-    i = torch.arange(n, device=device, dtype=dtype) + 0.5
-    phi = math.pi * (1.0 + 5.0**0.5) * i  # golden-angle azimuth
-    z = 1.0 - 2.0 * i / n  # even in cos(theta)
-    r = (1.0 - z * z).clamp_min(0.0).sqrt()
-    return torch.stack([r * torch.cos(phi), r * torch.sin(phi), z], dim=-1)
 
 
 def _fov_directions(detector, device, dtype, target: int = 1024) -> torch.Tensor:
@@ -85,7 +66,7 @@ def _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype):
     m = m_raw.detach().to(device=device, dtype=dtype)
     g_m = g_m.to(device=device, dtype=dtype)
     # tangent of v = R n wrt delta_k: R @ (-skew(n)), columns k -> (Np, M, 3, 3)
-    tang = r_mat[:, None] @ (-_skew(n))[None]
+    tang = r_mat[:, None] @ (-skew_matrix(n))[None]
     g = torch.einsum("pma,pmak->pmk", g_m, tang)  # raw dM/ddelta (Np, M, 3)
     c, s = _standardize(m)
     m_hat = c / s
@@ -121,7 +102,7 @@ def _lm_refine(
             diag = torch.diagonal(jtj, dim1=-2, dim2=-1).clamp_min(1e-9)
             a = jtj + lam[:, None, None] * torch.diag_embed(diag)
             delta = -torch.linalg.solve(a, jtr[..., None])[..., 0]  # (Np, 3)
-            r_new = r_mat @ torch.matrix_exp(_skew(delta))
+            r_new = r_mat @ torch.matrix_exp(skew_matrix(delta))
             m_new = master.sample(dirs @ r_new.transpose(-1, -2)).to(device=device, dtype=dtype)
             new_score = _masked_ncc(e, m_new, mask)
             # per-pattern accept/reject: robust to the bilinear grid_sample kinks,
@@ -325,7 +306,7 @@ def refine_orientation(
             e = _backproject(patt, detector, dirs, pc_param, per_pattern)[0]
         else:
             e = e_fixed
-        d_r = torch.matrix_exp(_skew(w))  # (Np, 3, 3)
+        d_r = torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
         r = r0_mat @ d_r  # right-compose: R = R0 . dR(w)
         v = dirs @ r.transpose(-1, -2)  # (Np, M, 3) = R n, matching project
         m_r = master.sample(v).to(device=device, dtype=dtype)  # (Np, M)
@@ -345,7 +326,7 @@ def refine_orientation(
 
     with torch.no_grad():
         refined_score = _score().detach()
-        r_ref = r0_mat @ torch.matrix_exp(_skew(w))  # (Np, 3, 3)
+        r_ref = r0_mat @ torch.matrix_exp(skew_matrix(w))  # (Np, 3, 3)
         if keep_best:
             # keep the coarse seed where refinement did not raise the NCC. Under
             # refine_pc the gate reverts only the orientation, so seed_score (taken

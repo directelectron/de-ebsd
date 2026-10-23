@@ -35,12 +35,11 @@ import numpy as np
 import pytest
 import torch
 
+from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.geometry import sample_to_detector_tensor
-from de_ebsd.core.lambert import master_pattern_grid
+from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.index.crosscorr import (
     _design,
-    _gnomonic,
     _measure_shifts,
     _pixels_from_ray,
     _solve_beta,
@@ -53,25 +52,10 @@ from de_ebsd.index.crosscorr import (
 DT = torch.float64
 
 
-def _band_field(v, poles, amps, width):
-    d = v.to(DT) @ poles.T
-    return (amps * torch.exp(-((d / width) ** 2))).sum(-1)
-
-
 @pytest.fixture(scope="module")
 def master() -> MasterPattern:
     """A band master. Smoother than a real pattern -- see the module docstring."""
-    g = torch.Generator().manual_seed(11)
-    poles = torch.randn(18, 3, generator=g, dtype=DT)
-    poles = poles / poles.norm(dim=-1, keepdim=True)
-    amps = 0.5 + torch.rand(18, generator=g, dtype=DT)
-    north = master_pattern_grid(220, dtype=DT)
-    south = north.clone()
-    south[..., 2] = -south[..., 2]
-    data = torch.stack(
-        [_band_field(north, poles, amps, 0.05), _band_field(south, poles, amps, 0.05)], dim=0
-    )[None]
-    return MasterPattern(data=data, energies_kev=np.array([20.0]))
+    return make_band_master(npx=220, width=0.05, n_bands=18, seed=11)
 
 
 @pytest.fixture(scope="module")
@@ -108,7 +92,7 @@ def _render(master, detector, f=None, pc=None, rot=_R):
     rows = torch.arange(detector.nrows, dtype=DT)
     cols = torch.arange(detector.ncols, dtype=DT)
     rr, cc = torch.meshgrid(rows, cols, indexing="ij")
-    ray = _gnomonic(detector, pc, rr.reshape(-1), cc.reshape(-1))
+    ray = detector_rays(detector, pc, rr.reshape(-1), cc.reshape(-1))
     if f is not None:
         ray = ray @ torch.linalg.inv(torch.as_tensor(f, dtype=DT)).T
     om = sample_to_detector_tensor(detector, ray.device, DT)
@@ -130,7 +114,7 @@ def _rotation(axis, angle):
 def _exact_shifts(detector, f, centers, pc=None):
     """Exact projective displacement ``(M, 2)`` of each region center, in pixels."""
     pc = torch.as_tensor(detector.pc if pc is None else pc, dtype=DT)[None]
-    ray = _gnomonic(detector, pc, centers[:, 0], centers[:, 1])
+    ray = detector_rays(detector, pc, centers[:, 0], centers[:, 1])
     row1, col1 = _pixels_from_ray(detector, pc, torch.einsum("ij,nkj->nki", f, ray))
     return torch.stack([row1[0] - centers[:, 0], col1[0] - centers[:, 1]], dim=-1)
 

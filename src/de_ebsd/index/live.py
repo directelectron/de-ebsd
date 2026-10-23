@@ -39,9 +39,9 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.lambert import SQRT_PI_HALF, sphere_to_square
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, skew_matrix
 from de_ebsd.index import _kernels
-from de_ebsd.index.preprocess import _gaussian_blur
+from de_ebsd.index.preprocess import _gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
 
@@ -123,11 +123,6 @@ DEFORMATION_MAX_STEP = 5e-3
 DEFORMATION_SCORE_MARGIN = 1e-4
 
 
-def _normalized_rows(x: torch.Tensor) -> torch.Tensor:
-    x = x - x.mean(-1, keepdim=True)
-    return x / x.norm(dim=-1, keepdim=True).clamp_min(_EPS)
-
-
 def _texture(masters, device, blur_deg: float = 0.0) -> torch.Tensor:
     """Every phase's hemispheres as channels of one texture ``(1, 2 * phases, n, n)``:
     one sampling pass serves all phases, and each pattern keeps its own phase's."""
@@ -173,11 +168,7 @@ def _rotation_matrices(w: torch.Tensor) -> torch.Tensor:
     """Rotation vectors ``(..., 3)`` in radians as matrices ``(..., 3, 3)``."""
     theta = w.norm(dim=-1, keepdim=True)
     k = w / theta.clamp_min(1e-12)
-    zero = torch.zeros_like(k[..., 0])
-    skew = torch.stack(
-        [zero, -k[..., 2], k[..., 1], k[..., 2], zero, -k[..., 0], -k[..., 1], k[..., 0], zero],
-        dim=-1,
-    ).reshape(*k.shape[:-1], 3, 3)
+    skew = skew_matrix(k)
     s = torch.sin(theta)[..., None]
     c = torch.cos(theta)[..., None]
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand_as(skew)
@@ -317,7 +308,7 @@ class LiveIndexer:
             #: ``(pixels, entries)``, so the search's product reads it at full rate.
             self.dictionary = torch.empty(shape, device=self.device, dtype=self.dtype)
         for lo in range(0, len(self.rotations), BATCH * 8):
-            entries = _normalized_rows(
+            entries = normalize_rows(
                 self._project(
                     self.search_texture,
                     self.rotations[lo : lo + BATCH * 8],
@@ -360,7 +351,7 @@ class LiveIndexer:
         bases = phases.repeat_interleave(k) * 2
         if self.fused:
             return _kernels.score(self.texture, flat, bases, directions, rows, k).view(n, k)
-        simulated = _normalized_rows(self._project(self.texture, flat, bases // 2, directions))
+        simulated = normalize_rows(self._project(self.texture, flat, bases // 2, directions))
         return torch.einsum("nkp,np->nk", simulated.view(n, k, -1), rows)
 
     def restart_static(self, frames=None, *, blur: float | None = None) -> None:
@@ -437,7 +428,7 @@ class LiveIndexer:
         rows ``(N, pixels)`` at the two shapes."""
         t = self._without_background(self._pooled(frames))
         search = _average_to(t, self.search_shape)
-        return _normalized_rows(search.flatten(1)), _normalized_rows(t.flatten(1))
+        return normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
 
     def search(self, search_rows: torch.Tensor):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
@@ -563,7 +554,7 @@ class LiveIndexer:
         if center_maps is not None:
             g = g @ center_maps
         fits = self._project(self.texture, g, phase, self.refine_directions)
-        self._fit_sum += _normalized_rows(fits).sum(0)
+        self._fit_sum += normalize_rows(fits).sum(0)
         self._fit_count += len(g)
 
     @property
@@ -581,7 +572,7 @@ class LiveIndexer:
         """
         if self.static is None or not self._fit_count:
             return None
-        return _normalized_rows(self._fit_sum[None])[0]
+        return normalize_rows(self._fit_sum[None])[0]
 
     def refine_deformation(
         self,
@@ -632,7 +623,7 @@ class LiveIndexer:
         damping = 1e-3 * torch.eye(8, device=self.device)
         p = torch.zeros(n, 8, device=self.device)
         if ghost is not None:
-            refine_rows = _normalized_rows(refine_rows - (refine_rows @ ghost)[:, None] * ghost)
+            refine_rows = normalize_rows(refine_rows - (refine_rows @ ghost)[:, None] * ghost)
 
         def on_ghost(simulated):
             """Each simulation's component along the ghost. The simulations are
@@ -654,7 +645,7 @@ class LiveIndexer:
                 phase.repeat_interleave(k),
                 self.refine_directions,
             )
-            simulated = _normalized_rows(simulated).view(n, k, -1)
+            simulated = normalize_rows(simulated).view(n, k, -1)
             along = on_ghost(simulated)
             fit, fit_along = simulated[:, 0], along[:, :1]
             jacobian = (simulated[:, 1:9] - simulated[:, 9:]) / (2 * step)
@@ -687,7 +678,7 @@ class LiveIndexer:
             trial = g[:, None] @ (eye - torch.einsum("nmc,cij->nmij", tried[:, 1:], basis))
             if center_maps is not None:
                 trial = trial @ center_maps[:, None]
-            simulated = _normalized_rows(
+            simulated = normalize_rows(
                 self._project(
                     self.texture,
                     trial.reshape(-1, 3, 3),
@@ -704,7 +695,7 @@ class LiveIndexer:
         final = g @ (eye - beta)
         if center_maps is not None:
             final = final @ center_maps
-        simulated = _normalized_rows(
+        simulated = normalize_rows(
             self._project(self.texture, final, phase, self.refine_directions)
         )
         score = (simulated * refine_rows).sum(-1) / (1 - on_ghost(simulated) ** 2).sqrt()

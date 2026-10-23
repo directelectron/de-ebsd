@@ -1,11 +1,14 @@
 """Shared fixtures: small, fast crystals and structure-factor tables."""
 
+import os
+
 import pytest
 
 from de_ebsd import Crystal, Microscope
 from de_ebsd.crystal.structure_factors import compute_structure_factors
 
-SI_MC_PATH = r"D:\emsoft\EMdata\Si_MC.h5"
+# EMsoft reference run, kept out of the repository; tests needing it skip when unset
+SI_MC_PATH = os.environ.get("DE_EBSD_SI_MC", "")
 
 
 @pytest.fixture(scope="session")

@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
-_EPS = 1e-6
+from de_ebsd.index.preprocess import normalize_rows
 
 # orientations projected per chunk when building the dictionary, so a large
 # fundamental zone never materializes its whole (n_dict, P, 3) sampling tensor
@@ -24,11 +24,6 @@ _PROJ_CHUNK = 4096
 # cap on the per-chunk (chunk, n_dict) score matrix, which bounds match memory
 # regardless of dictionary size
 _MAX_SCORE_ELEMS = 64_000_000
-
-
-def _normalize_rows(x: torch.Tensor) -> torch.Tensor:
-    x = x - x.mean(-1, keepdim=True)
-    return x / x.norm(dim=-1, keepdim=True).clamp_min(_EPS)
 
 
 class DictionaryIndexer:
@@ -179,7 +174,7 @@ class DictionaryIndexer:
                 rescale=False,
             )
             sim = sim.reshape(sim.shape[0], -1).to(torch.float32)  # normalize in fp32
-            dictionary[i : i + _PROJ_CHUNK] = _normalize_rows(sim).to(self.dtype)
+            dictionary[i : i + _PROJ_CHUNK] = normalize_rows(sim).to(self.dtype)
         return dictionary.T.contiguous()
 
     def _match_chunk(self, n_patterns: int) -> int:
@@ -228,7 +223,7 @@ class DictionaryIndexer:
         if self.match_binning > 1:
             patt = F.avg_pool2d(patt[:, None], self.match_binning)[:, 0]
         # patterns are low-bit-depth: keep fp32 precision until the match itself
-        exp_n = _normalize_rows(patt.reshape(n_p, -1)).to(self.dtype)
+        exp_n = normalize_rows(patt.reshape(n_p, -1)).to(self.dtype)
 
         best_idx = torch.empty(n_p, dtype=torch.long, device=self.device)
         best_score = torch.empty(n_p, dtype=torch.float32, device=self.device)
