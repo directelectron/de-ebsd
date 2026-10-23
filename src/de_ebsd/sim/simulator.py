@@ -51,11 +51,14 @@ class MasterPatternSimulator:
         Bethe-potential truncation thresholds.
     monte_carlo
         Energy/depth statistics for the depth integration (required by the
-        Bloch-wave backend; ignored by the kinematical backend).
+        the Bloch-wave backends; when omitted, a native Monte Carlo is run).
     backend
-        ``"kinematical"`` (band geometry only: a fast placeholder), ``"bloch"``
-        (the physical Bloch-wave model), or any
+        ``"bloch_prism"`` (default), ``"bloch"``, or any
         :class:`~de_ebsd.diffraction.backends.MasterPatternBackend` instance.
+        Both named backends solve the same Bloch-wave model. ``"bloch"`` is the
+        float64 reference, one direction at a time; ``"bloch_prism"`` batches it
+        on the GPU and reproduces it (r = 1.0000 against the EMsoft master of
+        Si at npx = 500), so it is the default.
     """
 
     def __init__(
@@ -66,7 +69,7 @@ class MasterPatternSimulator:
         dmin: float = 0.1,
         bethe: BetheParameters | None = None,
         monte_carlo: DepthDistribution | None = None,
-        backend: str | MasterPatternBackend = "kinematical",
+        backend: str | MasterPatternBackend = "bloch_prism",
     ) -> None:
         if npx < 1:
             raise ValueError("npx must be >= 1")

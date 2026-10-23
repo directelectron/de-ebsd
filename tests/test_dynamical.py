@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from de_ebsd import BetheParameters, BlochWaveBackend, KinematicalBackend
+from de_ebsd import BetheParameters, BlochWaveBackend
 from de_ebsd.diffraction.backends import (
     SimulationInputs,
     build_dynamical_matrix,
@@ -93,26 +93,10 @@ def test_bloch_backend_intensities(si_sf):
     assert intensity.std() > 0  # real dynamical contrast, not a constant map
 
 
-def test_kinematical_backend_intensities(si_sf):
-    backend = KinematicalBackend()
-    backend.prepare(
-        SimulationInputs(sf=si_sf, bethe=BetheParameters(), monte_carlo=None,
-                         device=torch.device("cpu"), dtype=torch.float32)
-    )
-    v = torch.randn(100, 3)
-    v = v / v.norm(dim=-1, keepdim=True)
-    intensity = backend.intensities(v)
-    assert intensity.shape == (100,)
-    assert torch.all(intensity >= 0)
-    assert torch.all(torch.isfinite(intensity))
-    # inversion symmetry of the band model
-    assert torch.allclose(backend.intensities(-v), intensity, atol=1e-6)
-
-
 def test_resolve_backend():
-    assert resolve_backend("kinematical").name == "kinematical"
+    assert resolve_backend("bloch_prism").name == "bloch_prism"
     assert resolve_backend("bloch").name == "bloch"
-    instance = KinematicalBackend()
+    instance = BlochWaveBackend()
     assert resolve_backend(instance) is instance
     with pytest.raises(ValueError, match="unknown backend"):
         resolve_backend("prism")

@@ -68,9 +68,8 @@ print("Bruker PC:", detector.pc, "gnomonic bounds:", detector.gnomonic_bounds)
 # Inspect the simulation before computing
 # -----------------------------------------------------------------------------
 #
-# Select ``bloch_prism`` explicitly: the simulator's default is the
-# kinematical model. Reusing the supplied depth distribution avoids repeating
-# Monte Carlo when computing or refining this simulator.
+# Reusing the supplied depth distribution avoids repeating Monte Carlo when
+# computing or refining this simulator.
 
 sim = de.MasterPatternSimulator(
     crystal, microscope, npx=100, dmin=0.05,

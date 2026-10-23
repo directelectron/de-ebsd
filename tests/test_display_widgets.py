@@ -100,7 +100,7 @@ def test_phase_overview_composes_native_figures_without_nested_html(sim):
     assert set(linked.figures) == {"phase_overview"}
     assert len(linked.figure.get_axes()) == 2
     assert all(figure.to_html() for figure in linked.figures.values())
-    assert linked.metadata["simulation_backend"] in {"bloch_prism", "kinematical", "computed"}
+    assert linked.metadata["simulation_backend"] in {"bloch_prism", "computed"}
     assert "html" not in " ".join(linked.metadata).lower()
     with pytest.raises(ValueError, match="texture_height"):
         crystal.overview(master_pattern=master, texture_height=4)

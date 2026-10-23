@@ -113,7 +113,7 @@ def main() -> None:
     parser.add_argument("--dmin", type=float, default=None,
                         help="dmin in nm (default: the reference run's value)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--backend", default="kinematical")
+    parser.add_argument("--backend", default="bloch_prism")
     parser.add_argument(
         "--mc", default=None,
         help="EMsoft reference HDF5 for this material (Si: the reference+MC run; "
@@ -174,9 +174,6 @@ def main() -> None:
     print(f"Pearson correlation  north: {r_north:+.4f}")
     print(f"Pearson correlation  south: {r_south:+.4f}")
     print(f"Pearson correlation  total: {r_all:+.4f}")
-    if master.metadata["backend"] == "kinematical":
-        print("(kinematical placeholder: band positions align, band profiles do not; "
-              "full parity requires the Bloch-wave backend)")
 
     if args.html:
         from de_ebsd.viz.patterns import hemispheres_figure

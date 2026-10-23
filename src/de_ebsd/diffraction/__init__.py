@@ -3,7 +3,6 @@
 from de_ebsd.diffraction.backends import (
     BlochWaveBackend,
     DynamicalMatrix,
-    KinematicalBackend,
     MasterPatternBackend,
     SimulationInputs,
     build_dynamical_matrix,
@@ -31,7 +30,6 @@ __all__ = [
     "BlochWaveBackend",
     "DynamicalMatrix",
     "KVectorGrid",
-    "KinematicalBackend",
     "MasterPatternBackend",
     "ReflectionList",
     "SimulationInputs",
