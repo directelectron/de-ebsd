@@ -1,1 +1,0 @@
-:func:`~de_ebsd.index.determine_pattern_center` recovered the pattern center from a start 0.03 off on a real dynamical master, where it used to see no slope and stay put, and no longer failed with a singular matrix when a sampled direction landed on a pole; a new ``blur`` argument sets its coarse-to-fine schedule (``blur=None`` restores the old fit).

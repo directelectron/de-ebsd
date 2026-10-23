@@ -1,1 +1,0 @@
-:meth:`~de_ebsd.MasterPatternSimulator.compute` gained a ``progress(done, total)`` callback, called as each batch of beam directions is simulated, so an application can show how far a long simulation has got.
