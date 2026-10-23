@@ -9,14 +9,14 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from de_ebsd.core.constants import DIVISION_FLOOR, SINGLE_PRECISION_FLOOR
+
 __all__ = [
     "remove_static_background",
     "remove_dynamic_background",
     "remove_background",
 ]
 
-_EPS = 1e-12
-_ROW_NORM_FLOOR = 1e-6
 
 
 def _as_stack(patterns, device, dtype):
@@ -43,14 +43,14 @@ def _as_stack(patterns, device, dtype):
 def _rescale01(p):
     lo = p.amin(dim=(-2, -1), keepdim=True)
     hi = p.amax(dim=(-2, -1), keepdim=True)
-    return (p - lo) / (hi - lo).clamp_min(_EPS)
+    return (p - lo) / (hi - lo).clamp_min(DIVISION_FLOOR)
 
 
 def _apply(pattern, background, operation):
     if operation == "subtract":
         return pattern - background
     if operation == "divide":
-        return pattern / background.clamp_min(_EPS)
+        return pattern / background.clamp_min(DIVISION_FLOOR)
     raise ValueError(f"operation must be 'subtract' or 'divide', got {operation!r}")
 
 
@@ -58,7 +58,7 @@ def normalize_rows(x: torch.Tensor) -> torch.Tensor:
     """Each row of *x* shifted to zero mean and scaled to unit length, so a dot product
     of two rows is their normalized cross-correlation."""
     x = x - x.mean(-1, keepdim=True)
-    return x / x.norm(dim=-1, keepdim=True).clamp_min(_ROW_NORM_FLOOR)
+    return x / x.norm(dim=-1, keepdim=True).clamp_min(SINGLE_PRECISION_FLOOR)
 
 
 def _gaussian_kernel_1d(std, truncate, device, dtype):

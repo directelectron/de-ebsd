@@ -63,7 +63,7 @@ def classify_reflections(
     u_mod = np.concatenate([[np.abs(sf.lookup(np.zeros(3, dtype=np.int64)))], refl.u_mod[keep]])
     forbidden = np.concatenate([[False], refl.forbidden[keep]])
 
-    status = partition_strong_weak(hkl, sg_c, u_mod, forbidden, sf, bethe)
+    status = partition_strong_weak(hkl, sg_c, forbidden, sf, bethe)
     g_len = sf.crystal.g_length(hkl)
     return ReflectionList(
         hkl=hkl,

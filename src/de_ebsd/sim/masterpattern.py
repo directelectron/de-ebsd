@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 import torch
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.sim.detector import EBSDDetector
@@ -18,8 +19,6 @@ if TYPE_CHECKING:
     from anyplotlib import Figure
 
 __all__ = ["MasterPattern"]
-
-_EPS = 1e-12
 
 
 @dataclass
@@ -116,7 +115,7 @@ class MasterPattern:
         if rescale:
             pmin = pattern.amin(dim=1, keepdim=True)
             pmax = pattern.amax(dim=1, keepdim=True)
-            pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(_EPS) - 1.0
+            pattern = 2.0 * (pattern - pmin) / (pmax - pmin).clamp_min(DIVISION_FLOOR) - 1.0
         return pattern.reshape(-1, detector.nrows, detector.ncols)
 
     def to_stereographic(self, n: int = 501, hemisphere: str = "north",
@@ -230,4 +229,4 @@ def _as_quaternions(orientation) -> torch.Tensor:
     data = getattr(orientation, "data", orientation)  # orix Rotation -> .data
     q = torch.as_tensor(np.asarray(data) if not isinstance(data, torch.Tensor) else data)
     q = q.reshape(-1, 4)
-    return q / q.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    return q / q.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)

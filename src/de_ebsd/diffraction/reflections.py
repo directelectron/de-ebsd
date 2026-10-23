@@ -184,7 +184,6 @@ def candidate_reflections(
 def partition_strong_weak(
     hkl: np.ndarray,
     sg: np.ndarray,
-    u_mod: np.ndarray,
     forbidden: np.ndarray,
     sf: StructureFactors,
     bethe: BetheParameters,

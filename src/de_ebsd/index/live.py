@@ -38,14 +38,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.preprocess import _gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
-
-_EPS = 1e-6
 
 #: Frames the static background is averaged over before it is used: fewer still
 #: carry the bands of the few grains they came from.
@@ -159,7 +158,7 @@ def _parabola_offset(scores: torch.Tensor) -> torch.Tensor:
     :data:`STENCIL`), or the better neighbor where the three make no maximum."""
     center, plus, minus = scores[:, :1], scores[:, 1::2], scores[:, 2::2]
     curvature = plus - 2 * center + minus
-    vertex = 0.5 * (minus - plus) / curvature.clamp_max(-_EPS)
+    vertex = 0.5 * (minus - plus) / curvature.clamp_max(-SINGLE_PRECISION_FLOOR)
     fallback = torch.where(plus > minus, 1.0, -1.0) * (torch.maximum(plus, minus) > center)
     return torch.where(curvature < 0, vertex.clamp(-1, 1), fallback.to(scores.dtype))
 
@@ -385,7 +384,7 @@ class LiveIndexer:
                 static = F.interpolate(
                     static[None, None], size=shape, mode="bilinear", align_corners=False
                 )[0, 0]
-            t = t / static.clamp_min(_EPS) - 1.0
+            t = t / static.clamp_min(SINGLE_PRECISION_FLOOR) - 1.0
         # The dynamic background is an eighth of the width wide, so it is found at a
         # quarter of the refine resolution and drawn back up: a full-size blur that
         # wide was most of the preparation's time.
@@ -642,7 +641,7 @@ class LiveIndexer:
             normal = normal + damping * normal.diagonal(dim1=-2, dim2=-1).mean(-1)[:, None, None]
             gradient = (
                 torch.einsum("nkp,np->nk", jacobian, residual) + scale * jacobian_along * fit_along
-            ) / scale.clamp_min(_EPS)
+            ) / scale.clamp_min(SINGLE_PRECISION_FLOOR)
             change = torch.linalg.solve(normal, gradient)
             reach = change.abs().amax(-1, keepdim=True)
             change = change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))

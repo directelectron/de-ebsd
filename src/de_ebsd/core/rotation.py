@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import torch
 
-__all__ = ["quaternion_to_matrix", "rotate_vectors", "rotation_vector_to_matrix", "skew_matrix"]
+from de_ebsd.core.constants import DIVISION_FLOOR
 
-_EPS = 1e-12
+__all__ = ["quaternion_to_matrix", "rotate_vectors", "rotation_vector_to_matrix", "skew_matrix"]
 
 
 def quaternion_to_matrix(q: torch.Tensor) -> torch.Tensor:
@@ -54,9 +54,9 @@ def rotation_vector_to_matrix(w: torch.Tensor) -> torch.Tensor:
     """
     k = skew_matrix(w)
     th2 = (w * w).sum(-1)  # (...,)
-    th = th2.clamp_min(_EPS).sqrt()
+    th = th2.clamp_min(DIVISION_FLOOR).sqrt()
     small = th2 < 1e-12
     a = torch.where(small, torch.ones_like(th), torch.sin(th) / th)  # sin th / th
-    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(_EPS))
+    b = torch.where(small, torch.full_like(th, 0.5), (1.0 - torch.cos(th)) / th2.clamp_min(DIVISION_FLOOR))
     eye = torch.eye(3, device=w.device, dtype=w.dtype).expand(k.shape)
     return eye + a[..., None, None] * k + b[..., None, None] * (k @ k)

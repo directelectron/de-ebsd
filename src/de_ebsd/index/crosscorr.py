@@ -57,11 +57,10 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 
 __all__ = ["HREBSDResult", "hrebsd", "remap_reference", "roi_centers"]
-
-_EPS = 1e-12
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +137,7 @@ def _prepare(rois: torch.Tensor, win: torch.Tensor) -> torch.Tensor:
     """Mean-subtract, window, then unit-normalize, so peaks are comparable."""
     x = rois - rois.mean(dim=(-2, -1), keepdim=True)
     x = x * win
-    return x / x.flatten(-2).norm(dim=-1)[..., None, None].clamp_min(_EPS)
+    return x / x.flatten(-2).norm(dim=-1)[..., None, None].clamp_min(DIVISION_FLOOR)
 
 
 def _spectral_mask(roi_size: int, bandpass, device, dtype):
@@ -155,7 +154,7 @@ def _spectral_mask(roi_size: int, bandpass, device, dtype):
     r = (f[:, None] ** 2 + f[None, :] ** 2).sqrt()
     mask = torch.ones_like(r)
     if low and low > 0:
-        mask = mask * torch.exp(-((low / r.clamp_min(_EPS)) ** 2))
+        mask = mask * torch.exp(-((low / r.clamp_min(DIVISION_FLOOR)) ** 2))
     if high and high > 0:
         mask = mask * torch.exp(-((r / high) ** 2))
     return mask
@@ -242,7 +241,7 @@ def _measure_shifts(test_rois, ref_rois, win, upsample, mask=None, refine=True, 
     def measure(ref):
         cps = ft * torch.fft.fft2(_prepare(ref, win)).conj()
         if whiten:
-            cps = cps / cps.abs().clamp_min(_EPS) ** whiten
+            cps = cps / cps.abs().clamp_min(DIVISION_FLOOR) ** whiten
         if mask is not None:
             cps = cps * mask
         return _upsampled_peak(cps, upsample)
@@ -297,7 +296,7 @@ def _solve_beta(a: torch.Tensor, q: torch.Tensor, w: torch.Tensor):
     sw = ww[..., None].sqrt()
     sol = torch.linalg.lstsq(a_flat * sw, q_flat * sw).solution[..., 0]  # (N, 8)
     resid = (a_flat @ sol[..., None] - q_flat)[..., 0]
-    rms = ((resid * resid * ww).sum(-1) / ww.sum(-1).clamp_min(_EPS)).sqrt()
+    rms = ((resid * resid * ww).sum(-1) / ww.sum(-1).clamp_min(DIVISION_FLOOR)).sqrt()
 
     b33 = -(sol[:, 0] + sol[:, 4])
     beta = torch.stack(

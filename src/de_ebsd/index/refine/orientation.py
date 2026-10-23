@@ -12,24 +12,23 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.refine.levenberg import adapt_damping
 
 __all__ = ["refine_orientation"]
 
-_EPS = 1e-12
-
 
 def _masked_ncc(a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    denom = mask.sum(-1, keepdim=True).clamp_min(_EPS)
+    denom = mask.sum(-1, keepdim=True).clamp_min(DIVISION_FLOOR)
     ma = (a * mask).sum(-1, keepdim=True) / denom
     mb = (b * mask).sum(-1, keepdim=True) / denom
     a0 = (a - ma) * mask
     b0 = (b - mb) * mask
     num = (a0 * b0).sum(-1)
-    na = (a0 * a0).sum(-1).clamp_min(_EPS).sqrt()
-    nb = (b0 * b0).sum(-1).clamp_min(_EPS).sqrt()
+    na = (a0 * a0).sum(-1).clamp_min(DIVISION_FLOOR).sqrt()
+    nb = (b0 * b0).sum(-1).clamp_min(DIVISION_FLOOR).sqrt()
     return num / (na * nb)
 
 
@@ -53,7 +52,7 @@ def _backproject(patt, detector, dirs, pattern_center, per_pattern):
 
 def _standardize(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     c = x - x.mean(-1, keepdim=True)
-    return c, c.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    return c, c.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)
 
 
 def _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype):

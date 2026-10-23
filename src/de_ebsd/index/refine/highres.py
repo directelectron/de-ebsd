@@ -12,13 +12,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.levenberg import adapt_damping
 
 __all__ = ["direction_cosines_from_pc", "edge_importance_samples", "refine_hr"]
-
-_EPS = 1e-12
 
 
 def direction_cosines_from_pc(
@@ -45,7 +44,7 @@ def direction_cosines_from_pc(
     om = sample_to_detector_tensor(detector, rows.device, rows.dtype)
     ray = detector_rays(detector, pattern_center, rows, cols)  # (..., K, 3)
     dc = ray @ om  # sample-frame ray (rows: v @ om, matching direction_cosines)
-    return dc / dc.norm(dim=-1, keepdim=True).clamp_min(_EPS)
+    return dc / dc.norm(dim=-1, keepdim=True).clamp_min(DIVISION_FLOOR)
 
 
 def _ddc_dpc(detector, pattern_center: torch.Tensor, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
@@ -162,7 +161,7 @@ def _standardize_tiled(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     mean = _seg_broadcast_sum(x, tile_ids, n_total) / counts_ps
     c = x - mean
-    s = _seg_broadcast_sum(c * c, tile_ids, n_total).sqrt().clamp_min(_EPS)
+    s = _seg_broadcast_sum(c * c, tile_ids, n_total).sqrt().clamp_min(DIVISION_FLOOR)
     return c, s, c / s
 
 

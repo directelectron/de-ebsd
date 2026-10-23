@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.viz.figures import apl, label
 
 __all__ = ["show_correlation", "show_map", "show_match", "show_refinement"]
-
-_EPS = 1e-12
 
 
 def _to_numpy(x) -> np.ndarray:
@@ -28,7 +27,7 @@ def _to_image(x) -> np.ndarray:
 def _standardize(image: np.ndarray) -> np.ndarray:
     image = image - image.mean()
     std = float(image.std())
-    return image / std if std > _EPS else image
+    return image / std if std > DIVISION_FLOOR else image
 
 
 def _ncc(a: np.ndarray, b: np.ndarray) -> float:
@@ -36,7 +35,7 @@ def _ncc(a: np.ndarray, b: np.ndarray) -> float:
     b0 = b - b.mean()
     na = float(np.linalg.norm(a0))
     nb = float(np.linalg.norm(b0))
-    if na < _EPS or nb < _EPS:
+    if na < DIVISION_FLOOR or nb < DIVISION_FLOOR:
         return 0.0
     return float(np.vdot(a0, b0) / (na * nb))
 
