@@ -1,1 +1,0 @@
-Shared helpers (skew matrix, rotation-vector conversion, detector rays, row normalizer, test band master) now live in one place each instead of being copied between modules, and source docstrings no longer point at the planning notes.

@@ -1,1 +1,0 @@
-``de_ebsd.index.live`` is a package (``indexer``, ``background``, ``deformation``, ``calibration``); ``LiveIndexer`` keeps its methods, and the scan's static background is reached as ``indexer.background``. ``direction_cosines_from_pc`` is ``direction_cosines_from_pattern_center``.

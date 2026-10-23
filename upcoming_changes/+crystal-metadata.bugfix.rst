@@ -1,1 +1,0 @@
-A simulated master pattern recorded ``repr(crystal)`` in ``metadata["crystal"]`` where an EMsoft-imported one recorded the :class:`~de_ebsd.crystal.Crystal`, so :class:`~de_ebsd.index.DictionaryIndexer` could not derive the point group from a master de-ebsd had just produced.

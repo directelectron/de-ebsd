@@ -1,1 +1,0 @@
-Dictionary and spherical indexing examples were added, each a closed round trip on a synthetic two-grain scan with known orientations, and the gallery was regrouped into ``examples/simulation`` and ``examples/indexing``.
