@@ -93,11 +93,19 @@ BATCH = 256
 #: score into 750 MB per batch.
 SEARCH_CHUNK = 65_536
 
-#: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. On the twin
-#: scans of :data:`REFINE_STEPS_DEG`, rendered with a known random strain of 1e-3 and
-#: 3e-3, three took the orientation median from 0.14-0.20° (the stencil refine
-#: alone) to 0.073-0.076°; a fourth and a fifth changed nothing.
+#: Gauss-Newton iterations of :meth:`LiveIndexer.refine_deformation`. A plain step
+#: closes only about half of what is left, because the simulation is sharper than
+#: the pattern; with :data:`DEFORMATION_LINE_SEARCH` three iterations do what seven
+#: plain ones did, for half the projections. On a 15 kV silicon indent, against
+#: CrossCourt's HR-EBSD, the four strongest strains reached 0.94-1.05 of their size
+#: (0.64-0.87 at three plain iterations). Iterating on to convergence came no
+#: closer but scattered more (rms difference 5.0-6.5e-4 against 3.4-5.4e-4).
 DEFORMATION_ITERATIONS = 3
+
+#: The multiples of each Gauss-Newton step that are tried, keeping whichever scores
+#: best (or none, if all score worse than the current fit). Three more projections
+#: per pattern on top of an iteration's seventeen.
+DEFORMATION_LINE_SEARCH = (1.0, 2.0, 3.0)
 
 #: The central-difference step of the deformation's Jacobian, as a strain. Much
 #: smaller steps measure the bilinear master texture's facets rather than its slope.
@@ -582,6 +590,7 @@ class LiveIndexer:
         g: torch.Tensor,
         *,
         iterations: int = DEFORMATION_ITERATIONS,
+        line_search: tuple[float, ...] = DEFORMATION_LINE_SEARCH,
         step: float = DEFORMATION_STEP,
         center_maps: torch.Tensor | None = None,
         ghost: torch.Tensor | None = None,
@@ -605,9 +614,13 @@ class LiveIndexer:
         *ghost* (:attr:`ghost`) is taken out of the patterns and the simulations
         alike, so every pattern may have any amount of it.
 
-        Each iteration moves at most :data:`DEFORMATION_MAX_STEP`, and a fit that
-        ends scoring below its seed (:data:`DEFORMATION_SCORE_MARGIN`) is refused:
-        its strain is NaN and its *g* and *score* are the seed's.
+        *line_search* tries multiples of each Gauss-Newton step, keeping the best
+        scored (no move, if none scores better than the current fit); an empty
+        one takes each step as it is. Each step is at most
+        :data:`DEFORMATION_MAX_STEP`, so a move is at most that times the
+        largest multiple. A fit that ends scoring below its seed
+        (:data:`DEFORMATION_SCORE_MARGIN`) is refused: its strain is NaN and its
+        *g* and *score* are the seed's.
         """
         basis = _trace_free_basis(self.device)
         n, k = len(g), 1 + 2 * len(basis)
@@ -661,7 +674,32 @@ class LiveIndexer:
             ) / scale.clamp_min(_EPS)
             change = torch.linalg.solve(normal, gradient)
             reach = change.abs().amax(-1, keepdim=True)
-            p = p + change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))
+            change = change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))
+            if not line_search:
+                p = p + change
+                continue
+            # The simulation is sharper than the pattern, so each step falls short
+            # by about the same share: try it longer too, and keep the best scored.
+            # Capping the longer moves as well cost a third of the strain near an
+            # indent, where the real steps are largest.
+            multiples = torch.tensor((0.0, *line_search), device=self.device)
+            tried = p[:, None] + multiples[None, :, None] * change[:, None]
+            trial = g[:, None] @ (eye - torch.einsum("nmc,cij->nmij", tried[:, 1:], basis))
+            if center_maps is not None:
+                trial = trial @ center_maps[:, None]
+            simulated = _normalized_rows(
+                self._project(
+                    self.texture,
+                    trial.reshape(-1, 3, 3),
+                    phase.repeat_interleave(len(line_search)),
+                    self.refine_directions,
+                )
+            )
+            scores = (simulated.view(n, len(line_search), -1) * refine_rows[:, None]).sum(-1)
+            scores = scores / (1 - on_ghost(simulated).view(n, -1) ** 2).sqrt()
+            current = scale[:, 0] * (1 - fit_along[:, 0] ** 2).sqrt()
+            scores = torch.cat([current[:, None], scores], 1).nan_to_num(-torch.inf)
+            p = tried[torch.arange(n, device=self.device), scores.argmax(1)]
         beta = torch.einsum("nc,cij->nij", p, basis)
         final = g @ (eye - beta)
         if center_maps is not None:
