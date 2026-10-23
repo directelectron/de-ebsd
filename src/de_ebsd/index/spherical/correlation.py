@@ -2,7 +2,7 @@
 
 Combines the two spectra with the Wigner-d matrices into a coefficient cube,
 then one 3-D inverse FFT gives the correlation over all of SO(3) on the SOFT
-grid. See INDEXING_DESIGN.md (I2).
+grid.
 """
 
 from __future__ import annotations

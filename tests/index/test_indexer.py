@@ -46,8 +46,8 @@ from de_ebsd.index.spherical.wigner import grid_to_rotation
 
 BANDWIDTH = 16
 # SOFT grid step in degrees: alpha/gamma are spaced 360 / (2L + 2). The peak should
-# land in the correct grid cell, so we allow up to 1.5x the step (per INDEXING_DESIGN
-# and the correlation-level round-trip test).
+# land in the correct grid cell, so we allow up to 1.5x the step (see also the
+# correlation-level round-trip test).
 GRID_STEP_DEG = 360.0 / (2 * BANDWIDTH + 2)
 TOL_DEG = 1.5 * GRID_STEP_DEG
 

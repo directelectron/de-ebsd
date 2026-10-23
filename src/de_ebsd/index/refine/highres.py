@@ -3,7 +3,7 @@
 Instead of a whole back-projected direction set, ``refine_hr`` importance-samples
 a few thousand high-gradient band-edge pixels -- the ones that actually carry the
 orientation and pattern-center signal -- and runs Levenberg-Marquardt on those.
-Refines orientation and pattern center jointly. See INDEXING_DESIGN.md (I6).
+Refines orientation and pattern center jointly.
 """
 
 from __future__ import annotations

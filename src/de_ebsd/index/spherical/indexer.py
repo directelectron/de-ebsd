@@ -7,7 +7,7 @@ the rotation-dependent master energy inside the field of view, which keeps a
 bright master region from outscoring the true orientation.
 
 ``grid_to_rotation(argmax)`` is directly the sample orientation passed to
-``MasterPattern.project`` -- no inverse or transpose. See INDEXING_DESIGN.md (I4).
+``MasterPattern.project`` -- no inverse or transpose.
 """
 
 from __future__ import annotations

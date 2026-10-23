@@ -1,7 +1,7 @@
 """Validate de_ebsd master patterns against EMsoft reference data.
 
 EMsoft is the validation *oracle* only -- de_ebsd computes the master pattern
-itself (see DESIGN.md). This script builds the same crystal, simulates, and
+itself. This script builds the same crystal, simulates, and
 correlates against a reference EMsoft master pattern:
 
 - Ni: ``kikuchipy.data.nickel_ebsd_master_pattern_small`` (20 keV, npx = 200),
@@ -20,7 +20,7 @@ The exit-depth profile that weights the Bloch depth integration comes from the
 EMsoft Monte Carlo file when one is supplied; otherwise de_ebsd falls back to
 its own single-energy exponential model (``DepthDistribution.single_energy``),
 so the simulation stays runnable with no EMsoft input. A native Monte Carlo
-that removes this last runtime dependency is on the roadmap (DESIGN.md).
+that removes this last runtime dependency is on the roadmap.
 
 Usage::
 
@@ -177,7 +177,7 @@ def main() -> None:
     print(f"Pearson correlation  total: {r_all:+.4f}")
     if master.metadata["backend"] == "kinematical":
         print("(kinematical placeholder: band positions align, band profiles do not; "
-              "full parity requires the Bloch-wave backend, DESIGN.md M2)")
+              "full parity requires the Bloch-wave backend)")
 
     if args.html:
         from de_ebsd.viz.patterns import hemispheres_figure

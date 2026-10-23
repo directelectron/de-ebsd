@@ -2,7 +2,6 @@
 
 Real Wigner-d at beta = pi/2 by stable recursion, the (alpha, beta, gamma) SOFT
 sampling grid, and the bridge from ZYZ Euler angles to orix ``Rotation``.
-See INDEXING_DESIGN.md (I2).
 """
 
 from __future__ import annotations

@@ -76,8 +76,7 @@ class MasterPattern:
 
         Bilinear interpolation on the square-Lambert grid via
         ``grid_sample(align_corners=True)``, identical to kikuchipy's
-        interpolation (and to ``nn_hrebsd.sim``). The hemisphere is selected
-        by ``sign(z)``.
+        interpolation. The hemisphere is selected by ``sign(z)``.
         """
         i_e = self.energy_index(energy_kev)
         shape = directions.shape[:-1]

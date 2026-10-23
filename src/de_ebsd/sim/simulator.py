@@ -53,8 +53,8 @@ class MasterPatternSimulator:
         Energy/depth statistics for the depth integration (required by the
         Bloch-wave backend; ignored by the kinematical backend).
     backend
-        ``"kinematical"`` (runs today; band geometry only), ``"bloch"``
-        (the physical model; scheduled -- see DESIGN.md), or any
+        ``"kinematical"`` (band geometry only: a fast placeholder), ``"bloch"``
+        (the physical Bloch-wave model), or any
         :class:`~de_ebsd.diffraction.backends.MasterPatternBackend` instance.
     """
 

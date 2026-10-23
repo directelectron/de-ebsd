@@ -4,7 +4,7 @@ For the master pattern every pixel of the square Lambert grid is one incident
 beam direction (EMsoft ``Calckvectors`` with the Rosca-Lambert map mode). Both
 hemispheres are sampled; :func:`reduce_to_fundamental_sector` then folds the
 directions onto the crystal point group's fundamental sector so a backend
-computes each symmetry-distinct direction only once (DESIGN.md, roadmap M3).
+computes each symmetry-distinct direction only once.
 """
 
 from __future__ import annotations
