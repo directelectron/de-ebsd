@@ -35,7 +35,7 @@ def test_matches_kikuchipy_direction_cosines():
     from kikuchipy.signals.util._master_pattern import _get_direction_cosines_from_detector
 
     kp_det = kp.detectors.EBSDDetector(
-        shape=shape, pattern_center=pattern_center, sample_tilt=sample_tilt, tilt=tilt, azimuthal=azimuthal
+        shape=shape, pc=pattern_center, sample_tilt=sample_tilt, tilt=tilt, azimuthal=azimuthal
     )
     theirs = _get_direction_cosines_from_detector(kp_det)
     assert np.allclose(ours, theirs, atol=1e-10)
