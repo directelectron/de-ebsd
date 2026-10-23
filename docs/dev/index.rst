@@ -57,7 +57,7 @@ Build the site to check it:
 
 .. code-block:: shell
 
-    uv sync --group docs --group notebook
+    uv sync --group docs
     uv run python -m sphinx -b html -W --keep-going docs docs/_build/html
 
 Design notes

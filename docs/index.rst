@@ -68,7 +68,7 @@ Python 3.11 or newer. torch comes from the CUDA 12.4 index configured in
 
 .. code-block:: shell
 
-    git clone https://github.com/CSSFrancis/de-ebsd.git
+    git clone https://github.com/directelectron/de-ebsd.git
     cd de-ebsd
     uv sync
 

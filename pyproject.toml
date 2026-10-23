@@ -40,10 +40,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/CSSFrancis/de-ebsd"
-Source = "https://github.com/CSSFrancis/de-ebsd"
-Issues = "https://github.com/CSSFrancis/de-ebsd/issues"
-Changelog = "https://github.com/CSSFrancis/de-ebsd/blob/main/CHANGELOG.rst"
+Homepage = "https://github.com/directelectron/de-ebsd"
+Source = "https://github.com/directelectron/de-ebsd"
+Issues = "https://github.com/directelectron/de-ebsd/issues"
+Changelog = "https://github.com/directelectron/de-ebsd/blob/main/CHANGELOG.rst"
+Documentation = "https://directelectron.github.io/de-ebsd/"
 
 [project.optional-dependencies]
 # kikuchipy is only needed to load reference/validation master patterns.
@@ -131,7 +132,7 @@ torch = [
 directory        = "upcoming_changes"
 filename         = "CHANGELOG.rst"
 start_string     = ".. towncrier release notes start\n"
-issue_format     = "`#{issue} <https://github.com/CSSFrancis/de-ebsd/pull/{issue}>`_"
+issue_format     = "`#{issue} <https://github.com/directelectron/de-ebsd/pull/{issue}>`_"
 title_format     = "{version} ({project_date})"
 underlines       = ["=", "-", "~"]
 

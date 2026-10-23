@@ -88,7 +88,7 @@ jobs:
 
       # Trusted publishing - no API token required.
       # One-time setup on pypi.org: add a pending publisher for
-      #   Project: de-ebsd  Owner: CSSFrancis  Repo: de-ebsd
+      #   Project: de-ebsd  Owner: directelectron  Repo: de-ebsd
       #   Workflow: release.yml  Environment: pypi
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
