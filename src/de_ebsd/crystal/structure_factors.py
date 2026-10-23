@@ -83,12 +83,6 @@ class StructureFactors:
         idx = hkl + 2 * self.hmax
         return self.ucg_lut[idx[..., 0], idx[..., 1], idx[..., 2]]
 
-    def as_torch_lut(
-        self, device: torch.device | str | None = None, dtype: torch.dtype = torch.complex64
-    ) -> torch.Tensor:
-        """The lookup table as a torch tensor for the dynamical solver."""
-        return torch.as_tensor(self.ucg_lut, dtype=dtype, device=device)
-
     def families(self, n: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Group the reflection list by ``|g|``; representative hkl, g, and U_g.
 

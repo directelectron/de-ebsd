@@ -9,7 +9,6 @@ __all__ = [
     "DepthWidget",
     "MicroscopeWidget",
     "PhaseOverview",
-    "SetupWidget",
     "bar_figure",
     "crystal_structure_figure",
     "hemispheres_figure",
@@ -36,7 +35,7 @@ _MODULES = {
     ),
     "maps": ("show_correlation", "show_map", "show_match", "show_refinement"),
     "views": ("PhaseOverview",),
-    "widgets": ("DepthWidget", "MicroscopeWidget", "SetupWidget"),
+    "widgets": ("DepthWidget", "MicroscopeWidget"),
 }
 _ORIGIN = {name: module for module, names in _MODULES.items() for name in names}
 

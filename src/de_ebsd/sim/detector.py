@@ -137,6 +137,6 @@ class EBSDDetector:
         If a microscope is supplied, its sample tilt and azimuth must match.
         Edits are a separate snapshot; read them with widget.to_detector().
         """
-        from de_ebsd.viz.widgets import SetupWidget
+        from de_ebsd.viz.widgets import MicroscopeWidget
 
-        return SetupWidget.from_setup(microscope=microscope, detector=self, crystal=crystal)
+        return MicroscopeWidget.from_setup(microscope=microscope, detector=self, crystal=crystal)

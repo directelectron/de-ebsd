@@ -255,9 +255,9 @@ class MasterPatternSimulator:
 
     def show_setup(self, detector=None):
         """Interactive geometry widget for this simulation's setup."""
-        from de_ebsd.viz.widgets import SetupWidget
+        from de_ebsd.viz.widgets import MicroscopeWidget
 
-        return SetupWidget.from_setup(
+        return MicroscopeWidget.from_setup(
             microscope=self.microscope, detector=detector, crystal=self.crystal
         )
 

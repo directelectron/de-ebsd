@@ -25,6 +25,7 @@ import importlib
 from de_ebsd.crystal import AtomSite, Crystal
 from de_ebsd.diffraction import (
     BetheParameters,
+    BlochPrismBackend,
     BlochWaveBackend,
     MasterPatternBackend,
 )
@@ -41,6 +42,7 @@ __version__ = "0.1.0"
 __all__ = [
     "AtomSite",
     "BetheParameters",
+    "BlochPrismBackend",
     "BlochWaveBackend",
     "Crystal",
     "CrystalExplorer",
@@ -50,8 +52,8 @@ __all__ = [
     "MasterPatternBackend",
     "MasterPatternSimulator",
     "Microscope",
+    "MicroscopeWidget",
     "PhaseOverview",
-    "SetupWidget",
     "__version__",
 ]
 
@@ -59,7 +61,7 @@ __all__ = [
 _LAZY = {
     "CrystalExplorer": "de_ebsd.viz.explorer",
     "PhaseOverview": "de_ebsd.viz.views",
-    "SetupWidget": "de_ebsd.viz.widgets",
+    "MicroscopeWidget": "de_ebsd.viz.widgets",
 }
 
 

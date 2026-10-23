@@ -307,10 +307,6 @@ class KinematicPatternModel:
     def band_normals(self) -> np.ndarray:
         return self._band_normals.copy()
 
-    @property
-    def band_hkl(self) -> np.ndarray:
-        return self._band_hkl.copy()
-
     def project(
         self,
         orientation: Any,

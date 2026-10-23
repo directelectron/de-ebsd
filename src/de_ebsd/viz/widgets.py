@@ -17,7 +17,7 @@ import traitlets
 from de_ebsd.sim.detector import EBSDDetector
 from de_ebsd.sim.microscope import Microscope
 
-__all__ = ["DepthWidget", "MicroscopeWidget", "SetupWidget"]
+__all__ = ["DepthWidget", "MicroscopeWidget"]
 
 
 class _PortableWidget(anywidget.AnyWidget):
@@ -123,10 +123,6 @@ class MicroscopeWidget(_PortableWidget):
                             pattern_center=(self.pcx, self.pcy, self.pcz), sample_tilt=self.sample_tilt,
                             tilt=self.detector_tilt, azimuthal=self.azimuthal,
                             twist=self.twist, px_size=self.px_size)
-
-
-class SetupWidget(MicroscopeWidget):
-    """Backward-compatible name for MicroscopeWidget."""
 
 
 class DepthWidget(_PortableWidget):

@@ -45,8 +45,8 @@ Design rules
 
 - Stages are plain data objects; the simulator owns caching and wiring.
 - Setup-time math (structure factors, symmetry) is numpy float64; the
-  per-direction hot path is torch and batched. The boundary is explicit
-  (``StructureFactors.as_torch_lut``).
+  per-direction hot path is torch and batched. The boundary is explicit:
+  backends copy the structure-factor table to torch once, in ``prepare``.
 - ``refine()`` returns a new simulator rather than mutating, and carries over
   every cache that is still consistent: raising ``npx`` or changing the Bethe
   thresholds never recomputes ``U_g``; changing ``dmin`` or the energy does.
