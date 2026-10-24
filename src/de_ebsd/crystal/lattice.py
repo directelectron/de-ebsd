@@ -440,16 +440,22 @@ def _symmetry_operations(spacegroup, origin: int) -> list[tuple[np.ndarray, np.n
     return [(r, np.mod(t + r @ shift - shift, 1.0)) for r, t in ops]
 
 
-def _expand_orbit(
-    symops: list[tuple[np.ndarray, np.ndarray]], position: np.ndarray, decimals: int = 6
-) -> np.ndarray:
-    seen: dict[tuple, np.ndarray] = {}
+# Fractional distance within which two images of a site are the same atom. CIFs
+# write 1/3 as 0.3333 or 0.333333, and on a hexagonal cell the images of such a
+# site differ by that rounding, so an exact comparison counts one atom several times.
+_ORBIT_TOLERANCE = 1e-3
+
+
+def _expand_orbit(symops: list[tuple[np.ndarray, np.ndarray]], position: np.ndarray) -> np.ndarray:
+    orbit: list[np.ndarray] = []
     for r, t in symops:
-        new = r @ position + t
-        new = np.mod(np.round(new, decimals), 1.0)
-        new = np.mod(new, 1.0)  # fold 0.999999... rounded to 1.0 back to 0
-        seen.setdefault(tuple(new), new)
-    return np.array(list(seen.values()))
+        new = np.mod(r @ position + t, 1.0)
+        if not any(
+            np.all(np.abs((new - kept + 0.5) % 1.0 - 0.5) < _ORBIT_TOLERANCE) for kept in orbit
+        ):
+            orbit.append(new)
+    # Rounding folds 0.9999999 to 1.0; the second mod brings that back to 0.
+    return np.mod(np.round(np.array(orbit), 6), 1.0)
 
 
 # The space groups the International Tables list with two origin choices. For these

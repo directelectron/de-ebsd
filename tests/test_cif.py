@@ -125,3 +125,26 @@ def test_element_symbol(raw, expected):
 def test_element_symbol_rejects_nonsense():
     with pytest.raises(ValueError):
         _element_symbol("Xx9")
+
+
+@pytest.mark.parametrize("third", ["0.3333", "0.333333", "0.333333333333333"])
+def test_hcp_titanium_has_two_atoms_however_one_third_is_written(tmp_path, third):
+    two_thirds = f"{1 - float(third):.{len(third) - 2}f}"
+    titanium = f"""data_Ti
+_space_group_IT_number           194
+_cell_length_a                   2.9506
+_cell_length_b                   2.9506
+_cell_length_c                   4.6835
+_cell_angle_alpha                90
+_cell_angle_beta                 90
+_cell_angle_gamma                120
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Ti1 {third} {two_thirds} 0.25
+"""
+    crystal = Crystal.from_cif(_write(tmp_path, titanium))
+    assert crystal.multiplicities == (2,)
+    assert crystal.density == pytest.approx(4.50, abs=0.01)  # g/cm^3
