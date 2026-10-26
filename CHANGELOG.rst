@@ -9,6 +9,15 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.2.1 (2026-10-26)
+==================
+
+Bug Fixes
+---------
+
+- :meth:`~de_ebsd.crystal.Crystal.from_cif` counted each atom of a hexagonal crystal once, where hcp Ti used to come out with 6 or 12 atoms per cell and three or six times its density, and it read a rhombohedral structure given on rhombohedral axes, which it used to refuse. (`#16 <https://github.com/directelectron/de-ebsd/pull/16>`_)
+
+
 0.2.0 (2026-10-23)
 ==================
 

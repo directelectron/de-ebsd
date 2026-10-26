@@ -1,1 +1,0 @@
-:meth:`~de_ebsd.crystal.Crystal.from_cif` counted each atom of a hexagonal crystal once, where hcp Ti used to come out with 6 or 12 atoms per cell and three or six times its density, and it read a rhombohedral structure given on rhombohedral axes, which it used to refuse.
