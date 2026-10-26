@@ -167,6 +167,11 @@ class Crystal:
         ``_atom_site_type_symbol`` entries are reduced to the element (``"Si4+"`` ->
         ``"Si"``), since the scattering tables are per element.
 
+        A rhombohedral cell given on rhombohedral axes (``R 3 m :R``) is returned on
+        the equivalent hexagonal axes, three times the volume, since those are the axes
+        the symmetry operations are tabulated on. Any other non-standard setting raises
+        ``ValueError``.
+
         Parameters
         ----------
         path
@@ -196,29 +201,45 @@ class Crystal:
         if origin is None:
             origin = _cif_origin_choice(parser)
 
+        space_group = parser.spacegroup.number
+        lengths = (lattice.a, lattice.b, lattice.c)
+        angles = (lattice.alpha, lattice.beta, lattice.gamma)
+        to_cell = np.eye(3)
+        if space_group > 230:
+            if space_group % 1000 not in _RHOMBOHEDRAL_GROUPS:
+                raise ValueError(
+                    f"{path}: space group {parser.spacegroup.short_name} is a non-standard "
+                    f"setting of group {space_group % 1000}; re-express the cell in the "
+                    "standard setting of the International Tables"
+                )
+            space_group %= 1000
+            lengths, angles = _hexagonal_cell(lattice)
+            to_cell = np.linalg.inv(_RHOMBOHEDRAL_TO_HEXAGONAL)
+
         sites: list[AtomSite] = []
         for atom in parser.asymmetric_unit:
             b_nm2 = debye_waller
             u_iso = float(getattr(atom, "Uisoequiv", 0.0) or 0.0)
             if u_iso > 0.0:
                 b_nm2 = 8.0 * np.pi**2 * u_iso / 100.0  # 8 pi^2 U [A^2] -> B [nm^2]
+            position = to_cell @ np.asarray(atom.xyz, dtype=np.float64)
             sites.append(
                 AtomSite(
                     element=_element_symbol(atom.element),
-                    position=tuple(float(x) for x in atom.xyz),
+                    position=tuple(float(x) for x in position),
                     occupancy=float(atom.occupancy),
                     debye_waller=b_nm2,
                 )
             )
 
         return cls(
-            a=lattice.a / 10.0,
-            b=lattice.b / 10.0,
-            c=lattice.c / 10.0,
-            alpha=lattice.alpha,
-            beta=lattice.beta,
-            gamma=lattice.gamma,
-            space_group=parser.spacegroup.number,
+            a=lengths[0] / 10.0,
+            b=lengths[1] / 10.0,
+            c=lengths[2] / 10.0,
+            alpha=angles[0],
+            beta=angles[1],
+            gamma=angles[2],
+            space_group=space_group,
             sites=sites,
             origin=origin,
         )
@@ -440,16 +461,22 @@ def _symmetry_operations(spacegroup, origin: int) -> list[tuple[np.ndarray, np.n
     return [(r, np.mod(t + r @ shift - shift, 1.0)) for r, t in ops]
 
 
-def _expand_orbit(
-    symops: list[tuple[np.ndarray, np.ndarray]], position: np.ndarray, decimals: int = 6
-) -> np.ndarray:
-    seen: dict[tuple, np.ndarray] = {}
+# Fractional distance within which two images of a site are the same atom. CIFs
+# write 1/3 as 0.3333 or 0.333333, and on a hexagonal cell the images of such a
+# site differ by that rounding, so an exact comparison counts one atom several times.
+_ORBIT_TOLERANCE = 1e-3
+
+
+def _expand_orbit(symops: list[tuple[np.ndarray, np.ndarray]], position: np.ndarray) -> np.ndarray:
+    orbit: list[np.ndarray] = []
     for r, t in symops:
-        new = r @ position + t
-        new = np.mod(np.round(new, decimals), 1.0)
-        new = np.mod(new, 1.0)  # fold 0.999999... rounded to 1.0 back to 0
-        seen.setdefault(tuple(new), new)
-    return np.array(list(seen.values()))
+        new = np.mod(r @ position + t, 1.0)
+        if not any(
+            np.all(np.abs((new - kept + 0.5) % 1.0 - 0.5) < _ORBIT_TOLERANCE) for kept in orbit
+        ):
+            orbit.append(new)
+    # Rounding folds 0.9999999 to 1.0; the second mod brings that back to 0.
+    return np.mod(np.round(np.array(orbit), 6), 1.0)
 
 
 # The space groups the International Tables list with two origin choices. For these
@@ -483,6 +510,30 @@ _TWO_ORIGIN_GROUPS = frozenset(
         228,
     }
 )
+
+
+# The trigonal groups with a rhombohedral lattice. A CIF may give one on
+# rhombohedral axes ("R 3 m :R", which diffpy numbers 1160), while the symmetry
+# operations here are those of the hexagonal axes, so such a cell is moved onto
+# hexagonal axes before it is expanded.
+_RHOMBOHEDRAL_GROUPS = frozenset({146, 148, 155, 160, 161, 166, 167})
+
+# Columns are the hexagonal (obverse) basis vectors in rhombohedral axes:
+# a_H = a_R - b_R, b_H = b_R - c_R, c_H = a_R + b_R + c_R.
+_RHOMBOHEDRAL_TO_HEXAGONAL = np.array([[1.0, 0.0, 1.0], [-1.0, 1.0, 1.0], [0.0, -1.0, 1.0]])
+
+
+def _hexagonal_cell(lattice) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Lengths (Angstrom) and angles (degrees) of the hexagonal cell of a diffpy
+    lattice given on rhombohedral axes."""
+    basis = _RHOMBOHEDRAL_TO_HEXAGONAL
+    metric = basis.T @ np.asarray(lattice.metrics, dtype=np.float64) @ basis
+    lengths = np.sqrt(np.diag(metric))
+    angles = [
+        np.degrees(np.arccos(metric[j, k] / (lengths[j] * lengths[k])))
+        for j, k in ((1, 2), (0, 2), (0, 1))
+    ]
+    return tuple(float(x) for x in lengths), tuple(float(x) for x in angles)
 
 
 def _cif_origin_choice(parser, default: int = 2) -> int:

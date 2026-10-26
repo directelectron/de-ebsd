@@ -125,3 +125,121 @@ def test_element_symbol(raw, expected):
 def test_element_symbol_rejects_nonsense():
     with pytest.raises(ValueError):
         _element_symbol("Xx9")
+
+
+# Barium titanate, rhombohedral R3m on rhombohedral axes (COD 9014074).
+RHOMBOHEDRAL_CIF = """data_9014074
+_space_group_IT_number           160
+_symmetry_space_group_name_H-M   'R 3 m :R'
+_cell_angle_alpha                89.855
+_cell_angle_beta                 89.855
+_cell_angle_gamma                89.855
+_cell_length_a                   4.0043
+_cell_length_b                   4.0043
+_cell_length_c                   4.0043
+loop_
+_space_group_symop_operation_xyz
+x,y,z
+x,z,y
+z,x,y
+y,x,z
+y,z,x
+z,y,x
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Ba 0.00000 0.00000 0.00000
+Ti 0.48700 0.48700 0.48700
+O 0.50920 0.50920 0.01890
+"""
+
+# Barium titanate, hexagonal P6_3/mmc (COD 2009488): a cell whose a axis is not
+# along x, the case orix's Phase.from_cif gets wrong.
+HEXAGONAL_CIF = """data_2009488
+_space_group_IT_number           194
+_symmetry_space_group_name_H-M   'P 63/m m c'
+_cell_angle_alpha                90
+_cell_angle_beta                 90
+_cell_angle_gamma                120
+_cell_length_a                   5.7238
+_cell_length_b                   5.7238
+_cell_length_c                   13.9649
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Ba1 0 0 0.25
+Ba2 0.333333333333333 0.666666666666667 0.09671
+Ti1 0 0 0
+Ti2 0.333333333333333 0.666666666666667 0.84633
+O1 0.5185 0.0370 0.25
+O2 0.8349 0.6698 0.0802
+"""
+
+
+def test_hexagonal_cell_keeps_the_file_fractions(tmp_path):
+    crystal = Crystal.from_cif(_write(tmp_path, HEXAGONAL_CIF))
+    assert crystal.space_group == 194
+    assert crystal.gamma == pytest.approx(120.0)
+    assert crystal.sites[1].position == pytest.approx((1 / 3, 2 / 3, 0.09671))
+    assert sum(len(p) for p in crystal.positions) == 30  # Z = 6 BaTiO3
+
+
+def test_rhombohedral_axes_become_hexagonal_axes(tmp_path):
+    from diffpy.structure import loadStructure
+
+    from de_ebsd.crystal.lattice import _RHOMBOHEDRAL_TO_HEXAGONAL
+
+    path = _write(tmp_path, RHOMBOHEDRAL_CIF)
+    crystal = Crystal.from_cif(path)
+    assert crystal.space_group == 160
+    assert crystal.gamma == pytest.approx(120.0)
+    assert crystal.alpha == pytest.approx(90.0) and crystal.beta == pytest.approx(90.0)
+    rhombohedral = loadStructure(path)
+    assert crystal.volume == pytest.approx(3 * rhombohedral.lattice.volume / 1000.0)
+    assert [s.element for s in crystal.sites] == ["Ba", "Ti", "O"]
+    assert sum(len(p) for p in crystal.positions) == 15  # three cells of 5 atoms
+
+    # Every atom of the hexagonal cell, taken back to rhombohedral axes, is an
+    # atom of the file's own expansion, and every one of those is reached.
+    expected = {(a.element, *np.round(np.asarray(a.xyz) % 1.0, 4) % 1.0) for a in rhombohedral}
+    found = {
+        (site.element, *np.round((_RHOMBOHEDRAL_TO_HEXAGONAL @ x) % 1.0, 4) % 1.0)
+        for site, positions in zip(crystal.sites, crystal.positions, strict=True)
+        for x in positions
+    }
+    assert found == expected
+
+
+def test_other_non_standard_settings_are_refused(tmp_path):
+    pbnm = RUTILE_CIF.replace(
+        "_space_group_IT_number  136", "_symmetry_space_group_name_H-M 'P b n m'"
+    )
+    with pytest.raises(ValueError, match="non-standard setting"):
+        Crystal.from_cif(_write(tmp_path, pbnm))
+
+
+@pytest.mark.parametrize("third", ["0.3333", "0.333333", "0.333333333333333"])
+def test_hcp_titanium_has_two_atoms_however_one_third_is_written(tmp_path, third):
+    two_thirds = f"{1 - float(third):.{len(third) - 2}f}"
+    titanium = f"""data_Ti
+_space_group_IT_number           194
+_cell_length_a                   2.9506
+_cell_length_b                   2.9506
+_cell_length_c                   4.6835
+_cell_angle_alpha                90
+_cell_angle_beta                 90
+_cell_angle_gamma                120
+loop_
+_atom_site_label
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Ti1 {third} {two_thirds} 0.25
+"""
+    crystal = Crystal.from_cif(_write(tmp_path, titanium))
+    assert crystal.multiplicities == (2,)
+    assert crystal.density == pytest.approx(4.50, abs=0.01)  # g/cm^3
