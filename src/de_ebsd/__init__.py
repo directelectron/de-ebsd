@@ -37,7 +37,7 @@ from de_ebsd.sim import (
     Microscope,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "AtomSite",
