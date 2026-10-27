@@ -36,6 +36,36 @@ def _dedup_on_device(reduced: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]
     return reduced[first], inverse
 
 
+#: Directions folded at a time by :func:`_canonical_images`, bounding its
+#: (operations, directions) images: 48 x 262,144 x 3 doubles is 300 MB.
+FOLD_CHUNK = 262_144
+
+
+def _canonical_images(directions: torch.Tensor, space_group: int) -> torch.Tensor:
+    """Each direction's image under the point group with the largest (z, y, x),
+    rounded as :func:`_dedup_on_device` rounds, on the directions' device:
+    symmetry-equivalent directions share their set of images, so they pick the
+    same one. In place of orix's ``in_fundamental_sector`` on the CPU, 3.4 s for
+    a 150 npx grid (6 s at 512); any one image per class is as good a
+    representative, the intensity being the same at all of them."""
+    from orix.quaternion.symmetry import get_point_group
+
+    pg = get_point_group(int(space_group))
+    matrices = np.asarray(pg.to_matrix(), dtype=np.float64).reshape(-1, 3, 3)
+    signs = np.where(np.asarray(pg.improper).reshape(-1), -1.0, 1.0)
+    operations = torch.as_tensor(matrices * signs[:, None, None], device=directions.device)
+    out = torch.empty(directions.shape, device=directions.device, dtype=torch.float64)
+    base = 200_003
+    for lo in range(0, len(directions), FOLD_CHUNK):
+        d = directions[lo : lo + FOLD_CHUNK].double()
+        images = torch.einsum("kij,nj->kni", operations, d)  # (operations, n, 3)
+        q = torch.round(images * 1e5).to(torch.int64) + 100_001
+        packed = (q[..., 2] * base + q[..., 1]) * base + q[..., 0]  # z first
+        best = packed.argmax(0)
+        out[lo : lo + FOLD_CHUNK] = images[best, torch.arange(len(d), device=d.device)]
+    return out
+
+
 def reduce_to_fundamental_sector(
     directions: torch.Tensor, space_group: int, cache_key=None
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -43,10 +73,11 @@ def reduce_to_fundamental_sector(
 
     The master pattern is invariant under the crystal point group -- ``I(k) =
     I(g k)`` -- so directions related by symmetry share one intensity. Reduces
-    every direction to its canonical fundamental-sector representative (orix
-    ``in_fundamental_sector``) and deduplicates on-device: symmetry-equivalent
-    grid points map to a bit-identical representative, so the fold is exact (no
-    interpolation). Cubic grids collapse ~15x; low-symmetry groups less.
+    every direction to one canonical image under the point group
+    (:func:`_canonical_images`, on the directions' device) and deduplicates
+    on-device: symmetry-equivalent grid points map to the same representative,
+    so the fold is exact (no interpolation). Cubic grids collapse ~15x;
+    low-symmetry groups less.
 
     ``cache_key`` (e.g. the grid ``npx``) memoizes the result -- the fold depends
     only on the grid and the point group, so passing it makes repeated calls
@@ -65,12 +96,8 @@ def reduce_to_fundamental_sector(
             torch.as_tensor(inverse_cpu, device=dev, dtype=torch.long),
         )
 
-    from orix.quaternion.symmetry import get_point_group
-    from orix.vector import Vector3d
-
-    pg = get_point_group(int(space_group))
-    reduced = Vector3d(directions.detach().cpu().numpy()).in_fundamental_sector(pg).data
-    reps, inverse = _dedup_on_device(torch.as_tensor(reduced, device=dev, dtype=dt))
+    reduced = _canonical_images(directions, int(space_group))
+    reps, inverse = _dedup_on_device(reduced.to(dt))
     if ck is not None:
         _FZ_CACHE[ck] = (reps.detach().cpu().numpy(), inverse.detach().cpu().numpy())
     return reps, inverse

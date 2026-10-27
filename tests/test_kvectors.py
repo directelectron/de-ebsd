@@ -1,5 +1,7 @@
 """Incident beam direction sampling."""
 
+import numpy as np
+import pytest
 import torch
 
 from de_ebsd.diffraction.kvectors import reduce_to_fundamental_sector, sample_incident_directions
@@ -54,3 +56,27 @@ def test_reduce_to_fundamental_sector_cache():
     assert torch.equal(reps1, reps2) and torch.equal(inv1, inv2)
     reps3, inv3 = reduce_to_fundamental_sector(d, 227)  # uncached recompute
     assert torch.equal(inv1, inv3) and torch.allclose(reps1, reps3)
+
+
+@pytest.mark.parametrize("space_group", [225, 194, 62, 2])
+def test_every_representative_is_a_symmetry_image_and_none_is_spare(space_group):
+    """The fold keeps one image per direction under the point group (on the
+    directions' device): each direction's representative is one of its own
+    images, and there are no more representatives than orix's fundamental
+    sector keeps."""
+    from orix.quaternion.symmetry import get_point_group
+    from orix.vector import Vector3d
+
+    from de_ebsd.diffraction.kvectors import _dedup_on_device
+
+    directions = sample_incident_directions(40).flat()
+    reps, inverse = reduce_to_fundamental_sector(directions, space_group)
+    pg = get_point_group(space_group)
+    signs = np.where(np.asarray(pg.improper).reshape(-1), -1.0, 1.0)
+    operations = np.asarray(pg.to_matrix()).reshape(-1, 3, 3) * signs[:, None, None]
+    images = np.einsum("kij,nj->kni", operations, directions.double().numpy())
+    own = reps[inverse].double().numpy()
+    assert np.abs(images - own[None]).max(-1).min(0).max() < 1e-6
+    sector = Vector3d(directions.numpy()).in_fundamental_sector(pg).data
+    orix_reps, _ = _dedup_on_device(torch.as_tensor(sector, dtype=directions.dtype))
+    assert len(reps) <= len(orix_reps)
