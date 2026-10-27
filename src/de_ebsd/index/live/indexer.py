@@ -43,7 +43,13 @@ from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matri
 from de_ebsd.index import _kernels
 from de_ebsd.index.live import calibration, deformation
 from de_ebsd.index.live.background import ScanBackground
-from de_ebsd.index.live.common import BATCH, STENCIL, average_to, parabola_offset
+from de_ebsd.index.live.common import (
+    BATCH,
+    FUSED_BATCH,
+    STENCIL,
+    average_to,
+    parabola_offset,
+)
 from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
@@ -382,8 +388,9 @@ class LiveIndexer:
         a little short on a noisy pattern, a few degrees off for one in ten on a
         real scan, and the fit takes them to a few tenths."""
         out = []
-        for lo in range(0, len(frames), BATCH):
-            search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
+        batch = FUSED_BATCH if fit and self.fused else BATCH
+        for lo in range(0, len(frames), batch):
+            search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
             phase, g, score, entry = self.search(search_rows)
             if self.refine_steps:
                 g, score = self.refine(refine_rows, phase, g)
