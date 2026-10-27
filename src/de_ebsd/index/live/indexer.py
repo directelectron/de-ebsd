@@ -434,11 +434,12 @@ class LiveIndexer:
         strains are fitted, as its frames joined the static background."""
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
         out = []
-        for lo in range(0, len(frames), BATCH):
-            search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
+        batch = FUSED_BATCH if self.fused and deformation.STRAIN_SCHEDULE else BATCH
+        for lo in range(0, len(frames), batch):
+            search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
             phase, g, _, entry = self.search(search_rows)
             g, _ = self.refine(refine_rows, phase, g)
-            batch_maps = None if maps is None else maps[lo : lo + BATCH]
+            batch_maps = None if maps is None else maps[lo : lo + batch]
             self.add_fits(phase, g, batch_maps)
             g, strain, score = self.refine_deformation(
                 refine_rows, phase, g, center_maps=batch_maps, ghost=self.ghost

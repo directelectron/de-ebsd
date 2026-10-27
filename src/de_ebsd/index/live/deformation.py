@@ -159,7 +159,14 @@ def refine_deformation(
     17. On a real Zenith Cu scan its single crystal's neighbouring orientations
     then differed by 0.20° at the 90th percentile, against 0.35° fitted with the
     strains and 1.70° from :meth:`LiveIndexer.refine` alone.
+
+    On CUDA with CuPy (``indexer.fused``) the strain fit is instead
+    :data:`STRAIN_SCHEDULE`'s passes in one launch, one block per pattern, and
+    *iterations*, *line_search* and *step* do not apply; it keeps the
+    best-scored point it visits, so only a NaN score is refused.
     """
+    if strain and getattr(indexer, "fused", False) and STRAIN_SCHEDULE:
+        return _fit_strains_fused(indexer, refine_rows, phase, g, center_maps, ghost)
     if not strain and getattr(indexer, "fused", False):
         return _fit_orientations_fused(
             indexer,
@@ -313,6 +320,26 @@ FIT_SCHEDULE: tuple[tuple[bool, float], ...] = (
 #: degrees at the 90th percentile on that scan).
 FIT_MAX_STEP = 3e-2
 
+#: The fused strain fit's passes, as :data:`FIT_SCHEDULE`, over all eight of
+#: the deformation's numbers; empty for the torch fit
+#: (:data:`DEFORMATION_ITERATIONS`, :data:`DEFORMATION_LINE_SEARCH`). Its
+#: Jacobian is the slope of the bilinear master itself, the function the score
+#: samples, not the orientation fit's smooth gradient: on a customer Zenith's Cu
+#: scan (a 301-texel master, a 128 x 128 refine) the smooth gradient stopped about
+#: 1e-3 short of the torch fit's converged strain however many passes it took,
+#: and scored lower (0.5395 against 0.5411, median over its single crystal).
+#: With the facets' slope, ten full-resolution passes came to 3.5e-4 of the
+#: converged strain (median over the six components; the converged torch fit
+#: itself moves 2.4e-4 between difference steps of 1e-3 and 2e-3), where the
+#: torch fit's three iterations stop 2.6-3.8e-3 away. Coarse passes cost strain:
+#: averaged rows are not the coarse projection of the same strain (1e-4 on
+#: noise-free synthetic patterns at 128 x 128, 3.4e-4 at 64 x 64). The ten passes
+#: took 9.4 ms per 256 patterns on a Titan X, the torch fit 42 ms.
+STRAIN_SCHEDULE: tuple[tuple[bool, float], ...] = ((False, 1.0),) * 10
+#: The largest change one of :data:`STRAIN_SCHEDULE`'s passes may make, as
+#: :data:`FIT_MAX_STEP`: with 1e-2 or 5e-3 the same passes fell further short.
+STRAIN_MAX_STEP = FIT_MAX_STEP
+
 _TEXTURE_GRADIENTS: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
 
 
@@ -333,6 +360,63 @@ def _texture_gradients(texture: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
     return _TEXTURE_GRADIENTS[key]
 
 
+def _fit_passes(
+    indexer, refine_rows, phase, g, center_maps, ghost, schedule, max_step, strain=False
+):
+    """:func:`~de_ebsd.index._kernels.fit_passes` at the indexer's refine and
+    coarse resolutions, the coarse rows (and ghost) averaged from the refine's.
+    With *strain* the Jacobian is the bilinear master's own slope
+    (:data:`STRAIN_SCHEDULE`), without it the master's smooth gradient."""
+    from de_ebsd.index import _kernels
+    from de_ebsd.index.live.common import average_to
+
+    shape, coarse_shape = indexer.refine_shape, indexer.coarse_shape
+
+    def coarse(rows):
+        return normalize_rows(average_to(rows.view(len(rows), *shape), coarse_shape).flatten(1))
+
+    full = (indexer.refine_directions, refine_rows, ghost)
+    low = full
+    if any(level for level, _ in schedule):
+        low = (
+            indexer.coarse_directions,
+            coarse(refine_rows),
+            coarse(ghost[None])[0] if ghost is not None else None,
+        )
+    return _kernels.fit_passes(
+        indexer.texture,
+        g,
+        phase * 2,
+        center_maps,
+        full,
+        low,
+        schedule,
+        max_step=max_step,
+        damping=1e-3,
+        margin=DEFORMATION_SCORE_MARGIN,
+        offset=_texture_mean(indexer.texture),
+        floor=SINGLE_PRECISION_FLOOR,
+        gradients=None if strain else _texture_gradients(indexer.texture),
+        strain=strain,
+        threads=_kernels.FIT_STRAIN_THREADS if strain else _kernels.FIT_THREADS,
+    )
+
+
+def _fit_strains_fused(indexer, refine_rows, phase, g, center_maps, ghost):
+    """:func:`refine_deformation` with the strains on the fused path: the
+    :data:`STRAIN_SCHEDULE` of passes in one launch, one block per pattern, then
+    the best point's polar parts here, as the torch path takes them."""
+    p, score, refused = _fit_passes(
+        indexer, refine_rows, phase, g, center_maps, ghost, STRAIN_SCHEDULE, STRAIN_MAX_STEP, True
+    )
+    beta = torch.einsum("nc,cij->nij", p, trace_free_basis(indexer.device))
+    rotation, strain = polar_parts(beta)
+    fitted = g @ rotation.transpose(-1, -2)
+    strain = torch.where(refused[:, None, None], torch.nan, strain)
+    fitted = torch.where(refused[:, None, None], g, fitted)
+    return fitted, strain, score
+
+
 def _fit_orientations_fused(
     indexer, refine_rows, phase, g, *, iterations, line_search, step, center_maps, ghost
 ):
@@ -344,31 +428,8 @@ def _fit_orientations_fused(
     from de_ebsd.index import _kernels
 
     if ANALYTIC_JACOBIAN and FIT_SCHEDULE:
-        from de_ebsd.index.live.common import average_to
-
-        shape, coarse_shape = indexer.refine_shape, indexer.coarse_shape
-
-        def coarse(rows):
-            return normalize_rows(average_to(rows.view(len(rows), *shape), coarse_shape).flatten(1))
-
-        fitted, score, refused = _kernels.fit_passes(
-            indexer.texture,
-            g,
-            phase * 2,
-            center_maps,
-            (indexer.refine_directions, refine_rows, ghost),
-            (
-                indexer.coarse_directions,
-                coarse(refine_rows),
-                coarse(ghost[None])[0] if ghost is not None else None,
-            ),
-            FIT_SCHEDULE,
-            max_step=FIT_MAX_STEP,
-            damping=1e-3,
-            margin=DEFORMATION_SCORE_MARGIN,
-            offset=_texture_mean(indexer.texture),
-            floor=SINGLE_PRECISION_FLOOR,
-            gradients=_texture_gradients(indexer.texture),
+        fitted, score, refused = _fit_passes(
+            indexer, refine_rows, phase, g, center_maps, ghost, FIT_SCHEDULE, FIT_MAX_STEP
         )
         strain = torch.where(
             refused[:, None, None], torch.nan, torch.zeros(len(g), 3, 3, device=g.device)

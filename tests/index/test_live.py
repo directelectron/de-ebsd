@@ -372,6 +372,53 @@ def test_the_fused_orientation_fit_is_the_torch_one(
     assert np.max(error) < 0.05, error
 
 
+@fused
+@pytest.mark.parametrize("moved_center", [False, True])
+def test_the_fused_strain_fit_is_the_torch_one(master, point_group, detector, moved_center):
+    """The strain fit on the fused kernels (one launch, one block per pattern, the
+    Jacobian from the master's own slope) against the torch path, on patterns with a
+    known strain, a ghost and seeds 0.2° off, at the indexer's pattern center and
+    at a center of each pattern's own: both recover the strain and the
+    orientation, and agree with each other to well within the strain's size."""
+    from de_ebsd.index.live import deformation
+
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused and deformation.STRAIN_SCHEDULE
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32)).cuda()
+    rng = np.random.default_rng(3)
+    e = rng.normal(0.0, 2e-3, (len(g), 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    strain = torch.as_tensor(e, dtype=torch.float32).cuda()
+    deformed = g @ torch.linalg.inv(torch.eye(3, device="cuda") + strain)
+    maps = None
+    if moved_center:
+        centers = np.array(detector.pattern_center) + rng.normal(0.0, 0.01, (len(g), 3))
+        maps = indexer.center_maps(centers)
+        deformed = deformed @ maps
+    phase = torch.zeros(len(g), dtype=torch.int64, device="cuda")
+    patterns = normalize_rows(
+        indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
+    )
+    rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
+    ghost = normalize_rows(patterns.mean(0, keepdim=True))[0]
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.2, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32)).cuda()
+    options = {"ghost": ghost, "center_maps": maps, "iterations": 5}
+    fused, fused_strain, fused_score = indexer.refine_deformation(rows, phase, seed, **options)
+    indexer.fused = False
+    plain, plain_strain, plain_score = indexer.refine_deformation(rows, phase, seed, **options)
+    for found, found_strain in ((fused, fused_strain), (plain, plain_strain)):
+        error = Rotation.from_matrix(found.cpu().numpy()).angle_with(rotations, degrees=True)
+        assert np.max(error) < 0.02, error
+        assert torch.allclose(found_strain, strain, atol=2e-4), (found_strain - strain).abs().max()
+    assert torch.allclose(fused_strain, plain_strain, atol=1e-4), fused_strain - plain_strain
+    assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
+
+
 def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     """Unstrained patterns each carrying the negative of the scan's mean pattern, as
     a frame divided by a static background made of the scan's own frames does: fitted
