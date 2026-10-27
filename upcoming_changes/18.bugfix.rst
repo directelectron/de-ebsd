@@ -1,0 +1,1 @@
+A pattern the strain fit could not move kept its seed orientation instead of stopping its whole batch with a singular-matrix error.
