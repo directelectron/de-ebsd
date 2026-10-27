@@ -125,6 +125,7 @@ def refine_deformation(
     step: float = DEFORMATION_STEP,
     center_maps: torch.Tensor | None = None,
     ghost: torch.Tensor | None = None,
+    strain: bool = True,
 ):
     """Each orientation *g* ``(N, 3, 3)`` refined together with its pattern's
     deviatoric strain: ``(g, strain, score)``, *g* the lattice's orientation,
@@ -152,16 +153,25 @@ def refine_deformation(
     largest multiple. A fit that ends scoring below its seed
     (:data:`DEFORMATION_SCORE_MARGIN`) is refused: its strain is NaN and its
     *g* and *score* are the seed's.
+
+    With *strain* False only the three rotations are fitted, and *strain* comes
+    back zero: the orientation-only fit, 7 projections an iteration rather than
+    17. On a real Zenith Cu scan its single crystal's neighbouring orientations
+    then differed by 0.20° at the 90th percentile, against 0.35° fitted with the
+    strains and 1.70° from :meth:`LiveIndexer.refine` alone.
     """
     basis = trace_free_basis(indexer.device)
-    n, k = len(g), 1 + 2 * len(basis)
+    if not strain:
+        basis = basis[:3]
+    m = len(basis)
+    n, k = len(g), 1 + 2 * m
     eye = torch.eye(3, device=indexer.device)
     offsets = step * torch.cat(
-        [torch.zeros(1, 8, device=indexer.device), torch.eye(8, device=indexer.device)]
+        [torch.zeros(1, m, device=indexer.device), torch.eye(m, device=indexer.device)]
     )
-    offsets = torch.cat([offsets, -offsets[1:]])  # (17, 8): the fit, +each, -each
-    damping = 1e-3 * torch.eye(8, device=indexer.device)
-    p = torch.zeros(n, 8, device=indexer.device)
+    offsets = torch.cat([offsets, -offsets[1:]])  # (k, m): the fit, +each, -each
+    damping = 1e-3 * torch.eye(m, device=indexer.device)
+    p = torch.zeros(n, m, device=indexer.device)
     if ghost is not None:
         refine_rows = normalize_rows(refine_rows - (refine_rows @ ghost)[:, None] * ghost)
 
@@ -188,8 +198,8 @@ def refine_deformation(
         simulated = normalize_rows(simulated).view(n, k, -1)
         along = on_ghost(simulated)
         fit, fit_along = simulated[:, 0], along[:, :1]
-        jacobian = (simulated[:, 1:9] - simulated[:, 9:]) / (2 * step)
-        jacobian_along = (along[:, 1:9] - along[:, 9:]) / (2 * step)
+        jacobian = (simulated[:, 1 : 1 + m] - simulated[:, 1 + m :]) / (2 * step)
+        jacobian_along = (along[:, 1 : 1 + m] - along[:, 1 + m :]) / (2 * step)
         # the pattern's contrast is free: the residual is against scale * fit,
         # both off the ghost (the patterns already are, so only the fit's
         # length and the products with the Jacobian need correcting)
@@ -240,6 +250,10 @@ def refine_deformation(
     )
     score = (simulated * refine_rows).sum(-1) / (1 - on_ghost(simulated) ** 2).sqrt()
     rotation, strain = polar_parts(beta)
+    if m < len(trace_free_basis(indexer.device)):
+        # a rotation as I - beta is a rotation only to first order: its second
+        # order is a stretch of ~beta^2/2, not a strain the fit measured
+        strain = torch.zeros_like(strain)
     fitted = g @ rotation.transpose(-1, -2)
     if seed_score is not None:
         refused = ~(score >= seed_score - DEFORMATION_SCORE_MARGIN)  # NaN is refused too

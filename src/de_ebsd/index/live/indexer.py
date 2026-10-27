@@ -371,16 +371,26 @@ class LiveIndexer:
             out.append((phase, g, strain, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
 
-    def index(self, frames):
+    def index(self, frames, *, fit: bool = False):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
         *entry* is the dictionary entry the search seeded the refine from (see
         :meth:`search`): anything worked out once per entry, such as a color, stands
-        for the refined orientation to within the dictionary's resolution."""
+        for the refined orientation to within the dictionary's resolution.
+
+        With *fit*, the refine's orientations are fitted on, rotations only
+        (:meth:`refine_deformation` without the strains): the refine's steps stop
+        a little short on a noisy pattern, a few degrees off for one in ten on a
+        real scan, and the fit takes them to a few tenths."""
         out = []
         for lo in range(0, len(frames), BATCH):
             search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
             phase, g, score, entry = self.search(search_rows)
             if self.refine_steps:
                 g, score = self.refine(refine_rows, phase, g)
+            if fit:
+                self.add_fits(phase, g)
+                g, _, score = self.refine_deformation(
+                    refine_rows, phase, g, ghost=self.ghost, strain=False
+                )
             out.append((phase, g, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))

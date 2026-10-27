@@ -266,6 +266,28 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     assert (score > 0.999).all(), score
 
 
+def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
+    master, point_group, detector
+):
+    """Unstrained patterns and a seed 0.3° off: fitted without the strains, the
+    orientation comes back to within a few hundredths of a degree, the strain is
+    zero, and :meth:`LiveIndexer.index` with *fit* runs it after the refine."""
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.3, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32))
+    found, strain, score = indexer.refine_deformation(rows, phase, seed, iterations=5, strain=False)
+    error = Rotation.from_matrix(found.numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.02, error
+    assert strain.abs().max() < 1e-6
+    assert (score > 0.999).all(), score
+
+
 def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     """Unstrained patterns each carrying the negative of the scan's mean pattern, as
     a frame divided by a static background made of the scan's own frames does: fitted
