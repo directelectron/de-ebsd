@@ -61,6 +61,85 @@ __device__ __forceinline__ float sample_master(
     return top * (1.f - fy) + bottom * fy;
 }
 
+// sample_master and its gradient with respect to the direction v (before it is
+// normalized), into dv[3]: through the bilinear lookup of the master's own x and
+// y derivatives gx, gy (per texel, smooth, not the bilinear facets' slope) or,
+// with gx null, the facets' slope itself, then the Lambert square's map and the
+// normalization. Clamped at the square's edge, the gradient along that axis is
+// zero there.
+__device__ __forceinline__ float sample_gradient(
+    const float* __restrict__ texture, const float* __restrict__ gx,
+    const float* __restrict__ gy, int base, int n, float vx, float vy, float vz, float* dv)
+{
+    float inverse = rsqrtf(fmaxf(vx * vx + vy * vy + vz * vz, 1e-24f));
+    float x = vx * inverse, y = vy * inverse, z = vz * inverse;
+    int channel = base + (z < 0.f ? 1 : 0);
+    float abs_z = fabsf(z);
+    float lx = 0.f, ly = 0.f;
+    float dlx[3] = {0.f, 0.f, 0.f}, dly[3] = {0.f, 0.f, 0.f};
+    if (abs_z < 1.f) {
+        float root = sqrtf(fmaxf(2.f * (1.f - abs_z), 1e-30f));
+        // d root / d z, for the hemisphere this z is on
+        float droot = -(z >= 0.f ? 1.f : -1.f) / fmaxf(root, 1e-6f);
+        float planar = fmaxf(x * x + y * y, 1e-24f);
+        if (fabsf(y) <= fabsf(x)) {
+            float sign = x >= 0.f ? 1.f : -1.f;
+            float safe = fabsf(x) < 1e-12f ? 1e-12f : x;
+            float angle = atanf(y / safe);
+            lx = sign * root * SQRT_PI_OVER_2;
+            ly = sign * root * TWO_OVER_SQRT_PI * angle;
+            dlx[2] = sign * SQRT_PI_OVER_2 * droot;
+            dly[0] = -sign * TWO_OVER_SQRT_PI * root * y / planar;
+            dly[1] = sign * TWO_OVER_SQRT_PI * root * x / planar;
+            dly[2] = sign * TWO_OVER_SQRT_PI * angle * droot;
+        } else {
+            float sign = y >= 0.f ? 1.f : -1.f;
+            float safe = fabsf(y) < 1e-12f ? 1e-12f : y;
+            float angle = atanf(x / safe);
+            lx = sign * root * TWO_OVER_SQRT_PI * angle;
+            ly = sign * root * SQRT_PI_OVER_2;
+            dlx[0] = sign * TWO_OVER_SQRT_PI * root * y / planar;
+            dlx[1] = -sign * TWO_OVER_SQRT_PI * root * x / planar;
+            dlx[2] = sign * TWO_OVER_SQRT_PI * angle * droot;
+            dly[2] = sign * SQRT_PI_OVER_2 * droot;
+        }
+    }
+    float last = (float)(n - 1);
+    float scale = 0.5f * last / SQRT_PI_HALF;
+    float ux = (lx / SQRT_PI_HALF + 1.f) * 0.5f * last;
+    float uy = (ly / SQRT_PI_HALF + 1.f) * 0.5f * last;
+    float px = fminf(fmaxf(ux, 0.f), last), py = fminf(fmaxf(uy, 0.f), last);
+    float kx = (ux > 0.f && ux < last) ? scale : 0.f;
+    float ky = (uy > 0.f && uy < last) ? scale : 0.f;
+    int x0 = (int)floorf(px), y0 = (int)floorf(py);
+    int x1 = min(x0 + 1, n - 1), y1 = min(y0 + 1, n - 1);
+    float fx = px - x0, fy = py - y0;
+    size_t offset = (size_t)channel * n * n;
+    int i00 = y0 * n + x0, i01 = y0 * n + x1, i10 = y1 * n + x0, i11 = y1 * n + x1;
+    float w00 = (1.f - fx) * (1.f - fy), w01 = fx * (1.f - fy);
+    float w10 = (1.f - fx) * fy, w11 = fx * fy;
+    const float* t = texture + offset;
+    float s = t[i00] * w00 + t[i01] * w01 + t[i10] * w10 + t[i11] * w11;
+    float sx, sy;
+    if (gx) {
+        const float* tx = gx + offset;
+        const float* ty = gy + offset;
+        sx = (tx[i00] * w00 + tx[i01] * w01 + tx[i10] * w10 + tx[i11] * w11) * kx;
+        sy = (ty[i00] * w00 + ty[i01] * w01 + ty[i10] * w10 + ty[i11] * w11) * ky;
+    } else {
+        // the bilinear sample's own slope: its facet's
+        sx = ((t[i01] - t[i00]) * (1.f - fy) + (t[i11] - t[i10]) * fy) * kx;
+        sy = ((t[i10] - t[i00]) * (1.f - fx) + (t[i11] - t[i01]) * fx) * ky;
+    }
+    float du[3];
+    for (int c = 0; c < 3; c++) du[c] = sx * dlx[c] + sy * dly[c];
+    float along = x * du[0] + y * du[1] + z * du[2];
+    dv[0] = (du[0] - x * along) * inverse;
+    dv[1] = (du[1] - y * along) * inverse;
+    dv[2] = (du[2] - z * along) * inverse;
+    return s;
+}
+
 __device__ __forceinline__ float sample_rotated(
     const float* __restrict__ texture, int base, int n,
     const float* __restrict__ r, const float* __restrict__ d)
@@ -121,10 +200,844 @@ extern "C" __global__ void score(
         scores[m] = c[0] * rsqrtf(fmaxf(variance, 1e-12f));
     }
 }
+
+// The block-wide sum of each of count per-thread partial sums in `values`
+// (count * blockDim.x floats, value-major); the result lands in values[i * blockDim.x].
+__device__ __forceinline__ void block_sums(float* values, int count)
+{
+    __syncthreads();
+    for (int half = blockDim.x / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half)
+            for (int i = 0; i < count; i++)
+                values[i * blockDim.x + threadIdx.x] +=
+                    values[i * blockDim.x + threadIdx.x + half];
+        __syncthreads();
+    }
+}
+
+// ---- one block per pattern: the stepped refine and the orientation fit -------
+// Each runs every level or iteration of its pattern in one launch: the block's
+// threads sample and reduce over the pixels, thread 0 does the pattern's own
+// arithmetic between the reductions (in double), so nothing per pattern goes
+// through the host or through any other kernel.
+
+#define FIT_THREADS 128
+#define MAX_LEVELS 8
+#define MAX_MULTIPLES 4
+
+// m = a @ b, 3x3 row-major
+__device__ void mat_mul(const float* a, const float* b, float* m)
+{
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            m[i * 3 + j] =
+                a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+}
+
+// The rotation by vector (x, y, z) radians, Rodrigues with the series limits of
+// rotation_vector_to_matrix at small angles.
+__device__ void rotation(double x, double y, double z, float* r)
+{
+    double t2 = x * x + y * y + z * z, t = sqrt(fmax(t2, 1e-12));
+    double a = t2 < 1e-12 ? 1.0 : sin(t) / t;
+    double b = t2 < 1e-12 ? 0.5 : (1.0 - cos(t)) / fmax(t2, 1e-12);
+    double k[9] = {0, -z, y, z, 0, -x, -y, x, 0};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            double kk = k[i * 3] * k[j] + k[i * 3 + 1] * k[3 + j] + k[i * 3 + 2] * k[6 + j];
+            r[i * 3 + j] = (float)((i == j ? 1.0 : 0.0) + a * k[i * 3 + j] + b * kk);
+        }
+}
+
+// m = g @ (I - skew(q / sqrt 2)), then @ map if one is given: the fit's candidate
+// for rotation numbers q (the trace-free basis's three rotations).
+__device__ void turned(const float* g, double q0, double q1, double q2, const float* map, float* m)
+{
+    const double h = 0.70710678118654752;
+    double wx = q0 * h, wy = q1 * h, wz = q2 * h;
+    float e[9] = {1.f, (float)wz, (float)-wy,
+                  (float)-wz, 1.f, (float)wx,
+                  (float)wy, (float)-wx, 1.f};
+    if (map) {
+        float t[9];
+        mat_mul(g, e, t);
+        mat_mul(t, map, m);
+    } else {
+        mat_mul(g, e, m);
+    }
+}
+
+// refine_stepped: LiveIndexer.refine on the fused path. For each step of steps
+// (radians): the seven stencil candidates g @ R(stencil * step), each's normalized
+// cross-correlation with its row, and g moved to the parabola's vertex per axis
+// (parabola_offset). g_out, score_out: the result and its last level's score.
+extern "C" __global__ void refine_stepped(
+    const float* __restrict__ texture, int n,
+    const float* __restrict__ g_in, const int* __restrict__ bases,
+    const float* __restrict__ directions, int pixels,
+    const float* __restrict__ rows, const float* __restrict__ steps, int levels, float floor_,
+    float* __restrict__ g_out, float* __restrict__ score_out)
+{
+    __shared__ float shared[21 * FIT_THREADS];
+    __shared__ float g[9], candidates[7 * 9];
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    if (t < 9) g[t] = g_in[i * 9 + t];
+    int base = bases[i];
+    const float* row = rows + i * (long long)pixels;
+    float score = 0.f;
+    const int stencil[7][3] = {
+        {0, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    for (int level = 0; level < levels; level++) {
+        double step = steps[level];
+        __syncthreads();
+        if (t == 0) {
+            for (int c = 0; c < 7; c++) {
+                float r[9];
+                rotation(stencil[c][0] * step, stencil[c][1] * step, stencil[c][2] * step, r);
+                mat_mul(g, r, candidates + c * 9);
+            }
+        }
+        __syncthreads();
+        float acc[21];
+        for (int k = 0; k < 21; k++) acc[k] = 0.f;
+        for (int p = t; p < pixels; p += b) {
+            const float* d = directions + p * 3;
+            float r = row[p];
+            for (int c = 0; c < 7; c++) {
+                float s = sample_rotated(texture, base, n, candidates + c * 9, d);
+                acc[c] += s; acc[7 + c] += s * s; acc[14 + c] += s * r;
+            }
+        }
+        for (int k = 0; k < 21; k++) shared[k * b + t] = acc[k];
+        block_sums(shared, 21);
+        if (t == 0) {
+            double sc[7];
+            for (int c = 0; c < 7; c++) {
+                double sum = shared[c * b], squares = shared[(7 + c) * b];
+                double product = shared[(14 + c) * b];
+                sc[c] = product / sqrt(fmax(squares - sum * sum / pixels, 1e-12));
+            }
+            double offset[3];
+            for (int axis = 0; axis < 3; axis++) {
+                double center = sc[0], plus = sc[1 + 2 * axis], minus = sc[2 + 2 * axis];
+                double curvature = plus - 2 * center + minus;
+                if (curvature < 0) {
+                    double vertex = 0.5 * (minus - plus) / fmin(curvature, -(double)floor_);
+                    offset[axis] = fmin(fmax(vertex, -1.0), 1.0);
+                } else {
+                    offset[axis] = (fmax(plus, minus) > center) ? (plus > minus ? 1.0 : -1.0) : 0.0;
+                }
+            }
+            float r[9], moved[9];
+            rotation(offset[0] * step, offset[1] * step, offset[2] * step, r);
+            mat_mul(g, r, moved);
+            for (int k = 0; k < 9; k++) g[k] = moved[k];
+            score = (float)sc[0];
+        }
+    }
+    __syncthreads();
+    if (t < 9) g_out[i * 9 + t] = g[t];
+    if (t == 0) score_out[i] = score;
+}
+
+// fit_orientations: refine_deformation without the strains on the fused path:
+// Gauss-Newton over the three rotations, its Jacobian by central differences of
+// `step`, each step capped at max_step and tried at each of multiples, keeping
+// the best scored. The row is taken off the ghost as it is read; every score is
+// the off-ghost one. The fit's rotation is the polar part of (I - beta)^-1: for a
+// rotation beta = skew(w), the turn about w by atan|w|. A fit ending below its
+// seed's score less margin is refused (g and score as given). maps: per-pattern
+// center maps, or null.
+extern "C" __global__ void fit_orientations(
+    const float* __restrict__ texture, int n,
+    const float* __restrict__ g_in, const int* __restrict__ bases, const float* __restrict__ maps,
+    const float* __restrict__ directions, int pixels,
+    const float* __restrict__ rows, const float* __restrict__ ghost,
+    int iterations, float step, float max_step, const float* __restrict__ multiples, int count,
+    float damping, float margin, float offset, float floor_,
+    const float* __restrict__ grad_x, const float* __restrict__ grad_y,
+    float* __restrict__ g_out, float* __restrict__ score_out, int* __restrict__ refused_out)
+{
+    __shared__ float shared[22 * FIT_THREADS];
+    __shared__ float g[9], map[9], candidates[7 * 9];
+    __shared__ double state[8];  // p[3], seed, row . ghost, 1 / its length off it, current
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    if (t < 9) { g[t] = g_in[i * 9 + t]; if (maps) map[t] = maps[i * 9 + t]; }
+    const float* mp = maps ? map : (const float*)0;
+    int base = bases[i];
+    const float* row = rows + i * (long long)pixels;
+
+    // the row off the ghost: (row - a ghost) / |row - a ghost|, |...| = sqrt(1 - a^2)
+    float a_sum = 0.f;
+    if (ghost)
+        for (int p = t; p < pixels; p += b) a_sum += row[p] * ghost[p];
+    shared[t] = a_sum;
+    block_sums(shared, 1);
+    if (t == 0) {
+        double a = ghost ? (double)shared[0] : 0.0;
+        state[0] = state[1] = state[2] = 0.0;
+        state[3] = -1e30;
+        state[4] = a;
+        state[5] = 1.0 / sqrt(fmax(1.0 - a * a, 1e-12));
+    }
+    __syncthreads();
+    const float a = (float)state[4], inverse_length = (float)state[5];
+
+    for (int iteration = 0; iteration < iterations; iteration++) {
+        if (t == 0) {
+            const double o[7][3] = {
+                {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
+            for (int c = 0; c < (grad_x ? 1 : 7); c++)
+                turned(g, state[0] + step * o[c][0], state[1] + step * o[c][1],
+                       state[2] + step * o[c][2], mp, candidates + c * 9);
+            if (grad_x) {
+                // dv/dq_k = -g skew(e_k) / sqrt 2 (map d): q's derivative of the
+                // candidate's direction, the same for any q
+                const float h = 0.70710678118654752f;
+                for (int k = 0; k < 3; k++) {
+                    float e[9] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+                    int a1 = (k + 1) % 3, a2 = (k + 2) % 3;  // skew(e_k)[a1][a2] = -1
+                    e[a1 * 3 + a2] = h;
+                    e[a2 * 3 + a1] = -h;
+                    mat_mul(g, e, candidates + (1 + k) * 9);
+                }
+            }
+        }
+        __syncthreads();
+        float acc[22];
+        for (int k = 0; k < 22; k++) acc[k] = 0.f;
+        float half_step = 0.5f / step;
+        for (int p = t; p < pixels; p += b) {
+            const float* d = directions + p * 3;
+            float gh = ghost ? ghost[p] : 0.f;
+            float r = (row[p] - a * gh) * inverse_length;
+            float s, j[3];
+            if (grad_x) {
+                const float* m = candidates;
+                float dv[3];
+                s = sample_gradient(texture, grad_x, grad_y, base, n,
+                                    m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+                                    m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+                                    m[6] * d[0] + m[7] * d[1] + m[8] * d[2], dv) - offset;
+                float u[3] = {d[0], d[1], d[2]};
+                if (mp) {
+                    for (int c = 0; c < 3; c++)
+                        u[c] = mp[c * 3] * d[0] + mp[c * 3 + 1] * d[1] + mp[c * 3 + 2] * d[2];
+                }
+                for (int k = 0; k < 3; k++) {
+                    const float* w = candidates + (1 + k) * 9;
+                    j[k] = dv[0] * (w[0] * u[0] + w[1] * u[1] + w[2] * u[2])
+                         + dv[1] * (w[3] * u[0] + w[4] * u[1] + w[5] * u[2])
+                         + dv[2] * (w[6] * u[0] + w[7] * u[1] + w[8] * u[2]);
+                }
+            } else {
+                s = sample_rotated(texture, base, n, candidates, d) - offset;
+                for (int c = 0; c < 3; c++) {
+                    float plus = sample_rotated(texture, base, n, candidates + (1 + c) * 9, d);
+                    float minus = sample_rotated(texture, base, n, candidates + (4 + c) * 9, d);
+                    j[c] = (plus - minus) * half_step;
+                }
+            }
+            acc[0] += s; acc[1] += s * s;
+            for (int c = 0; c < 3; c++) {
+                acc[2 + c] += j[c]; acc[5 + c] += s * j[c];
+                acc[15 + c] += j[c] * r; acc[19 + c] += j[c] * gh;
+            }
+            acc[8] += j[0] * j[0]; acc[9] += j[0] * j[1]; acc[10] += j[0] * j[2];
+            acc[11] += j[1] * j[1]; acc[12] += j[1] * j[2]; acc[13] += j[2] * j[2];
+            acc[14] += s * r; acc[18] += s * gh;
+        }
+        __syncthreads();
+        for (int k = 0; k < 22; k++) shared[k * b + t] = acc[k];
+        block_sums(shared, 22);
+        if (t == 0) {
+            double S[22];
+            for (int k = 0; k < 22; k++) S[k] = shared[k * b];
+            double P = pixels;
+            double sigma2 = fmax(S[1] - S[0] * S[0] / P, (double)floor_), sigma = sqrt(sigma2);
+            double uj[3], jr[3], jg[3];
+            for (int c = 0; c < 3; c++) uj[c] = S[5 + c] - S[0] * S[2 + c] / P;
+            const int jidx[3][3] = {{8, 9, 10}, {9, 11, 12}, {10, 12, 13}};
+            double normal[3][3];
+            for (int x = 0; x < 3; x++)
+                for (int y = 0; y < 3; y++)
+                    normal[x][y] = (S[jidx[x][y]] - S[2 + x] * S[2 + y] / P) / sigma2
+                                   - uj[x] * uj[y] / (sigma2 * sigma2);
+            double fit_row = S[14] / sigma, fit_ghost = S[18] / sigma;
+            for (int c = 0; c < 3; c++) {
+                jr[c] = S[15 + c] / sigma - S[14] * uj[c] / (sigma2 * sigma);
+                jg[c] = S[19 + c] / sigma - S[18] * uj[c] / (sigma2 * sigma);
+            }
+            double scale = fit_row / (1.0 - fit_ghost * fit_ghost);
+            double current = scale * sqrt(fmax(1.0 - fit_ghost * fit_ghost, 0.0));
+            if (iteration == 0) state[3] = current;
+            double trace = 0.0;
+            for (int x = 0; x < 3; x++)
+                for (int y = 0; y < 3; y++) normal[x][y] -= jg[x] * jg[y];
+            for (int x = 0; x < 3; x++) trace += normal[x][x];
+            for (int x = 0; x < 3; x++) normal[x][x] += damping * trace / 3.0;
+            double gradient[3];
+            double safe = fmax(scale, (double)floor_);
+            for (int c = 0; c < 3; c++)
+                gradient[c] = (jr[c] + scale * jg[c] * fit_ghost) / safe;
+            // the 3x3 solve by the adjugate; a singular system makes no step
+            double (*A)[3] = normal;
+            double c0[3] = {A[1][1] * A[2][2] - A[1][2] * A[2][1],
+                            A[1][2] * A[2][0] - A[1][0] * A[2][2],
+                            A[1][0] * A[2][1] - A[1][1] * A[2][0]};
+            double c1[3] = {A[2][1] * A[0][2] - A[2][2] * A[0][1],
+                            A[2][2] * A[0][0] - A[2][0] * A[0][2],
+                            A[2][0] * A[0][1] - A[2][1] * A[0][0]};
+            double c2[3] = {A[0][1] * A[1][2] - A[0][2] * A[1][1],
+                            A[0][2] * A[1][0] - A[0][0] * A[1][2],
+                            A[0][0] * A[1][1] - A[0][1] * A[1][0]};
+            double det = A[0][0] * c0[0] + A[0][1] * c0[1] + A[0][2] * c0[2];
+            double largest = fmax(fabs(A[0][0]), fmax(fabs(A[1][1]), fabs(A[2][2])));
+            double change[3] = {0, 0, 0};
+            if (fabs(det) > 1e-12 * largest * largest * largest) {
+                for (int x = 0; x < 3; x++)
+                    change[x] =
+                        (c0[x] * gradient[0] + c1[x] * gradient[1] + c2[x] * gradient[2]) / det;
+                if (!(isfinite(change[0]) && isfinite(change[1]) && isfinite(change[2])))
+                    change[0] = change[1] = change[2] = 0.0;
+            }
+            double reach = fmax(fabs(change[0]), fmax(fabs(change[1]), fabs(change[2])));
+            double cap = max_step / fmax(reach, (double)max_step);
+            for (int x = 0; x < 3; x++) change[x] *= cap;
+            state[6] = current;
+            for (int m = 0; m < count; m++)
+                turned(g, state[0] + multiples[m] * change[0], state[1] + multiples[m] * change[1],
+                       state[2] + multiples[m] * change[2], mp, candidates + m * 9);
+            // keep the step in shared for the choice below
+            shared[22 * b - 3] = (float)change[0];
+            shared[22 * b - 2] = (float)change[1];
+            shared[22 * b - 1] = (float)change[2];
+        }
+        __syncthreads();
+        double ch0 = shared[22 * b - 3], ch1 = shared[22 * b - 2], ch2 = shared[22 * b - 1];
+        __syncthreads();
+        float sums[4 * MAX_MULTIPLES];
+        for (int k = 0; k < 4 * MAX_MULTIPLES; k++) sums[k] = 0.f;
+        for (int p = t; p < pixels; p += b) {
+            const float* d = directions + p * 3;
+            float gh = ghost ? ghost[p] : 0.f;
+            float r = (row[p] - a * gh) * inverse_length;
+            for (int m = 0; m < count; m++) {
+                float s = sample_rotated(texture, base, n, candidates + m * 9, d);
+                sums[m] += s; sums[MAX_MULTIPLES + m] += s * s;
+                sums[2 * MAX_MULTIPLES + m] += s * r; sums[3 * MAX_MULTIPLES + m] += s * gh;
+            }
+        }
+        for (int k = 0; k < 4 * MAX_MULTIPLES; k++) shared[k * b + t] = sums[k];
+        block_sums(shared, 4 * MAX_MULTIPLES);
+        if (t == 0) {
+            double best = state[6], chosen = 0.0;
+            if (!isfinite(best)) best = -1e30;
+            for (int m = 0; m < count; m++) {
+                double sum = shared[m * b], squares = shared[(MAX_MULTIPLES + m) * b];
+                double inv = 1.0 / sqrt(fmax(squares - sum * sum / pixels, 1e-12));
+                double sc = shared[(2 * MAX_MULTIPLES + m) * b] * inv;
+                double along = shared[(3 * MAX_MULTIPLES + m) * b] * inv;
+                double score = sc / sqrt(fmax(1.0 - along * along, 1e-12));
+                if (isfinite(score) && score > best) { best = score; chosen = multiples[m]; }
+            }
+            state[0] += chosen * ch0; state[1] += chosen * ch1; state[2] += chosen * ch2;
+        }
+        __syncthreads();
+    }
+
+    // the final score, and the rotation
+    if (t == 0) turned(g, state[0], state[1], state[2], mp, candidates);
+    __syncthreads();
+    float sums[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int p = t; p < pixels; p += b) {
+        float gh = ghost ? ghost[p] : 0.f;
+        float r = (row[p] - a * gh) * inverse_length;
+        float s = sample_rotated(texture, base, n, candidates, directions + p * 3);
+        sums[0] += s; sums[1] += s * s; sums[2] += s * r; sums[3] += s * gh;
+    }
+    for (int k = 0; k < 4; k++) shared[k * b + t] = sums[k];
+    block_sums(shared, 4);
+    if (t == 0) {
+        double variance = shared[b] - (double)shared[0] * shared[0] / pixels;
+        double inv = 1.0 / sqrt(fmax(variance, 1e-12));
+        double along = shared[3 * b] * inv;
+        double score = shared[2 * b] * inv / sqrt(fmax(1.0 - along * along, 1e-12));
+        double seed = state[3];
+        bool refused = iterations > 0 && !(score >= seed - margin);
+        refused_out[i] = refused ? 1 : 0;
+        if (refused) {
+            for (int k = 0; k < 9; k++) g_out[i * 9 + k] = g[k];
+            score_out[i] = (float)seed;
+        } else {
+            const double h = 0.70710678118654752;
+            double w[3] = {state[0] * h, state[1] * h, state[2] * h};
+            double length = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            double angle = atan(length), k = length > 1e-12 ? angle / length : 1.0;
+            float r[9], fitted[9];
+            rotation(w[0] * k, w[1] * k, w[2] * k, r);  // the polar part of (I - beta)^-1
+            float rt[9] = {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
+            mat_mul(g, rt, fitted);
+            for (int q = 0; q < 9; q++) g_out[i * 9 + q] = fitted[q];
+            score_out[i] = (float)score;
+        }
+    }
+}
+// The block-wide sums of each thread's COUNT values, into totals (double, in
+// shared memory): each warp's by shuffles, then the warps' (at most
+// MAX_FIT_WARPS of them) through partial. Every thread of the block calls it.
+#define MAX_FIT_WARPS 8
+template <int COUNT>
+__device__ __forceinline__ void block_totals(float* values, float* partial, double* totals)
+{
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, warps = blockDim.x >> 5;
+#pragma unroll
+    for (int k = 0; k < COUNT; k++)
+        for (int offset = 16; offset > 0; offset >>= 1)
+            values[k] += __shfl_down_sync(0xffffffffu, values[k], offset);
+    if (lane == 0)
+#pragma unroll
+        for (int k = 0; k < COUNT; k++) partial[warp * COUNT + k] = values[k];
+    __syncthreads();
+    for (int k = threadIdx.x; k < COUNT; k += blockDim.x) {
+        double sum = 0.0;
+        for (int w = 0; w < warps; w++) sum += partial[w * COUNT + k];
+        totals[k] = sum;
+    }
+    __syncthreads();
+}
+
+#define ROOT_HALF 0.70710678118654752
+#define ROOT_SIXTH 0.40824829046386302
+
+// m = g @ (I - beta), then @ map if one is given, for beta = sum_k p[k] B_k over
+// the first M (3 or 8) of trace_free_basis's matrices: the rotations about x, y
+// and z, then the five deviatoric strains.
+template <int M>
+__device__ void deformed(const float* g, const double* p, const float* map, float* m)
+{
+    double beta[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const int first[3] = {1, 2, 0}, second[3] = {2, 0, 1};
+    for (int c = 0; c < 3; c++) {
+        int ij = first[c] * 3 + second[c], ji = second[c] * 3 + first[c];
+        beta[ij] -= ROOT_HALF * p[c];
+        beta[ji] += ROOT_HALF * p[c];
+        if (M == 8) {
+            beta[ij] += ROOT_HALF * p[3 + c];
+            beta[ji] += ROOT_HALF * p[3 + c];
+        }
+    }
+    if (M == 8) {
+        beta[0] += ROOT_HALF * p[6] + ROOT_SIXTH * p[7];
+        beta[4] += -ROOT_HALF * p[6] + ROOT_SIXTH * p[7];
+        beta[8] -= 2.0 * ROOT_SIXTH * p[7];
+    }
+    float e[9];
+    for (int q = 0; q < 9; q++) e[q] = (float)((q % 4 == 0 ? 1.0 : 0.0) - beta[q]);
+    if (map) {
+        float t[9];
+        mat_mul(g, e, t);
+        mat_mul(t, map, m);
+    } else {
+        mat_mul(g, e, m);
+    }
+}
+
+// fit_passes: refine_deformation as a schedule of Gauss-Newton passes over the
+// first M of the trace-free numbers (3: the rotations; 8: and the strains), the
+// Jacobian from the master's gradient, no line search and no final pass. Pass k
+// is scored at full resolution or at the coarse one (coarse[k]) and moves by
+// alpha[k] times its step: every pass's moments give the score where it stands
+// for nothing, so the fit keeps the best-scored full-resolution point it visited
+// (the first pass is at full resolution, from the given orientation: the seed).
+// With M = 3, g_out is the fitted orientation; with M = 8, p_out the best
+// point's eight numbers, whose polar parts the host takes.
+template <int M>
+__device__ __forceinline__ void fit_passes_body(
+    const float* __restrict__ texture, int n,
+    const float* __restrict__ g_in, const int* __restrict__ bases,
+    const float* __restrict__ maps,
+    const float* __restrict__ directions, int pixels,
+    const float* __restrict__ rows, const float* __restrict__ ghost,
+    const float* __restrict__ coarse_directions, int coarse_pixels,
+    const float* __restrict__ coarse_rows, const float* __restrict__ coarse_ghost,
+    const int* __restrict__ coarse, const float* __restrict__ alpha, int passes,
+    float max_step, float damping, float margin, float offset, float floor_,
+    const float* __restrict__ grad_x, const float* __restrict__ grad_y,
+    float* __restrict__ g_out, float* __restrict__ p_out,
+    float* __restrict__ score_out, int* __restrict__ refused_out)
+{
+    // the per-pixel sums: s, s^2, j[M], s j[M], j j (upper triangle), s r, j r[M],
+    // s ghost, j ghost[M], for the sample s, its derivatives j and the row r
+    constexpr int J = 2, SJ = 2 + M, JJ = 2 + 2 * M, SR = JJ + M * (M + 1) / 2;
+    constexpr int JR = SR + 1, SG = JR + M, JG = SG + 1, SUMS = JG + M;
+    __shared__ float partial[SUMS * MAX_FIT_WARPS];
+    __shared__ double totals[SUMS];
+    __shared__ float g[9], map[9], candidate[9];
+    // p[M], best p[M], seed, best, along full, 1/length full, along coarse, 1/length coarse
+    __shared__ double state[2 * M + 6];
+    double* p = state;
+    double* best_p = state + M;
+    double* scores = state + 2 * M;
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    if (t < 9) {
+        g[t] = g_in[i * 9 + t];
+        if (maps) map[t] = maps[i * 9 + t];
+    }
+    const float* mp = maps ? map : (const float*)0;
+    int base = bases[i];
+    const float* full_row = rows + i * (long long)pixels;
+    const float* coarse_row = coarse_rows + i * (long long)coarse_pixels;
+
+    // each row off its ghost: (row - a ghost) / sqrt(1 - a^2)
+    float along[2] = {0.f, 0.f};
+    if (ghost)
+        for (int q = t; q < pixels; q += b) along[0] += full_row[q] * ghost[q];
+    if (coarse_ghost)
+        for (int q = t; q < coarse_pixels; q += b) along[1] += coarse_row[q] * coarse_ghost[q];
+    block_totals<2>(along, partial, totals);
+    if (t == 0) {
+        for (int k = 0; k < 2 * M; k++) state[k] = 0.0;
+        scores[0] = scores[1] = -1e30;
+        double af = ghost ? totals[0] : 0.0, ac = coarse_ghost ? totals[1] : 0.0;
+        scores[2] = af;
+        scores[3] = 1.0 / sqrt(fmax(1.0 - af * af, 1e-12));
+        scores[4] = ac;
+        scores[5] = 1.0 / sqrt(fmax(1.0 - ac * ac, 1e-12));
+    }
+    __syncthreads();
+    float gr[9];
+    for (int q = 0; q < 9; q++) gr[q] = g[q];
+
+    for (int pass = 0; pass < passes; pass++) {
+        bool low = coarse[pass] != 0;
+        const float* d_all = low ? coarse_directions : directions;
+        const float* row = low ? coarse_row : full_row;
+        const float* gh_all = low ? coarse_ghost : ghost;
+        int count = low ? coarse_pixels : pixels;
+        float a = (float)scores[low ? 4 : 2], inverse_length = (float)scores[low ? 5 : 3];
+        if (t == 0) deformed<M>(g, p, mp, candidate);
+        __syncthreads();
+        float m[9];
+        for (int q = 0; q < 9; q++) m[q] = candidate[q];
+        float acc[SUMS];
+#pragma unroll
+        for (int k = 0; k < SUMS; k++) acc[k] = 0.f;
+        for (int q = t; q < count; q += b) {
+            const float* d = d_all + q * 3;
+            float gh = gh_all ? gh_all[q] : 0.f;
+            float r = (row[q] - a * gh) * inverse_length;
+            float dv[3];
+            float s = sample_gradient(texture, grad_x, grad_y, base, n,
+                                      m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+                                      m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+                                      m[6] * d[0] + m[7] * d[1] + m[8] * d[2], dv) - offset;
+            float u[3] = {d[0], d[1], d[2]};
+            if (mp) {
+                for (int c = 0; c < 3; c++)
+                    u[c] = mp[c * 3] * d[0] + mp[c * 3 + 1] * d[1] + mp[c * 3 + 2] * d[2];
+            }
+            // dv/dp_k = -g B_k u, so j_k = -(g^T dv)^T B_k u, for the sparse B_k
+            float w[3];
+            for (int c = 0; c < 3; c++)
+                w[c] = gr[c] * dv[0] + gr[3 + c] * dv[1] + gr[6 + c] * dv[2];
+            const float h = (float)ROOT_HALF, sixth = (float)ROOT_SIXTH;
+            float j[8];
+            j[0] = h * (w[1] * u[2] - w[2] * u[1]);
+            j[1] = h * (w[2] * u[0] - w[0] * u[2]);
+            j[2] = h * (w[0] * u[1] - w[1] * u[0]);
+            if (M == 8) {
+                j[3] = -h * (w[1] * u[2] + w[2] * u[1]);
+                j[4] = -h * (w[2] * u[0] + w[0] * u[2]);
+                j[5] = -h * (w[0] * u[1] + w[1] * u[0]);
+                j[6] = -h * (w[0] * u[0] - w[1] * u[1]);
+                j[7] = -sixth * (w[0] * u[0] + w[1] * u[1] - 2.f * w[2] * u[2]);
+            }
+            acc[0] += s;
+            acc[1] += s * s;
+            acc[SR] += s * r;
+            acc[SG] += s * gh;
+            int k = JJ;
+#pragma unroll
+            for (int x = 0; x < M; x++) {
+                acc[J + x] += j[x];
+                acc[SJ + x] += s * j[x];
+                acc[JR + x] += j[x] * r;
+                acc[JG + x] += j[x] * gh;
+#pragma unroll
+                for (int y = x; y < M; y++) acc[k++] += j[x] * j[y];
+            }
+        }
+        block_totals<SUMS>(acc, partial, totals);
+        if (t == 0) {
+            const double* S = totals;
+            double P = count;
+            double sigma2 = fmax(S[1] - S[0] * S[0] / P, (double)floor_), sigma = sqrt(sigma2);
+            double uj[M], jr[M], jg[M], A[M][M];
+            for (int x = 0; x < M; x++) uj[x] = S[SJ + x] - S[0] * S[J + x] / P;
+            int k = JJ;
+            for (int x = 0; x < M; x++)
+                for (int y = x; y < M; y++, k++)
+                    A[x][y] = A[y][x] = (S[k] - S[J + x] * S[J + y] / P) / sigma2
+                                        - uj[x] * uj[y] / (sigma2 * sigma2);
+            double fit_row = S[SR] / sigma, fit_ghost = S[SG] / sigma;
+            for (int c = 0; c < M; c++) {
+                jr[c] = S[JR + c] / sigma - S[SR] * uj[c] / (sigma2 * sigma);
+                jg[c] = S[JG + c] / sigma - S[SG] * uj[c] / (sigma2 * sigma);
+            }
+            double scale = fit_row / (1.0 - fit_ghost * fit_ghost);
+            double current = scale * sqrt(fmax(1.0 - fit_ghost * fit_ghost, 0.0));
+            if (!low) {
+                if (pass == 0) scores[0] = current;
+                if (isfinite(current) && current > scores[1]) {
+                    scores[1] = current;
+                    for (int c = 0; c < M; c++) best_p[c] = p[c];
+                }
+            }
+            double trace = 0.0;
+            for (int x = 0; x < M; x++)
+                for (int y = 0; y < M; y++) A[x][y] -= jg[x] * jg[y];
+            for (int x = 0; x < M; x++) trace += A[x][x];
+            for (int x = 0; x < M; x++) A[x][x] += damping * trace / M;
+            double change[M];
+            double safe = fmax(scale, (double)floor_);
+            for (int c = 0; c < M; c++) change[c] = (jr[c] + scale * jg[c] * fit_ghost) / safe;
+            // Cholesky in place (lower triangle); a non-positive pivot takes no step
+            bool solved = true;
+            for (int x = 0; x < M && solved; x++) {
+                for (int y = 0; y <= x; y++) {
+                    double sum = A[x][y];
+                    for (int z = 0; z < y; z++) sum -= A[x][z] * A[y][z];
+                    if (x != y) {
+                        A[x][y] = sum / A[y][y];
+                    } else if (sum > 0.0) {
+                        A[x][x] = sqrt(sum);
+                    } else {
+                        solved = false;
+                    }
+                }
+            }
+            double reach = 0.0;
+            if (solved) {
+                for (int x = 0; x < M; x++) {
+                    for (int z = 0; z < x; z++) change[x] -= A[x][z] * change[z];
+                    change[x] /= A[x][x];
+                }
+                for (int x = M - 1; x >= 0; x--) {
+                    for (int z = x + 1; z < M; z++) change[x] -= A[z][x] * change[z];
+                    change[x] /= A[x][x];
+                }
+                for (int x = 0; x < M; x++) reach = fmax(reach, fabs(change[x]));
+            }
+            if (solved && isfinite(reach)) {
+                double cap = alpha[pass] * max_step / fmax(reach, (double)max_step);
+                for (int x = 0; x < M; x++) p[x] += change[x] * cap;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (t == 0) {
+        double seed = scores[0], best = scores[1];
+        bool refused = !(best >= seed - margin);
+        refused_out[i] = refused ? 1 : 0;
+        score_out[i] = (float)(refused ? seed : best);
+        if (p_out)
+            for (int k = 0; k < M; k++) p_out[i * M + k] = refused ? 0.f : (float)best_p[k];
+        if (g_out && refused) {
+            for (int k = 0; k < 9; k++) g_out[i * 9 + k] = g[k];
+        } else if (g_out) {
+            // the polar part of (I - beta)^-1 for a rotation beta = skew(w): the
+            // turn about w by atan|w|
+            double w[3] = {best_p[0] * ROOT_HALF, best_p[1] * ROOT_HALF, best_p[2] * ROOT_HALF};
+            double length = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            double k = length > 1e-12 ? atan(length) / length : 1.0;
+            float r[9], fitted[9];
+            rotation(w[0] * k, w[1] * k, w[2] * k, r);
+            float rt[9] = {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
+            mat_mul(g, rt, fitted);
+            for (int q = 0; q < 9; q++) g_out[i * 9 + q] = fitted[q];
+        }
+    }
+}
+
+#define FIT_PASSES_ARGUMENTS \
+    const float* __restrict__ texture, int n, \
+    const float* __restrict__ g_in, const int* __restrict__ bases, \
+    const float* __restrict__ maps, \
+    const float* __restrict__ directions, int pixels, \
+    const float* __restrict__ rows, const float* __restrict__ ghost, \
+    const float* __restrict__ coarse_directions, int coarse_pixels, \
+    const float* __restrict__ coarse_rows, const float* __restrict__ coarse_ghost, \
+    const int* __restrict__ coarse, const float* __restrict__ alpha, int passes, \
+    float max_step, float damping, float margin, float offset, float floor_, \
+    const float* __restrict__ grad_x, const float* __restrict__ grad_y
+#define FIT_PASSES_FORWARD \
+    texture, n, g_in, bases, maps, directions, pixels, rows, ghost, \
+    coarse_directions, coarse_pixels, coarse_rows, coarse_ghost, coarse, alpha, passes, \
+    max_step, damping, margin, offset, floor_, grad_x, grad_y
+
+// The orientation fit: g_out (N, 3, 3).
+extern "C" __global__ void fit_passes(
+    FIT_PASSES_ARGUMENTS,
+    float* __restrict__ g_out, float* __restrict__ score_out, int* __restrict__ refused_out)
+{
+    fit_passes_body<3>(FIT_PASSES_FORWARD, g_out, (float*)0, score_out, refused_out);
+}
+
+// The orientation and strain fit: p_out (N, 8), the trace-free numbers.
+extern "C" __global__ void fit_strain_passes(
+    FIT_PASSES_ARGUMENTS,
+    float* __restrict__ p_out, float* __restrict__ score_out, int* __restrict__ refused_out)
+{
+    fit_passes_body<8>(FIT_PASSES_FORWARD, (float*)0, p_out, score_out, refused_out);
+}
+// prepare: LiveIndexer.prepare in one launch, one block per frame. The frame
+// (frame_rows x frame_cols) is averaged to the refine shape, divided by the static
+// background (if any) less one, less its dynamic background (the refine rows
+// averaged to a quarter, Gaussian-blurred with reflected edges, drawn back up
+// bilinearly as F.interpolate does with align_corners=False), then averaged to
+// the search shape; both are normalized as normalize_rows does. Every shape must
+// divide the one before it. refine_out holds the unnormalized rows meanwhile.
+#define PREPARE_THREADS 256
+#define PREPARE_MAX_SMALL 1024
+extern "C" __global__ void prepare(
+    const float* __restrict__ frames, int frame_rows, int frame_cols,
+    const float* __restrict__ statics, int rows, int cols,
+    int coarse_rows, int coarse_cols, const float* __restrict__ weights, int radius,
+    int search_rows, int search_cols, float floor_,
+    float* __restrict__ refine_out, float* __restrict__ search_out)
+{
+    __shared__ float coarse[PREPARE_MAX_SMALL], blurred[PREPARE_MAX_SMALL];
+    __shared__ float search[PREPARE_MAX_SMALL], sums[2 * PREPARE_THREADS];
+    __shared__ float moments[4];
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    const float* frame = frames + i * (long long)frame_rows * frame_cols;
+    float* out = refine_out + i * (long long)rows * cols;
+    int fy = frame_rows / rows, fx = frame_cols / cols;
+    float inverse_bin = 1.f / (fy * fx);
+
+    // the frame at the refine shape, over its static background
+    for (int q = t; q < rows * cols; q += b) {
+        int y = q / cols, x = q - y * cols;
+        const float* corner = frame + (long long)y * fy * frame_cols + x * fx;
+        float total = 0.f;
+        for (int dy = 0; dy < fy; dy++)
+            for (int dx = 0; dx < fx; dx++) total += corner[dy * frame_cols + dx];
+        float v = total * inverse_bin;
+        if (statics) v = v / fmaxf(statics[q], floor_) - 1.f;
+        out[q] = v;
+    }
+    __syncthreads();
+
+    // the dynamic background: averaged down, blurred along each axis (reflected)
+    int cy = rows / coarse_rows, cx = cols / coarse_cols;
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int dy = 0; dy < cy; dy++)
+            for (int dx = 0; dx < cx; dx++) total += out[(y * cy + dy) * cols + x * cx + dx];
+        coarse[c] = total / (cy * cx);
+    }
+    __syncthreads();
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int k = -radius; k <= radius; k++) {
+            int xx = x + k;
+            xx = xx < 0 ? -xx : (xx >= coarse_cols ? 2 * coarse_cols - 2 - xx : xx);
+            total += weights[k + radius] * coarse[y * coarse_cols + xx];
+        }
+        blurred[c] = total;
+    }
+    __syncthreads();
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int k = -radius; k <= radius; k++) {
+            int yy = y + k;
+            yy = yy < 0 ? -yy : (yy >= coarse_rows ? 2 * coarse_rows - 2 - yy : yy);
+            total += weights[k + radius] * blurred[yy * coarse_cols + x];
+        }
+        coarse[c] = total;
+    }
+    __syncthreads();
+
+    // less the background drawn back up; the sums for the refine rows' normalization
+    float sy_scale = (float)coarse_rows / rows, sx_scale = (float)coarse_cols / cols;
+    float total = 0.f, squares = 0.f;
+    for (int q = t; q < rows * cols; q += b) {
+        int y = q / cols, x = q - y * cols;
+        float sy = fmaxf((y + 0.5f) * sy_scale - 0.5f, 0.f);
+        float sx = fmaxf((x + 0.5f) * sx_scale - 0.5f, 0.f);
+        int y0 = (int)sy, x0 = (int)sx;
+        int y1 = min(y0 + 1, coarse_rows - 1), x1 = min(x0 + 1, coarse_cols - 1);
+        float ly = sy - y0, lx = sx - x0;
+        const float* top = coarse + y0 * coarse_cols;
+        const float* bottom = coarse + y1 * coarse_cols;
+        float up = (1.f - ly) * ((1.f - lx) * top[x0] + lx * top[x1])
+                 + ly * ((1.f - lx) * bottom[x0] + lx * bottom[x1]);
+        float v = out[q] - up;
+        out[q] = v;
+        total += v; squares += v * v;
+    }
+    sums[t] = total;
+    sums[b + t] = squares;
+    block_sums(sums, 2);
+    if (t == 0) {
+        float n = (float)(rows * cols), mean = sums[0] / n;
+        moments[0] = mean;
+        moments[1] = 1.f / fmaxf(sqrtf(fmaxf(sums[b] - mean * sums[0], 0.f)), floor_);
+    }
+    __syncthreads();
+
+    // the search rows: the background-free rows averaged down
+    int ry = rows / search_rows, rx = cols / search_cols;
+    total = 0.f; squares = 0.f;
+    for (int s = t; s < search_rows * search_cols; s += b) {
+        int y = s / search_cols, x = s - y * search_cols;
+        float acc = 0.f;
+        for (int dy = 0; dy < ry; dy++)
+            for (int dx = 0; dx < rx; dx++) acc += out[(y * ry + dy) * cols + x * rx + dx];
+        acc /= (ry * rx);
+        search[s] = acc;
+        total += acc; squares += acc * acc;
+    }
+    __syncthreads();
+    sums[t] = total;
+    sums[b + t] = squares;
+    block_sums(sums, 2);
+    if (t == 0) {
+        float n = (float)(search_rows * search_cols), mean = sums[0] / n;
+        moments[2] = mean;
+        moments[3] = 1.f / fmaxf(sqrtf(fmaxf(sums[b] - mean * sums[0], 0.f)), floor_);
+    }
+    __syncthreads();
+    float* searched = search_out + i * (long long)search_rows * search_cols;
+    for (int s = t; s < search_rows * search_cols; s += b)
+        searched[s] = (search[s] - moments[2]) * moments[3];
+    for (int q = t; q < rows * cols; q += b) out[q] = (out[q] - moments[0]) * moments[1];
+}
 """
 
 #: Threads per block of :func:`score`; a power of two for its reduction.
 SCORE_THREADS = 256
+#: Threads per block of :func:`refine_stepped` and :func:`fit_orientations`,
+#: one block per pattern (FIT_THREADS in the source).
+FIT_THREADS = 128
+#: The most refine levels and line-search multiples the kernels take.
+MAX_LEVELS, MAX_MULTIPLES = 8, 4
+#: The most warps a block of :func:`fit_passes` has (MAX_FIT_WARPS in the source).
+MAX_FIT_WARPS = 8
+#: Threads per block of :func:`fit_passes` with the strains, whose 72 sums a
+#: thread holds where the orientation fit's hold 22. On a Titan X, ten passes over
+#: 1024 patterns of 128 x 128 took 9.4 ms per 256 at 64 threads, 10.6 at 128 and
+#: 13.8 at 256.
+FIT_STRAIN_THREADS = 64
 
 
 def available(device) -> bool:
@@ -220,3 +1133,250 @@ def score(
         shared_mem=3 * SCORE_THREADS * 4,
     )
     return out
+
+
+def refine_stepped(texture, g, bases, directions, rows, steps, floor):
+    """:meth:`LiveIndexer.refine` in one launch, one block per pattern: ``(g,
+    score)`` for seeds *g* ``(N, 3, 3)``, *rows* ``(N, pixels)`` zero-mean and
+    unit-norm, and *steps* (radians), at most :data:`MAX_LEVELS`."""
+    import cupy
+
+    n = len(g)
+    if len(steps) > MAX_LEVELS:
+        raise ValueError(f"at most {MAX_LEVELS} refine levels")
+    out = torch.empty(n, 3, 3, device=g.device, dtype=torch.float32)
+    score = torch.empty(n, device=g.device, dtype=torch.float32)
+    texture = texture.contiguous()
+    steps = torch.as_tensor(steps, dtype=torch.float32, device=g.device)
+    _launch(
+        "refine_stepped",
+        (n,),
+        (FIT_THREADS,),
+        (
+            _cupy(texture),
+            cupy.int32(texture.shape[-1]),
+            _cupy(g.float()),
+            _cupy(bases.to(torch.int32)),
+            _cupy(directions.float()),
+            cupy.int32(len(directions)),
+            _cupy(rows.float()),
+            _cupy(steps),
+            cupy.int32(len(steps)),
+            cupy.float32(floor),
+            _cupy(out),
+            _cupy(score),
+        ),
+    )
+    return out, score
+
+
+def fit_orientations(
+    texture,
+    g,
+    bases,
+    directions,
+    rows,
+    ghost,
+    maps,
+    *,
+    iterations,
+    step,
+    max_step,
+    multiples,
+    damping,
+    margin,
+    offset,
+    floor,
+    gradients=None,
+):
+    """:func:`~de_ebsd.index.live.deformation.refine_deformation` without the
+    strains in one launch, one block per pattern: ``(g, score, refused)``. *ghost*
+    ``(pixels,)`` and *maps* ``(N, 3, 3)`` may be None; *offset* is the master's
+    mean, taken off the fit's samples to keep its float32 sums small. With
+    *gradients* ``(grad_x, grad_y)``, the master's derivatives along its columns
+    and rows, the Jacobian is the analytic one; without, central differences of
+    *step*."""
+    import cupy
+
+    n = len(g)
+    if len(multiples) > MAX_MULTIPLES:
+        raise ValueError(f"at most {MAX_MULTIPLES} line-search multiples")
+    out = torch.empty(n, 3, 3, device=g.device, dtype=torch.float32)
+    score = torch.empty(n, device=g.device, dtype=torch.float32)
+    texture = texture.contiguous()
+    multiples = torch.as_tensor(multiples, dtype=torch.float32, device=g.device)
+    refused = torch.empty(n, device=g.device, dtype=torch.int32)
+    _launch(
+        "fit_orientations",
+        (n,),
+        (FIT_THREADS,),
+        (
+            _cupy(texture),
+            cupy.int32(texture.shape[-1]),
+            _cupy(g.float()),
+            _cupy(bases.to(torch.int32)),
+            _cupy(maps.float()) if maps is not None else cupy.uint64(0),
+            _cupy(directions.float()),
+            cupy.int32(len(directions)),
+            _cupy(rows.float()),
+            _cupy(ghost.float()) if ghost is not None else cupy.uint64(0),
+            cupy.int32(iterations),
+            cupy.float32(step),
+            cupy.float32(max_step),
+            _cupy(multiples),
+            cupy.int32(len(multiples)),
+            cupy.float32(damping),
+            cupy.float32(margin),
+            cupy.float32(offset),
+            cupy.float32(floor),
+            _cupy(gradients[0]) if gradients is not None else cupy.uint64(0),
+            _cupy(gradients[1]) if gradients is not None else cupy.uint64(0),
+            _cupy(out),
+            _cupy(score),
+            _cupy(refused),
+        ),
+    )
+    return out, score, refused.bool()
+
+
+def fit_passes(
+    texture,
+    g,
+    bases,
+    maps,
+    full,
+    coarse,
+    schedule,
+    *,
+    max_step,
+    damping,
+    margin,
+    offset,
+    floor,
+    gradients,
+    strain=False,
+    threads=FIT_THREADS,
+):
+    """The orientation fit as a *schedule* of ``(coarse, alpha)`` passes, in one
+    launch, one block per pattern: ``(g, score, refused)``. *full* and *coarse*
+    are each ``(directions, rows, ghost)`` at the refine's resolution and the
+    coarse one (*ghost* may be None); the first pass must be at full resolution.
+    *gradients* are the master's ``(grad_x, grad_y)``, or None for the slope of
+    the bilinear sample itself.
+
+    With *strain*, the five deviatoric strains are fitted with the rotations, and
+    the first of the result is ``(N, 8)``: the best-scored point's numbers on
+    :func:`~de_ebsd.index.live.deformation.trace_free_basis`, zero where refused.
+    *threads* per block is a multiple of 32, at most 32 * MAX_FIT_WARPS."""
+    import cupy
+
+    if not schedule or schedule[0][0]:
+        raise ValueError("the first pass is at full resolution")
+    if threads % 32 or not 0 < threads <= 32 * MAX_FIT_WARPS:
+        raise ValueError(f"threads must be a multiple of 32, at most {32 * MAX_FIT_WARPS}")
+    n = len(g)
+    shape = (n, 8) if strain else (n, 3, 3)
+    out = torch.empty(shape, device=g.device, dtype=torch.float32)
+    score = torch.empty(n, device=g.device, dtype=torch.float32)
+    refused = torch.empty(n, device=g.device, dtype=torch.int32)
+    texture = texture.contiguous()
+    lows = torch.tensor([int(c) for c, _ in schedule], dtype=torch.int32, device=g.device)
+    alphas = torch.tensor([float(a) for _, a in schedule], dtype=torch.float32, device=g.device)
+
+    def optional(tensor):
+        return _cupy(tensor.float()) if tensor is not None else cupy.uint64(0)
+
+    (full_directions, full_rows, full_ghost), (low_directions, low_rows, low_ghost) = full, coarse
+    _launch(
+        "fit_strain_passes" if strain else "fit_passes",
+        (n,),
+        (threads,),
+        (
+            _cupy(texture),
+            cupy.int32(texture.shape[-1]),
+            _cupy(g.float()),
+            _cupy(bases.to(torch.int32)),
+            optional(maps),
+            _cupy(full_directions.float()),
+            cupy.int32(len(full_directions)),
+            _cupy(full_rows.float()),
+            optional(full_ghost),
+            _cupy(low_directions.float()),
+            cupy.int32(len(low_directions)),
+            _cupy(low_rows.float()),
+            optional(low_ghost),
+            _cupy(lows),
+            _cupy(alphas),
+            cupy.int32(len(schedule)),
+            cupy.float32(max_step),
+            cupy.float32(damping),
+            cupy.float32(margin),
+            cupy.float32(offset),
+            cupy.float32(floor),
+            optional(gradients[0] if gradients is not None else None),
+            optional(gradients[1] if gradients is not None else None),
+            _cupy(out),
+            _cupy(score),
+            _cupy(refused),
+        ),
+    )
+    return out, score, refused.bool()
+
+
+#: Threads per block of :func:`prepare`, and the most pixels of its coarse and
+#: search shapes (PREPARE_THREADS and PREPARE_MAX_SMALL in the source).
+PREPARE_THREADS, PREPARE_MAX_SMALL = 256, 1024
+
+
+def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, floor):
+    """:meth:`LiveIndexer.prepare` in one launch, one block per frame: ``(search,
+    refine)`` rows, normalized, for *frames* ``(N, H, W)`` float32 whose shape the
+    refine shape divides, which divides the *coarse* (the dynamic background's)
+    and *search* shapes. *statics* is the static background at the refine shape,
+    or None; *weights* the dynamic background's Gaussian, its radius each side."""
+    import cupy
+
+    n, frame_rows, frame_cols = frames.shape
+    rows, cols = refine_shape
+    refine = torch.empty(n, rows * cols, device=frames.device, dtype=torch.float32)
+    search = torch.empty(
+        n, search_shape[0] * search_shape[1], device=frames.device, dtype=torch.float32
+    )
+    _launch(
+        "prepare",
+        (n,),
+        (PREPARE_THREADS,),
+        (
+            _cupy(frames),
+            cupy.int32(frame_rows),
+            cupy.int32(frame_cols),
+            _cupy(statics.float()) if statics is not None else cupy.uint64(0),
+            cupy.int32(rows),
+            cupy.int32(cols),
+            cupy.int32(coarse_shape[0]),
+            cupy.int32(coarse_shape[1]),
+            _cupy(weights.float()),
+            cupy.int32((len(weights) - 1) // 2),
+            cupy.int32(search_shape[0]),
+            cupy.int32(search_shape[1]),
+            cupy.float32(floor),
+            _cupy(refine),
+            _cupy(search),
+        ),
+    )
+    return search, refine
+
+
+def prepare_fits(frame_shape, refine_shape, coarse_shape, search_shape) -> bool:
+    """Whether :func:`prepare` takes these shapes: each divides the one before."""
+
+    def divides(big, small):
+        return all(s > 0 and b % s == 0 for b, s in zip(big, small, strict=True))
+
+    return (
+        divides(frame_shape, refine_shape)
+        and divides(refine_shape, coarse_shape)
+        and divides(refine_shape, search_shape)
+        and coarse_shape[0] * coarse_shape[1] <= PREPARE_MAX_SMALL
+        and search_shape[0] * search_shape[1] <= PREPARE_MAX_SMALL
+    )

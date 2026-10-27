@@ -14,6 +14,11 @@ STENCIL = ((0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (
 #: Patterns per batched step, which bounds the largest intermediate: the refine's
 #: (patterns, 7, pixels, 3) sample directions.
 BATCH = 256
+#: Patterns per batched step when the fused kernels do the refine and the fit,
+#: which store no per-pixel intermediate: larger batches pay the launches less
+#: often. On a Titan X, 256 to 1024 took the refine and the orientation fit from
+#: 37 to 15 ms per 256 patterns.
+FUSED_BATCH = 1024
 
 
 def average_to(stack: torch.Tensor, shape) -> torch.Tensor:

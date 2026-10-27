@@ -266,6 +266,159 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     assert (score > 0.999).all(), score
 
 
+def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
+    master, point_group, detector
+):
+    """Unstrained patterns and a seed 0.3° off: fitted without the strains, the
+    orientation comes back to within a few hundredths of a degree, the strain is
+    zero, and :meth:`LiveIndexer.index` with *fit* runs it after the refine."""
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.3, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32))
+    found, strain, score = indexer.refine_deformation(rows, phase, seed, iterations=5, strain=False)
+    error = Rotation.from_matrix(found.numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.02, error
+    assert strain.abs().max() < 1e-6
+    assert (score > 0.999).all(), score
+
+
+@fused
+@pytest.mark.parametrize("blur", [None, 0.05])
+def test_the_fused_prepare_is_the_torch_one(master, point_group, detector, blur):
+    """The frames' preparation in one launch (static background, dynamic
+    background, both shapes, normalized) against the torch path: the same rows to
+    float32 rounding, with a plain and a blurred static background."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    frames = 100 + 20 * torch.rand(40, 256, 256, device="cuda", generator=generator)
+    indexer.restart_static(frames, blur=blur)
+    assert indexer._fused_prepare(frames) is not None
+    fused_search, fused_refine = indexer.prepare(frames)
+    indexer.fused = False
+    search, refine = indexer.prepare(frames)
+    assert torch.allclose(fused_search, search, atol=1e-5), (fused_search - search).abs().max()
+    assert torch.allclose(fused_refine, refine, atol=1e-5), (fused_refine - refine).abs().max()
+
+
+@fused
+def test_the_fused_stepped_refine_is_the_torch_one(master, point_group, detector):
+    """The stepped refine in one launch (one block per pattern, every level) against
+    the torch refine on the same seeds: the same orientations and scores."""
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32)).cuda()
+    phase = torch.zeros(len(g), dtype=torch.int64, device="cuda")
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 1.5, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32)).cuda()
+    fused, fused_score = indexer.refine(rows, phase, seed)
+    plain, plain_score = indexer.refine(rows, phase, seed, directions=indexer.refine_directions)
+    difference = Rotation.from_matrix(fused.cpu().numpy()).angle_with(
+        Rotation.from_matrix(plain.cpu().numpy()), degrees=True
+    )
+    assert np.max(difference) < 0.005, difference
+    assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
+    error = Rotation.from_matrix(fused.cpu().numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.2, error
+
+
+@fused
+@pytest.mark.parametrize(("analytic", "tolerance"), [(False, 0.005), (True, 0.02)])
+def test_the_fused_orientation_fit_is_the_torch_one(
+    master, point_group, detector, monkeypatch, analytic, tolerance
+):
+    """The orientation-only fit on the fused kernels (one launch, one block per
+    pattern) against the torch path, seeds 0.3° off and a ghost in the patterns.
+    With central differences, the same orientations and scores to float32
+    rounding; with the Jacobian from the master's gradient
+    (:data:`~de_ebsd.index.live.deformation.ANALYTIC_JACOBIAN`), the same fit to a
+    few hundredths of a degree, as it differs from a central difference."""
+    from de_ebsd.index.live import deformation
+
+    monkeypatch.setattr(deformation, "ANALYTIC_JACOBIAN", analytic)
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32)).cuda()
+    phase = torch.zeros(len(g), dtype=torch.int64, device="cuda")
+    patterns = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
+    ghost = normalize_rows(patterns.mean(0, keepdim=True))[0]
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.3, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32)).cuda()
+    fused, _, fused_score = indexer.refine_deformation(rows, phase, seed, ghost=ghost, strain=False)
+    indexer.fused = False
+    plain, _, plain_score = indexer.refine_deformation(rows, phase, seed, ghost=ghost, strain=False)
+    difference = Rotation.from_matrix(fused.cpu().numpy()).angle_with(
+        Rotation.from_matrix(plain.cpu().numpy()), degrees=True
+    )
+    assert np.max(difference) < tolerance, difference
+    assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
+    error = Rotation.from_matrix(fused.cpu().numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.05, error
+
+
+@fused
+@pytest.mark.parametrize("moved_center", [False, True])
+def test_the_fused_strain_fit_is_the_torch_one(master, point_group, detector, moved_center):
+    """The strain fit on the fused kernels (one launch, one block per pattern, the
+    Jacobian from the master's own slope) against the torch path, on patterns with a
+    known strain, a ghost and seeds 0.2° off, at the indexer's pattern center and
+    at a center of each pattern's own: both recover the strain and the
+    orientation, and agree with each other to well within the strain's size."""
+    from de_ebsd.index.live import deformation
+
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused and deformation.STRAIN_SCHEDULE
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32)).cuda()
+    rng = np.random.default_rng(3)
+    e = rng.normal(0.0, 2e-3, (len(g), 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    strain = torch.as_tensor(e, dtype=torch.float32).cuda()
+    deformed = g @ torch.linalg.inv(torch.eye(3, device="cuda") + strain)
+    maps = None
+    if moved_center:
+        centers = np.array(detector.pattern_center) + rng.normal(0.0, 0.01, (len(g), 3))
+        maps = indexer.center_maps(centers)
+        deformed = deformed @ maps
+    phase = torch.zeros(len(g), dtype=torch.int64, device="cuda")
+    patterns = normalize_rows(
+        indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
+    )
+    rows = normalize_rows(patterns - 0.5 * patterns.mean(0))
+    ghost = normalize_rows(patterns.mean(0, keepdim=True))[0]
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 0.2, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32)).cuda()
+    options = {"ghost": ghost, "center_maps": maps, "iterations": 5}
+    fused, fused_strain, fused_score = indexer.refine_deformation(rows, phase, seed, **options)
+    indexer.fused = False
+    plain, plain_strain, plain_score = indexer.refine_deformation(rows, phase, seed, **options)
+    for found, found_strain in ((fused, fused_strain), (plain, plain_strain)):
+        error = Rotation.from_matrix(found.cpu().numpy()).angle_with(rotations, degrees=True)
+        assert np.max(error) < 0.02, error
+        assert torch.allclose(found_strain, strain, atol=2e-4), (found_strain - strain).abs().max()
+    assert torch.allclose(fused_strain, plain_strain, atol=1e-4), fused_strain - plain_strain
+    assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
+
+
 def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     """Unstrained patterns each carrying the negative of the scan's mean pattern, as
     a frame divided by a static background made of the scan's own frames does: fitted

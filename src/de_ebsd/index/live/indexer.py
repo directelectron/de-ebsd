@@ -37,14 +37,21 @@ from dataclasses import replace
 import numpy as np
 import torch
 
+from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.device import resolve_device
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.live import calibration, deformation
 from de_ebsd.index.live.background import ScanBackground
-from de_ebsd.index.live.common import BATCH, STENCIL, average_to, parabola_offset
-from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
+from de_ebsd.index.live.common import (
+    BATCH,
+    FUSED_BATCH,
+    STENCIL,
+    average_to,
+    parabola_offset,
+)
+from de_ebsd.index.preprocess import _gaussian_kernel_1d, gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
 
@@ -61,6 +68,13 @@ REFINE_STEPS_DEG = (2.0, 1.0, 0.5, 0.25, 0.12)
 #: grains and a distant wrong one wins: 6-9% of a twin scan's patterns landed
 #: 40-60° off unblurred, none at 2°.
 SEARCH_BLUR_DEG = 2.0
+
+#: Refine steps of this size and up are scored at half the refine's resolution on
+#: the fused path: a step of a degree or two moves the bands by several of its
+#: pixels, which a quarter of them resolve as well. On a customer Zenith's Cu
+#: scan this took the refine from 3.9 to 2.5 ms per 256 patterns with the
+#: orientations the fit then reached unchanged.
+COARSE_REFINE_STEP_DEG = 1.0
 
 
 #: Dictionary entries scored at a time by :meth:`LiveIndexer.search`, which bounds
@@ -145,6 +159,9 @@ class LiveIndexer:
         self.detector = detector
         self.search_shape = tuple(search_shape)
         self.refine_shape = tuple(refine_shape)
+        #: Where the refine's coarse levels (:data:`COARSE_REFINE_STEP_DEG` and up)
+        #: are scored on the fused path: half the refine's resolution.
+        self.coarse_shape = tuple(max(8, s // 2) for s in self.refine_shape)
         self.refine_steps = tuple(math.radians(s) for s in refine_steps_deg)
         self.fused = _kernels.available(self.device)
         self.texture = texture_of(masters, self.device)
@@ -185,6 +202,7 @@ class LiveIndexer:
         )
         self.search_directions = self.directions_at(pattern_center, self.search_shape)
         self.refine_directions = self.directions_at(pattern_center, self.refine_shape)
+        self.coarse_directions = self.directions_at(pattern_center, self.coarse_shape)
         shape = (len(self.search_directions), len(self.rotations))
         if self.dictionary is None or tuple(self.dictionary.shape) != shape:
             #: ``(pixels, entries)``, so the search's product reads it at full rate.
@@ -284,9 +302,37 @@ class LiveIndexer:
     def prepare(self, frames) -> tuple[torch.Tensor, torch.Tensor]:
         """*frames* ``(N, H, W)`` corrected and normalized, as ``(search, refine)``
         rows ``(N, pixels)`` at the two shapes."""
+        fused = self._fused_prepare(frames)
+        if fused is not None:
+            return fused
         t = self.background.remove(self.pooled(frames))
         search = average_to(t, self.search_shape)
         return normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
+
+    def _fused_prepare(self, frames):
+        """:meth:`prepare` in one launch (:func:`~de_ebsd.index._kernels.prepare`)
+        where it can be: float32 frames on the device whose shape the refine shape
+        divides. None where it cannot, for :meth:`prepare` to do it."""
+        if not self.fused or not isinstance(frames, torch.Tensor):
+            return None
+        if frames.device.type != "cuda" or frames.dtype != torch.float32:
+            return None
+        frames = frames[None] if frames.ndim == 2 else frames
+        coarse = (self.refine_shape[0] // 4, self.refine_shape[1] // 4)
+        if not _kernels.prepare_fits(
+            tuple(frames.shape[-2:]), self.refine_shape, coarse, self.search_shape
+        ):
+            return None
+        weights, _ = _gaussian_kernel_1d(coarse[1] / 8.0, 4.0, self.device, torch.float32)
+        return _kernels.prepare(
+            frames.contiguous(),
+            self.background.static,
+            self.refine_shape,
+            coarse,
+            self.search_shape,
+            weights,
+            SINGLE_PRECISION_FLOOR,
+        )
 
     def search(self, search_rows: torch.Tensor):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
@@ -317,6 +363,35 @@ class LiveIndexer:
         ``(g, score)``, the score being the last level's at the seed. *steps*
         (radians) default to the indexer's, *directions* to its pattern center's."""
         steps = self.refine_steps if steps is None else steps
+        if self.fused and directions is None and steps:
+            # every level of every pattern in one launch, one block per pattern;
+            # the coarse levels at half the resolution, a quarter of the pixels
+            coarse = [s for s in steps if s >= math.radians(COARSE_REFINE_STEP_DEG)]
+            fine = list(steps[len(coarse) :])
+            score = None
+            if coarse:
+                rows = refine_rows.view(len(refine_rows), *self.refine_shape)
+                rows = normalize_rows(average_to(rows, self.coarse_shape).flatten(1))
+                g, score = _kernels.refine_stepped(
+                    self.texture,
+                    g,
+                    phase * 2,
+                    self.coarse_directions,
+                    rows,
+                    coarse,
+                    SINGLE_PRECISION_FLOOR,
+                )
+            if fine:
+                g, score = _kernels.refine_stepped(
+                    self.texture,
+                    g,
+                    phase * 2,
+                    self.refine_directions,
+                    refine_rows,
+                    fine,
+                    SINGLE_PRECISION_FLOOR,
+                )
+            return g, score
         directions = self.refine_directions if directions is None else directions
         score = torch.zeros(len(g), device=self.device)
         for step in steps:
@@ -359,11 +434,12 @@ class LiveIndexer:
         strains are fitted, as its frames joined the static background."""
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
         out = []
-        for lo in range(0, len(frames), BATCH):
-            search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
+        batch = FUSED_BATCH if self.fused and deformation.STRAIN_SCHEDULE else BATCH
+        for lo in range(0, len(frames), batch):
+            search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
             phase, g, _, entry = self.search(search_rows)
             g, _ = self.refine(refine_rows, phase, g)
-            batch_maps = None if maps is None else maps[lo : lo + BATCH]
+            batch_maps = None if maps is None else maps[lo : lo + batch]
             self.add_fits(phase, g, batch_maps)
             g, strain, score = self.refine_deformation(
                 refine_rows, phase, g, center_maps=batch_maps, ghost=self.ghost
@@ -371,16 +447,27 @@ class LiveIndexer:
             out.append((phase, g, strain, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
 
-    def index(self, frames):
+    def index(self, frames, *, fit: bool = False):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
         *entry* is the dictionary entry the search seeded the refine from (see
         :meth:`search`): anything worked out once per entry, such as a color, stands
-        for the refined orientation to within the dictionary's resolution."""
+        for the refined orientation to within the dictionary's resolution.
+
+        With *fit*, the refine's orientations are fitted on, rotations only
+        (:meth:`refine_deformation` without the strains): the refine's steps stop
+        a little short on a noisy pattern, a few degrees off for one in ten on a
+        real scan, and the fit takes them to a few tenths."""
         out = []
-        for lo in range(0, len(frames), BATCH):
-            search_rows, refine_rows = self.prepare(frames[lo : lo + BATCH])
+        batch = FUSED_BATCH if fit and self.fused else BATCH
+        for lo in range(0, len(frames), batch):
+            search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
             phase, g, score, entry = self.search(search_rows)
             if self.refine_steps:
                 g, score = self.refine(refine_rows, phase, g)
+            if fit:
+                self.add_fits(phase, g)
+                g, _, score = self.refine_deformation(
+                    refine_rows, phase, g, ghost=self.ghost, strain=False
+                )
             out.append((phase, g, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
