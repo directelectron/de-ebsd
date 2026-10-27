@@ -69,6 +69,13 @@ REFINE_STEPS_DEG = (2.0, 1.0, 0.5, 0.25, 0.12)
 #: 40-60° off unblurred, none at 2°.
 SEARCH_BLUR_DEG = 2.0
 
+#: Refine steps of this size and up are scored at half the refine's resolution on
+#: the fused path: a step of a degree or two moves the bands by several of its
+#: pixels, which a quarter of them resolve as well. On a customer Zenith's Cu
+#: scan this took the refine from 3.9 to 2.5 ms per 256 patterns with the
+#: orientations the fit then reached unchanged.
+COARSE_REFINE_STEP_DEG = 1.0
+
 
 #: Dictionary entries scored at a time by :meth:`LiveIndexer.search`, which bounds
 #: its scores at (patterns, this): 64 MB for a batch. A cubic phase's 3° dictionary
@@ -152,6 +159,9 @@ class LiveIndexer:
         self.detector = detector
         self.search_shape = tuple(search_shape)
         self.refine_shape = tuple(refine_shape)
+        #: Where the refine's coarse levels (:data:`COARSE_REFINE_STEP_DEG` and up)
+        #: are scored on the fused path: half the refine's resolution.
+        self.coarse_shape = tuple(max(8, s // 2) for s in self.refine_shape)
         self.refine_steps = tuple(math.radians(s) for s in refine_steps_deg)
         self.fused = _kernels.available(self.device)
         self.texture = texture_of(masters, self.device)
@@ -192,6 +202,7 @@ class LiveIndexer:
         )
         self.search_directions = self.directions_at(pattern_center, self.search_shape)
         self.refine_directions = self.directions_at(pattern_center, self.refine_shape)
+        self.coarse_directions = self.directions_at(pattern_center, self.coarse_shape)
         shape = (len(self.search_directions), len(self.rotations))
         if self.dictionary is None or tuple(self.dictionary.shape) != shape:
             #: ``(pixels, entries)``, so the search's product reads it at full rate.
@@ -325,16 +336,34 @@ class LiveIndexer:
         (radians) default to the indexer's, *directions* to its pattern center's."""
         steps = self.refine_steps if steps is None else steps
         if self.fused and directions is None and steps:
-            # every level of every pattern in one launch, one block per pattern
-            return _kernels.refine_stepped(
-                self.texture,
-                g,
-                phase * 2,
-                self.refine_directions,
-                refine_rows,
-                steps,
-                SINGLE_PRECISION_FLOOR,
-            )
+            # every level of every pattern in one launch, one block per pattern;
+            # the coarse levels at half the resolution, a quarter of the pixels
+            coarse = [s for s in steps if s >= math.radians(COARSE_REFINE_STEP_DEG)]
+            fine = list(steps[len(coarse) :])
+            score = None
+            if coarse:
+                rows = refine_rows.view(len(refine_rows), *self.refine_shape)
+                rows = normalize_rows(average_to(rows, self.coarse_shape).flatten(1))
+                g, score = _kernels.refine_stepped(
+                    self.texture,
+                    g,
+                    phase * 2,
+                    self.coarse_directions,
+                    rows,
+                    coarse,
+                    SINGLE_PRECISION_FLOOR,
+                )
+            if fine:
+                g, score = _kernels.refine_stepped(
+                    self.texture,
+                    g,
+                    phase * 2,
+                    self.refine_directions,
+                    refine_rows,
+                    fine,
+                    SINGLE_PRECISION_FLOOR,
+                )
+            return g, score
         directions = self.refine_directions if directions is None else directions
         score = torch.zeros(len(g), device=self.device)
         for step in steps:
