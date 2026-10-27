@@ -305,6 +305,25 @@ def test_a_fit_cannot_run_away(master, point_group, detector):
     assert strain[1].abs().max() <= 10 * DEFORMATION_MAX_STEP * max(DEFORMATION_LINE_SEARCH)
 
 
+def test_a_pattern_the_fit_cannot_move_keeps_its_seed(master, point_group, detector):
+    """A simulation no step changes leaves the fit's normal matrix singular, as a
+    blank frame did on a real camera: that pattern keeps its seed and no strain,
+    and the batch is not lost to the exception."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
+    phase = torch.zeros(2, dtype=torch.int64)
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    flat = rows[0].clone()
+    indexer.project = lambda texture, matrices, phases, directions: flat.expand(
+        len(matrices), -1
+    ).clone()
+    found, strain, _ = indexer.refine_deformation(rows, phase, g, iterations=3)
+    assert torch.allclose(found, g)
+    assert torch.nan_to_num(strain, 0.0).abs().max() == 0
+
+
 def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, detector):
     """Strained patterns blurred softer than the master, as a camera's are: a plain
     Gauss-Newton step then falls short, and two iterations with the line search
