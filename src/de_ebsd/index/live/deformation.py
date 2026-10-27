@@ -203,7 +203,11 @@ def refine_deformation(
         gradient = (
             torch.einsum("nkp,np->nk", jacobian, residual) + scale * jacobian_along * fit_along
         ) / scale.clamp_min(SINGLE_PRECISION_FLOOR)
-        change = torch.linalg.solve(normal, gradient)
+        # A pattern that gives the fit nothing to go on (blank, or flat) has a
+        # singular normal matrix: it keeps its seed instead of failing the batch.
+        change, singular = torch.linalg.solve_ex(normal, gradient)
+        usable = (singular == 0)[:, None] & change.isfinite().all(-1, keepdim=True)
+        change = torch.where(usable, change, torch.zeros_like(change))
         reach = change.abs().amax(-1, keepdim=True)
         change = change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))
         if not line_search:
