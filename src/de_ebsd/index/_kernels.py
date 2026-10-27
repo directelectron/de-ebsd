@@ -61,6 +61,77 @@ __device__ __forceinline__ float sample_master(
     return top * (1.f - fy) + bottom * fy;
 }
 
+// sample_master and its gradient with respect to the direction v (before it is
+// normalized), into dv[3]: through the bilinear lookup of the master's own x and
+// y derivatives gx, gy (per texel, smooth, not the bilinear facets' slope), the
+// Lambert square's map and the normalization. Clamped at the square's edge, the
+// gradient along that axis is zero there.
+__device__ __forceinline__ float sample_gradient(
+    const float* __restrict__ texture, const float* __restrict__ gx,
+    const float* __restrict__ gy, int base, int n, float vx, float vy, float vz, float* dv)
+{
+    float inverse = rsqrtf(fmaxf(vx * vx + vy * vy + vz * vz, 1e-24f));
+    float x = vx * inverse, y = vy * inverse, z = vz * inverse;
+    int channel = base + (z < 0.f ? 1 : 0);
+    float abs_z = fabsf(z);
+    float lx = 0.f, ly = 0.f;
+    float dlx[3] = {0.f, 0.f, 0.f}, dly[3] = {0.f, 0.f, 0.f};
+    if (abs_z < 1.f) {
+        float root = sqrtf(fmaxf(2.f * (1.f - abs_z), 1e-30f));
+        // d root / d z, for the hemisphere this z is on
+        float droot = -(z >= 0.f ? 1.f : -1.f) / fmaxf(root, 1e-6f);
+        float planar = fmaxf(x * x + y * y, 1e-24f);
+        if (fabsf(y) <= fabsf(x)) {
+            float sign = x >= 0.f ? 1.f : -1.f;
+            float safe = fabsf(x) < 1e-12f ? 1e-12f : x;
+            float angle = atanf(y / safe);
+            lx = sign * root * SQRT_PI_OVER_2;
+            ly = sign * root * TWO_OVER_SQRT_PI * angle;
+            dlx[2] = sign * SQRT_PI_OVER_2 * droot;
+            dly[0] = -sign * TWO_OVER_SQRT_PI * root * y / planar;
+            dly[1] = sign * TWO_OVER_SQRT_PI * root * x / planar;
+            dly[2] = sign * TWO_OVER_SQRT_PI * angle * droot;
+        } else {
+            float sign = y >= 0.f ? 1.f : -1.f;
+            float safe = fabsf(y) < 1e-12f ? 1e-12f : y;
+            float angle = atanf(x / safe);
+            lx = sign * root * TWO_OVER_SQRT_PI * angle;
+            ly = sign * root * SQRT_PI_OVER_2;
+            dlx[0] = sign * TWO_OVER_SQRT_PI * root * y / planar;
+            dlx[1] = -sign * TWO_OVER_SQRT_PI * root * x / planar;
+            dlx[2] = sign * TWO_OVER_SQRT_PI * angle * droot;
+            dly[2] = sign * SQRT_PI_OVER_2 * droot;
+        }
+    }
+    float last = (float)(n - 1);
+    float scale = 0.5f * last / SQRT_PI_HALF;
+    float ux = (lx / SQRT_PI_HALF + 1.f) * 0.5f * last;
+    float uy = (ly / SQRT_PI_HALF + 1.f) * 0.5f * last;
+    float px = fminf(fmaxf(ux, 0.f), last), py = fminf(fmaxf(uy, 0.f), last);
+    float kx = (ux > 0.f && ux < last) ? scale : 0.f;
+    float ky = (uy > 0.f && uy < last) ? scale : 0.f;
+    int x0 = (int)floorf(px), y0 = (int)floorf(py);
+    int x1 = min(x0 + 1, n - 1), y1 = min(y0 + 1, n - 1);
+    float fx = px - x0, fy = py - y0;
+    size_t offset = (size_t)channel * n * n;
+    int i00 = y0 * n + x0, i01 = y0 * n + x1, i10 = y1 * n + x0, i11 = y1 * n + x1;
+    float w00 = (1.f - fx) * (1.f - fy), w01 = fx * (1.f - fy);
+    float w10 = (1.f - fx) * fy, w11 = fx * fy;
+    const float* t = texture + offset;
+    const float* tx = gx + offset;
+    const float* ty = gy + offset;
+    float s = t[i00] * w00 + t[i01] * w01 + t[i10] * w10 + t[i11] * w11;
+    float sx = (tx[i00] * w00 + tx[i01] * w01 + tx[i10] * w10 + tx[i11] * w11) * kx;
+    float sy = (ty[i00] * w00 + ty[i01] * w01 + ty[i10] * w10 + ty[i11] * w11) * ky;
+    float du[3];
+    for (int c = 0; c < 3; c++) du[c] = sx * dlx[c] + sy * dly[c];
+    float along = x * du[0] + y * du[1] + z * du[2];
+    dv[0] = (du[0] - x * along) * inverse;
+    dv[1] = (du[1] - y * along) * inverse;
+    dv[2] = (du[2] - z * along) * inverse;
+    return s;
+}
+
 __device__ __forceinline__ float sample_rotated(
     const float* __restrict__ texture, int base, int n,
     const float* __restrict__ r, const float* __restrict__ d)
@@ -277,6 +348,7 @@ extern "C" __global__ void fit_orientations(
     const float* __restrict__ rows, const float* __restrict__ ghost,
     int iterations, float step, float max_step, const float* __restrict__ multiples, int count,
     float damping, float margin, float offset, float floor_,
+    const float* __restrict__ grad_x, const float* __restrict__ grad_y,
     float* __restrict__ g_out, float* __restrict__ score_out, int* __restrict__ refused_out)
 {
     __shared__ float shared[22 * FIT_THREADS];
@@ -309,9 +381,21 @@ extern "C" __global__ void fit_orientations(
         if (t == 0) {
             const double o[7][3] = {
                 {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
-            for (int c = 0; c < 7; c++)
+            for (int c = 0; c < (grad_x ? 1 : 7); c++)
                 turned(g, state[0] + step * o[c][0], state[1] + step * o[c][1],
                        state[2] + step * o[c][2], mp, candidates + c * 9);
+            if (grad_x) {
+                // dv/dq_k = -g skew(e_k) / sqrt 2 (map d): q's derivative of the
+                // candidate's direction, the same for any q
+                const float h = 0.70710678118654752f;
+                for (int k = 0; k < 3; k++) {
+                    float e[9] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+                    int a1 = (k + 1) % 3, a2 = (k + 2) % 3;  // skew(e_k)[a1][a2] = -1
+                    e[a1 * 3 + a2] = h;
+                    e[a2 * 3 + a1] = -h;
+                    mat_mul(g, e, candidates + (1 + k) * 9);
+                }
+            }
         }
         __syncthreads();
         float acc[22];
@@ -321,12 +405,32 @@ extern "C" __global__ void fit_orientations(
             const float* d = directions + p * 3;
             float gh = ghost ? ghost[p] : 0.f;
             float r = (row[p] - a * gh) * inverse_length;
-            float s = sample_rotated(texture, base, n, candidates, d) - offset;
-            float j[3];
-            for (int c = 0; c < 3; c++) {
-                float plus = sample_rotated(texture, base, n, candidates + (1 + c) * 9, d);
-                float minus = sample_rotated(texture, base, n, candidates + (4 + c) * 9, d);
-                j[c] = (plus - minus) * half_step;
+            float s, j[3];
+            if (grad_x) {
+                const float* m = candidates;
+                float dv[3];
+                s = sample_gradient(texture, grad_x, grad_y, base, n,
+                                    m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+                                    m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+                                    m[6] * d[0] + m[7] * d[1] + m[8] * d[2], dv) - offset;
+                float u[3] = {d[0], d[1], d[2]};
+                if (mp) {
+                    for (int c = 0; c < 3; c++)
+                        u[c] = mp[c * 3] * d[0] + mp[c * 3 + 1] * d[1] + mp[c * 3 + 2] * d[2];
+                }
+                for (int k = 0; k < 3; k++) {
+                    const float* w = candidates + (1 + k) * 9;
+                    j[k] = dv[0] * (w[0] * u[0] + w[1] * u[1] + w[2] * u[2])
+                         + dv[1] * (w[3] * u[0] + w[4] * u[1] + w[5] * u[2])
+                         + dv[2] * (w[6] * u[0] + w[7] * u[1] + w[8] * u[2]);
+                }
+            } else {
+                s = sample_rotated(texture, base, n, candidates, d) - offset;
+                for (int c = 0; c < 3; c++) {
+                    float plus = sample_rotated(texture, base, n, candidates + (1 + c) * 9, d);
+                    float minus = sample_rotated(texture, base, n, candidates + (4 + c) * 9, d);
+                    j[c] = (plus - minus) * half_step;
+                }
             }
             acc[0] += s; acc[1] += s * s;
             for (int c = 0; c < 3; c++) {
@@ -631,11 +735,15 @@ def fit_orientations(
     margin,
     offset,
     floor,
+    gradients=None,
 ):
     """:func:`~de_ebsd.index.live.deformation.refine_deformation` without the
     strains in one launch, one block per pattern: ``(g, score, refused)``. *ghost*
     ``(pixels,)`` and *maps* ``(N, 3, 3)`` may be None; *offset* is the master's
-    mean, taken off the fit's samples to keep its float32 sums small."""
+    mean, taken off the fit's samples to keep its float32 sums small. With
+    *gradients* ``(grad_x, grad_y)``, the master's derivatives along its columns
+    and rows, the Jacobian is the analytic one; without, central differences of
+    *step*."""
     import cupy
 
     n = len(g)
@@ -669,6 +777,8 @@ def fit_orientations(
             cupy.float32(margin),
             cupy.float32(offset),
             cupy.float32(floor),
+            _cupy(gradients[0]) if gradients is not None else cupy.uint64(0),
+            _cupy(gradients[1]) if gradients is not None else cupy.uint64(0),
             _cupy(out),
             _cupy(score),
             _cupy(refused),

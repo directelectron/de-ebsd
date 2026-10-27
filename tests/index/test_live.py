@@ -314,11 +314,19 @@ def test_the_fused_stepped_refine_is_the_torch_one(master, point_group, detector
 
 
 @fused
-def test_the_fused_orientation_fit_is_the_torch_one(master, point_group, detector):
-    """The orientation-only fit on the fused kernels (one pass to its raw sums,
-    the normalized products in closed form) against the torch path, seeds 0.3°
-    off and a ghost in the patterns: the same orientations and scores to float32
-    rounding."""
+@pytest.mark.parametrize(("analytic", "tolerance"), [(False, 0.005), (True, 0.02)])
+def test_the_fused_orientation_fit_is_the_torch_one(
+    master, point_group, detector, monkeypatch, analytic, tolerance
+):
+    """The orientation-only fit on the fused kernels (one launch, one block per
+    pattern) against the torch path, seeds 0.3° off and a ghost in the patterns.
+    With central differences, the same orientations and scores to float32
+    rounding; with the Jacobian from the master's gradient
+    (:data:`~de_ebsd.index.live.deformation.ANALYTIC_JACOBIAN`), the same fit to a
+    few hundredths of a degree, as it differs from a central difference."""
+    from de_ebsd.index.live import deformation
+
+    monkeypatch.setattr(deformation, "ANALYTIC_JACOBIAN", analytic)
     rotations = _known()
     indexer = LiveIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
@@ -337,7 +345,7 @@ def test_the_fused_orientation_fit_is_the_torch_one(master, point_group, detecto
     difference = Rotation.from_matrix(fused.cpu().numpy()).angle_with(
         Rotation.from_matrix(plain.cpu().numpy()), degrees=True
     )
-    assert np.max(difference) < 0.005, difference
+    assert np.max(difference) < tolerance, difference
     assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
     error = Rotation.from_matrix(fused.cpu().numpy()).angle_with(rotations, degrees=True)
     assert np.max(error) < 0.05, error

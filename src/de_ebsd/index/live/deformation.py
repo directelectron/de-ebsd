@@ -287,6 +287,30 @@ def _texture_mean(texture: torch.Tensor) -> float:
     return _TEXTURE_MEANS[key]
 
 
+#: Whether the fused orientation fit takes its Jacobian from the master's
+#: gradient (one sample a pixel) rather than central differences (seven).
+ANALYTIC_JACOBIAN = True
+
+_TEXTURE_GRADIENTS: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _texture_gradients(texture: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """A master *texture*'s derivatives along its columns and rows, per texel, by
+    central differences (one-sided at its edges), once per texture: sampled
+    bilinearly they are the slope of the master, where the bilinear sample's
+    own derivative is the slope of its facets."""
+    key = (texture.data_ptr(), texture.numel())
+    if key not in _TEXTURE_GRADIENTS:
+        t = texture.float().contiguous()
+        x, y = torch.empty_like(t), torch.empty_like(t)
+        x[..., 1:-1] = 0.5 * (t[..., 2:] - t[..., :-2])
+        x[..., 0], x[..., -1] = t[..., 1] - t[..., 0], t[..., -1] - t[..., -2]
+        y[..., 1:-1, :] = 0.5 * (t[..., 2:, :] - t[..., :-2, :])
+        y[..., 0, :], y[..., -1, :] = t[..., 1, :] - t[..., 0, :], t[..., -1, :] - t[..., -2, :]
+        _TEXTURE_GRADIENTS[key] = (x.contiguous(), y.contiguous())
+    return _TEXTURE_GRADIENTS[key]
+
+
 def _fit_orientations_fused(
     indexer, refine_rows, phase, g, *, iterations, line_search, step, center_maps, ghost
 ):
@@ -313,6 +337,7 @@ def _fit_orientations_fused(
         margin=DEFORMATION_SCORE_MARGIN,
         offset=_texture_mean(indexer.texture),
         floor=SINGLE_PRECISION_FLOOR,
+        gradients=_texture_gradients(indexer.texture) if ANALYTIC_JACOBIAN else None,
     )
     strain = torch.zeros(len(g), 3, 3, device=g.device)
     strain = torch.where(refused[:, None, None], torch.nan, strain)
