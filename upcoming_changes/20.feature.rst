@@ -1,0 +1,1 @@
+Simulating a dynamical master pattern was faster: its depth integration, its symmetry fold and its Bethe classification no longer did per-depth or per-pixel work they could do once.

@@ -69,27 +69,50 @@ class BlochPrismBackend(BlochWaveBackend):
             self.structure_factors.crystal.g_cartesian(master.hkl), device=dev, dtype=self.rdtype
         )
 
+    def _pairs(self) -> None:
+        """Every pair of beams' U(h_g - h_h) and S(h_h - h_g): the Bethe test and
+        each bucket gather from these small matrices instead of building
+        (directions, beams, beams, 3) index differences to look up in the 3D
+        tables, which was most of their time. Taken from the tables as they are
+        when :meth:`intensities` is called, so a ``u_lut`` swapped in for its
+        gradient is the one used."""
+        hkl = self.hkl_aug
+        self.u_pair = self._lookup(self.u_lut, hkl[:, None, :] - hkl[None, :, :])
+        self.u_pair_abs = self.u_pair.detach().abs().to(self.rdtype)
+        self.sgh_pair = self._lookup(self.sgh_t, hkl[None, :, :] - hkl[:, None, :])  # [g,h]=h-g
+
     def _lookup(self, lut: torch.Tensor, hkl: torch.Tensor) -> torch.Tensor:
         i = hkl + self.off
         return lut[i[..., 0], i[..., 1], i[..., 2]]
 
     # ---- depth integration via the scattering matrix -------------------- #
-    def _calc_lgh(self, a: torch.Tensor) -> torch.Tensor:
+    def _depth_intensity(self, a: torch.Tensor, sgh: torch.Tensor) -> torch.Tensor:
+        """Each direction's depth-integrated intensity ``sum_n lambda_n psi_n^H S
+        psi_n``, the wave ``psi_n = Sigma^n e_gzero`` after n depth steps and S the
+        ``Sgh`` matrix: what ``sum(L_gh * S_gh)`` is, with ``L_gh = sum_n lambda_n
+        conj(psi_g) psi_h``, without forming L one depth at a time (a batched
+        outer product per depth was most of the bucket's time). Unnormalized by the
+        atom count."""
         phase = 2.0 * np.pi * self.depthstep / (2.0 * self.kn)
         step = torch.complex(
             torch.zeros((), device=self.tdev, dtype=self.rdtype),
             torch.as_tensor(phase, device=self.tdev, dtype=self.rdtype),
         )
         sigma = torch.linalg.matrix_exp(step * a)  # exp(i phase A)
-        psi = sigma[:, :, self.gzero].clone()  # psi_1 = Sigma e_gzero
-        lgh = torch.zeros_like(a)
-        for n in range(self.n_depths):
-            lgh = lgh + self.lambda_t[n] * (psi.conj()[:, :, None] * psi[:, None, :])
+        psi = sigma[:, :, self.gzero]  # psi_1 = Sigma e_gzero
+        waves = []
+        for _ in range(self.n_depths):
+            waves.append(psi)
             psi = torch.matmul(sigma, psi[:, :, None]).squeeze(-1)
-        return lgh * (self.depthstep / self.thick)
+        waves = torch.stack(waves, 1)  # (b, depths, beams)
+        scattered = torch.matmul(waves, sgh.transpose(1, 2))  # (S psi_n)^T, (b, depths, beams)
+        per_depth = (waves.conj() * scattered).sum(-1)  # (b, depths)
+        weights = self.lambda_t.to(per_depth.real.dtype)
+        return (per_depth * weights).sum(-1).real * (self.depthstep / self.thick)
 
     # ---- one intensity per incident direction --------------------------- #
     def intensities(self, directions: torch.Tensor) -> torch.Tensor:
+        self._pairs()
         k_all = directions.to(self.tdev, self.rdtype)
         total = k_all.shape[0]
         out = torch.empty(total, device=self.tdev, dtype=self.out_dtype)
@@ -136,12 +159,7 @@ class BlochPrismBackend(BlochWaveBackend):
 
             # Bethe min over candidate h only
             absg_c = absg.gather(1, cidx)  # [c, Cmax]
-            hkl_c = self.hkl_aug[cidx]  # [c, Cmax, 3]
-            u = (
-                self._lookup(self.u_lut, hkl_c[:, :, None, :] - hkl_c[:, None, :, :])
-                .abs()
-                .to(self.rdtype)
-            )
+            u = self.u_pair_abs[cidx[:, :, None], cidx[:, None, :]]
             good = (u > _R._FORBIDDEN_TOL) & creal[:, None, :]
             rh = torch.where(
                 good,
@@ -169,12 +187,11 @@ class BlochPrismBackend(BlochWaveBackend):
         b = sub.shape[0]
         st, wk, sgs = strong[sub], weak[sub], sg[sub]
         s_idx = st.nonzero(as_tuple=False)[:, 1].reshape(b, s)  # ascending -> g0 first
-        hkl_s = self.hkl_aug[s_idx]  # [b, s, 3]
         sg_s = sgs.gather(1, s_idx)  # [b, s]
 
         wc = wk.sum(1)
         w_max = int(wc.max().item()) if b else 0
-        a = self._lookup(self.u_lut, hkl_s[:, :, None, :] - hkl_s[:, None, :, :]).clone()
+        a = self.u_pair[s_idx[:, :, None], s_idx[:, None, :]]
         weak_diag = torch.zeros(b, s, device=self.tdev, dtype=self.rdtype)
         if w_max > 0:
             nz = wk.nonzero(as_tuple=False)  # [T, 2], row-sorted
@@ -186,11 +203,10 @@ class BlochPrismBackend(BlochWaveBackend):
             w_ok = torch.zeros(b, w_max, dtype=torch.bool, device=self.tdev)
             w_idx[rows, within] = cols
             w_ok[rows, within] = True
-            hkl_w = self.hkl_aug[w_idx]
             sg_w = sgs.gather(1, w_idx)
             inv_sgw = torch.where(w_ok, 1.0 / sg_w, torch.zeros_like(sg_w))
-            u_gw = self._lookup(self.u_lut, hkl_s[:, :, None, :] - hkl_w[:, None, :, :])
-            u_wh = self._lookup(self.u_lut, hkl_w[:, :, None, :] - hkl_s[:, None, :, :])
+            u_gw = self.u_pair[s_idx[:, :, None], w_idx[:, None, :]]
+            u_wh = self.u_pair[w_idx[:, :, None], s_idx[:, None, :]]
             a = a - 0.5 * self.lam * torch.matmul(u_gw * inv_sgw[:, None, :], u_wh)
             weak_diag = 0.5 * self.lam * (u_gw.abs() ** 2 * inv_sgw[:, None, :]).sum(2)
 
@@ -198,7 +214,6 @@ class BlochPrismBackend(BlochWaveBackend):
         diag = (2.0 * sg_s / self.lam - weak_diag).to(self.cdtype) + 1j * self.upz0
         a[:, di, di] = diag
 
-        lgh = self._calc_lgh(a)
-        sgh = self._lookup(self.sgh_t, hkl_s[:, None, :, :] - hkl_s[:, :, None, :])  # [g,h]=h-g
-        inten = (lgh * sgh).sum((1, 2)).real / self.n_atoms
+        sgh = self.sgh_pair[s_idx[:, :, None], s_idx[:, None, :]]  # [g,h]=h-g
+        inten = self._depth_intensity(a, sgh) / self.n_atoms
         out[sub + c0] = inten.to(self.out_dtype)
