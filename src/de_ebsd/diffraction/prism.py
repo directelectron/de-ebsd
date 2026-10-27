@@ -74,19 +74,29 @@ class BlochPrismBackend(BlochWaveBackend):
         return lut[i[..., 0], i[..., 1], i[..., 2]]
 
     # ---- depth integration via the scattering matrix -------------------- #
-    def _calc_lgh(self, a: torch.Tensor) -> torch.Tensor:
+    def _depth_intensity(self, a: torch.Tensor, sgh: torch.Tensor) -> torch.Tensor:
+        """Each direction's depth-integrated intensity ``sum_n lambda_n psi_n^H S
+        psi_n``, the wave ``psi_n = Sigma^n e_gzero`` after n depth steps and S the
+        ``Sgh`` matrix: what ``sum(L_gh * S_gh)`` is, with ``L_gh = sum_n lambda_n
+        conj(psi_g) psi_h``, without forming L one depth at a time (a batched
+        outer product per depth was most of the bucket's time). Unnormalized by the
+        atom count."""
         phase = 2.0 * np.pi * self.depthstep / (2.0 * self.kn)
         step = torch.complex(
             torch.zeros((), device=self.tdev, dtype=self.rdtype),
             torch.as_tensor(phase, device=self.tdev, dtype=self.rdtype),
         )
         sigma = torch.linalg.matrix_exp(step * a)  # exp(i phase A)
-        psi = sigma[:, :, self.gzero].clone()  # psi_1 = Sigma e_gzero
-        lgh = torch.zeros_like(a)
-        for n in range(self.n_depths):
-            lgh = lgh + self.lambda_t[n] * (psi.conj()[:, :, None] * psi[:, None, :])
+        psi = sigma[:, :, self.gzero]  # psi_1 = Sigma e_gzero
+        waves = []
+        for _ in range(self.n_depths):
+            waves.append(psi)
             psi = torch.matmul(sigma, psi[:, :, None]).squeeze(-1)
-        return lgh * (self.depthstep / self.thick)
+        waves = torch.stack(waves, 1)  # (b, depths, beams)
+        scattered = torch.matmul(waves, sgh.transpose(1, 2))  # (S psi_n)^T, (b, depths, beams)
+        per_depth = (waves.conj() * scattered).sum(-1)  # (b, depths)
+        weights = self.lambda_t.to(per_depth.real.dtype)
+        return (per_depth * weights).sum(-1).real * (self.depthstep / self.thick)
 
     # ---- one intensity per incident direction --------------------------- #
     def intensities(self, directions: torch.Tensor) -> torch.Tensor:
@@ -198,7 +208,6 @@ class BlochPrismBackend(BlochWaveBackend):
         diag = (2.0 * sg_s / self.lam - weak_diag).to(self.cdtype) + 1j * self.upz0
         a[:, di, di] = diag
 
-        lgh = self._calc_lgh(a)
         sgh = self._lookup(self.sgh_t, hkl_s[:, None, :, :] - hkl_s[:, :, None, :])  # [g,h]=h-g
-        inten = (lgh * sgh).sum((1, 2)).real / self.n_atoms
+        inten = self._depth_intensity(a, sgh) / self.n_atoms
         out[sub + c0] = inten.to(self.out_dtype)
