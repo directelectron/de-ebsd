@@ -1,1 +1,1 @@
-LiveIndexer.index took fit=True to fit the orientations without the strains on fused CUDA kernels: on a real scan as precise as fitting the strains too, at the speed of the stepped refine alone.
+LiveIndexer.index took fit=True to fit the orientations without the strains on fused CUDA kernels, on a real scan as precise as fitting the strains too at the speed of the stepped refine alone, and index_with_strain fitted the strains on the same kernel, about three times faster end to end and nearer the converged fit.
