@@ -290,6 +290,26 @@ def _texture_mean(texture: torch.Tensor) -> float:
 #: Whether the fused orientation fit takes its Jacobian from the master's
 #: gradient (one sample a pixel) rather than central differences (seven).
 ANALYTIC_JACOBIAN = True
+#: The fused orientation fit's passes, ``(coarse, alpha)`` each: scored at half
+#: the refine's resolution or not, and moved by alpha times the Gauss-Newton
+#: step (capped as :data:`DEFORMATION_MAX_STEP`). No line search and no final
+#: pass: every pass's sums score where it stands, and the best-scored
+#: full-resolution point is kept. Empty for the line-searched fit instead
+#: (:data:`DEFORMATION_ITERATIONS`, :data:`DEFORMATION_LINE_SEARCH`).
+#: On a customer Zenith's Cu scan (full, half, half, full) fitted its single
+#: crystal's neighbours to 0.19/0.29 degrees at the 90th/99th percentile in
+#: 2.5 ms per 256 patterns, where the line-searched fit took 6.1 for 0.22/0.34.
+FIT_SCHEDULE: tuple[tuple[bool, float], ...] = (
+    (False, 1.0),
+    (True, 1.0),
+    (True, 1.0),
+    (False, 1.0),
+)
+#: The largest change one of :data:`FIT_SCHEDULE`'s passes may make, before its
+#: alpha. Six times :data:`DEFORMATION_MAX_STEP`: a pass has no line search to
+#: lengthen its step, and with that cap the schedule's fit fell short (0.62
+#: degrees at the 90th percentile on that scan).
+FIT_MAX_STEP = 3e-2
 
 _TEXTURE_GRADIENTS: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
 
@@ -321,6 +341,37 @@ def _fit_orientations_fused(
     arithmetic, so the same fit to float32 rounding (``tests/index/test_live.py``)."""
     from de_ebsd.index import _kernels
 
+    if ANALYTIC_JACOBIAN and FIT_SCHEDULE:
+        from de_ebsd.index.live.common import average_to
+
+        shape, coarse_shape = indexer.refine_shape, indexer.coarse_shape
+
+        def coarse(rows):
+            return normalize_rows(average_to(rows.view(len(rows), *shape), coarse_shape).flatten(1))
+
+        fitted, score, refused = _kernels.fit_passes(
+            indexer.texture,
+            g,
+            phase * 2,
+            center_maps,
+            (indexer.refine_directions, refine_rows, ghost),
+            (
+                indexer.coarse_directions,
+                coarse(refine_rows),
+                coarse(ghost[None])[0] if ghost is not None else None,
+            ),
+            FIT_SCHEDULE,
+            max_step=FIT_MAX_STEP,
+            damping=1e-3,
+            margin=DEFORMATION_SCORE_MARGIN,
+            offset=_texture_mean(indexer.texture),
+            floor=SINGLE_PRECISION_FLOOR,
+            gradients=_texture_gradients(indexer.texture),
+        )
+        strain = torch.where(
+            refused[:, None, None], torch.nan, torch.zeros(len(g), 3, 3, device=g.device)
+        )
+        return fitted, strain, score
     fitted, score, refused = _kernels.fit_orientations(
         indexer.texture,
         g,

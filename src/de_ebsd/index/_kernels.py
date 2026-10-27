@@ -577,6 +577,197 @@ extern "C" __global__ void fit_orientations(
         }
     }
 }
+// fit_passes: the orientation fit as a schedule of Gauss-Newton passes, the
+// Jacobian from the master's gradient, no line search and no final pass. Pass k
+// is scored at full resolution or at the coarse one (coarse[k]) and moves by
+// alpha[k] times its step: every pass's moments give the score where it stands
+// for nothing, so the fit keeps the best-scored full-resolution point it visited
+// (the first pass is at full resolution, from the given orientation: the seed).
+extern "C" __global__ void fit_passes(
+    const float* __restrict__ texture, int n,
+    const float* __restrict__ g_in, const int* __restrict__ bases,
+    const float* __restrict__ maps,
+    const float* __restrict__ directions, int pixels,
+    const float* __restrict__ rows, const float* __restrict__ ghost,
+    const float* __restrict__ coarse_directions, int coarse_pixels,
+    const float* __restrict__ coarse_rows, const float* __restrict__ coarse_ghost,
+    const int* __restrict__ coarse, const float* __restrict__ alpha, int passes,
+    float max_step, float damping, float margin, float offset, float floor_,
+    const float* __restrict__ grad_x, const float* __restrict__ grad_y,
+    float* __restrict__ g_out, float* __restrict__ score_out, int* __restrict__ refused_out)
+{
+    __shared__ float shared[22 * FIT_THREADS];
+    __shared__ float g[9], map[9], candidates[4 * 9];
+    // p[3], best p[3], seed, best, along full, 1/length full, along coarse, 1/length coarse
+    __shared__ double state[12];
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    if (t < 9) {
+        g[t] = g_in[i * 9 + t];
+        if (maps) map[t] = maps[i * 9 + t];
+    }
+    const float* mp = maps ? map : (const float*)0;
+    int base = bases[i];
+    const float* full_row = rows + i * (long long)pixels;
+    const float* coarse_row = coarse_rows + i * (long long)coarse_pixels;
+
+    // each row off its ghost: (row - a ghost) / sqrt(1 - a^2)
+    float a_full = 0.f, a_coarse = 0.f;
+    if (ghost)
+        for (int p = t; p < pixels; p += b) a_full += full_row[p] * ghost[p];
+    if (coarse_ghost)
+        for (int p = t; p < coarse_pixels; p += b) a_coarse += coarse_row[p] * coarse_ghost[p];
+    shared[t] = a_full;
+    shared[b + t] = a_coarse;
+    block_sums(shared, 2);
+    if (t == 0) {
+        for (int k = 0; k < 6; k++) state[k] = 0.0;
+        state[6] = state[7] = -1e30;
+        double af = ghost ? (double)shared[0] : 0.0, ac = coarse_ghost ? (double)shared[b] : 0.0;
+        state[8] = af;
+        state[9] = 1.0 / sqrt(fmax(1.0 - af * af, 1e-12));
+        state[10] = ac;
+        state[11] = 1.0 / sqrt(fmax(1.0 - ac * ac, 1e-12));
+        // dv/dq_k = -g skew(e_k) / sqrt 2 (map d), the same for any q
+        const float h = 0.70710678118654752f;
+        for (int k = 0; k < 3; k++) {
+            float e[9] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+            int a1 = (k + 1) % 3, a2 = (k + 2) % 3;
+            e[a1 * 3 + a2] = h;
+            e[a2 * 3 + a1] = -h;
+            mat_mul(g, e, candidates + (1 + k) * 9);
+        }
+    }
+    __syncthreads();
+
+    for (int pass = 0; pass < passes; pass++) {
+        bool low = coarse[pass] != 0;
+        const float* d_all = low ? coarse_directions : directions;
+        const float* row = low ? coarse_row : full_row;
+        const float* gh_all = low ? coarse_ghost : ghost;
+        int count = low ? coarse_pixels : pixels;
+        float a = (float)state[low ? 10 : 8], inverse_length = (float)state[low ? 11 : 9];
+        if (t == 0) turned(g, state[0], state[1], state[2], mp, candidates);
+        __syncthreads();
+        float acc[22];
+        for (int k = 0; k < 22; k++) acc[k] = 0.f;
+        for (int p = t; p < count; p += b) {
+            const float* d = d_all + p * 3;
+            float gh = gh_all ? gh_all[p] : 0.f;
+            float r = (row[p] - a * gh) * inverse_length;
+            const float* m = candidates;
+            float dv[3];
+            float s = sample_gradient(texture, grad_x, grad_y, base, n,
+                                      m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+                                      m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+                                      m[6] * d[0] + m[7] * d[1] + m[8] * d[2], dv) - offset;
+            float u[3] = {d[0], d[1], d[2]};
+            if (mp) {
+                for (int c = 0; c < 3; c++)
+                    u[c] = mp[c * 3] * d[0] + mp[c * 3 + 1] * d[1] + mp[c * 3 + 2] * d[2];
+            }
+            float j[3];
+            for (int k = 0; k < 3; k++) {
+                const float* w = candidates + (1 + k) * 9;
+                j[k] = dv[0] * (w[0] * u[0] + w[1] * u[1] + w[2] * u[2])
+                     + dv[1] * (w[3] * u[0] + w[4] * u[1] + w[5] * u[2])
+                     + dv[2] * (w[6] * u[0] + w[7] * u[1] + w[8] * u[2]);
+            }
+            acc[0] += s; acc[1] += s * s;
+            for (int c = 0; c < 3; c++) {
+                acc[2 + c] += j[c]; acc[5 + c] += s * j[c];
+                acc[15 + c] += j[c] * r; acc[19 + c] += j[c] * gh;
+            }
+            acc[8] += j[0] * j[0]; acc[9] += j[0] * j[1]; acc[10] += j[0] * j[2];
+            acc[11] += j[1] * j[1]; acc[12] += j[1] * j[2]; acc[13] += j[2] * j[2];
+            acc[14] += s * r; acc[18] += s * gh;
+        }
+        __syncthreads();
+        for (int k = 0; k < 22; k++) shared[k * b + t] = acc[k];
+        block_sums(shared, 22);
+        if (t == 0) {
+            double S[22];
+            for (int k = 0; k < 22; k++) S[k] = shared[k * b];
+            double P = count;
+            double sigma2 = fmax(S[1] - S[0] * S[0] / P, (double)floor_), sigma = sqrt(sigma2);
+            double uj[3], jr[3], jg[3];
+            for (int c = 0; c < 3; c++) uj[c] = S[5 + c] - S[0] * S[2 + c] / P;
+            const int jidx[3][3] = {{8, 9, 10}, {9, 11, 12}, {10, 12, 13}};
+            double A[3][3];
+            for (int x = 0; x < 3; x++)
+                for (int y = 0; y < 3; y++)
+                    A[x][y] = (S[jidx[x][y]] - S[2 + x] * S[2 + y] / P) / sigma2
+                              - uj[x] * uj[y] / (sigma2 * sigma2);
+            double fit_row = S[14] / sigma, fit_ghost = S[18] / sigma;
+            for (int c = 0; c < 3; c++) {
+                jr[c] = S[15 + c] / sigma - S[14] * uj[c] / (sigma2 * sigma);
+                jg[c] = S[19 + c] / sigma - S[18] * uj[c] / (sigma2 * sigma);
+            }
+            double scale = fit_row / (1.0 - fit_ghost * fit_ghost);
+            double current = scale * sqrt(fmax(1.0 - fit_ghost * fit_ghost, 0.0));
+            if (!low) {
+                if (pass == 0) state[6] = current;
+                if (isfinite(current) && current > state[7]) {
+                    state[7] = current;
+                    state[3] = state[0]; state[4] = state[1]; state[5] = state[2];
+                }
+            }
+            double trace = 0.0;
+            for (int x = 0; x < 3; x++)
+                for (int y = 0; y < 3; y++) A[x][y] -= jg[x] * jg[y];
+            for (int x = 0; x < 3; x++) trace += A[x][x];
+            for (int x = 0; x < 3; x++) A[x][x] += damping * trace / 3.0;
+            double gradient[3];
+            double safe = fmax(scale, (double)floor_);
+            for (int c = 0; c < 3; c++)
+                gradient[c] = (jr[c] + scale * jg[c] * fit_ghost) / safe;
+            double c0[3] = {A[1][1] * A[2][2] - A[1][2] * A[2][1],
+                            A[1][2] * A[2][0] - A[1][0] * A[2][2],
+                            A[1][0] * A[2][1] - A[1][1] * A[2][0]};
+            double c1[3] = {A[2][1] * A[0][2] - A[2][2] * A[0][1],
+                            A[2][2] * A[0][0] - A[2][0] * A[0][2],
+                            A[2][0] * A[0][1] - A[2][1] * A[0][0]};
+            double c2[3] = {A[0][1] * A[1][2] - A[0][2] * A[1][1],
+                            A[0][2] * A[1][0] - A[0][0] * A[1][2],
+                            A[0][0] * A[1][1] - A[0][1] * A[1][0]};
+            double det = A[0][0] * c0[0] + A[0][1] * c0[1] + A[0][2] * c0[2];
+            double largest = fmax(fabs(A[0][0]), fmax(fabs(A[1][1]), fabs(A[2][2])));
+            double change[3] = {0, 0, 0};
+            if (fabs(det) > 1e-12 * largest * largest * largest) {
+                for (int x = 0; x < 3; x++)
+                    change[x] =
+                        (c0[x] * gradient[0] + c1[x] * gradient[1] + c2[x] * gradient[2]) / det;
+                if (!(isfinite(change[0]) && isfinite(change[1]) && isfinite(change[2])))
+                    change[0] = change[1] = change[2] = 0.0;
+            }
+            double reach = fmax(fabs(change[0]), fmax(fabs(change[1]), fabs(change[2])));
+            double cap = alpha[pass] * max_step / fmax(reach, (double)max_step);
+            for (int x = 0; x < 3; x++) state[x] += change[x] * cap;
+        }
+        __syncthreads();
+    }
+
+    if (t == 0) {
+        double seed = state[6], best = state[7];
+        bool refused = !(best >= seed - margin);
+        refused_out[i] = refused ? 1 : 0;
+        if (refused) {
+            for (int k = 0; k < 9; k++) g_out[i * 9 + k] = g[k];
+            score_out[i] = (float)seed;
+        } else {
+            const double h = 0.70710678118654752;
+            double w[3] = {state[3] * h, state[4] * h, state[5] * h};
+            double length = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            double k = length > 1e-12 ? atan(length) / length : 1.0;
+            float r[9], fitted[9];
+            rotation(w[0] * k, w[1] * k, w[2] * k, r);  // the polar part of (I - beta)^-1
+            float rt[9] = {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
+            mat_mul(g, rt, fitted);
+            for (int q = 0; q < 9; q++) g_out[i * 9 + q] = fitted[q];
+            score_out[i] = (float)best;
+        }
+    }
+}
 """
 
 #: Threads per block of :func:`score`; a power of two for its reduction.
@@ -779,6 +970,79 @@ def fit_orientations(
             cupy.float32(floor),
             _cupy(gradients[0]) if gradients is not None else cupy.uint64(0),
             _cupy(gradients[1]) if gradients is not None else cupy.uint64(0),
+            _cupy(out),
+            _cupy(score),
+            _cupy(refused),
+        ),
+    )
+    return out, score, refused.bool()
+
+
+def fit_passes(
+    texture,
+    g,
+    bases,
+    maps,
+    full,
+    coarse,
+    schedule,
+    *,
+    max_step,
+    damping,
+    margin,
+    offset,
+    floor,
+    gradients,
+):
+    """The orientation fit as a *schedule* of ``(coarse, alpha)`` passes, in one
+    launch, one block per pattern: ``(g, score, refused)``. *full* and *coarse*
+    are each ``(directions, rows, ghost)`` at the refine's resolution and the
+    coarse one (*ghost* may be None); the first pass must be at full resolution.
+    *gradients* are the master's ``(grad_x, grad_y)``."""
+    import cupy
+
+    if not schedule or schedule[0][0]:
+        raise ValueError("the first pass is at full resolution")
+    n = len(g)
+    out = torch.empty(n, 3, 3, device=g.device, dtype=torch.float32)
+    score = torch.empty(n, device=g.device, dtype=torch.float32)
+    refused = torch.empty(n, device=g.device, dtype=torch.int32)
+    texture = texture.contiguous()
+    lows = torch.tensor([int(c) for c, _ in schedule], dtype=torch.int32, device=g.device)
+    alphas = torch.tensor([float(a) for _, a in schedule], dtype=torch.float32, device=g.device)
+
+    def optional(tensor):
+        return _cupy(tensor.float()) if tensor is not None else cupy.uint64(0)
+
+    (full_directions, full_rows, full_ghost), (low_directions, low_rows, low_ghost) = full, coarse
+    _launch(
+        "fit_passes",
+        (n,),
+        (FIT_THREADS,),
+        (
+            _cupy(texture),
+            cupy.int32(texture.shape[-1]),
+            _cupy(g.float()),
+            _cupy(bases.to(torch.int32)),
+            optional(maps),
+            _cupy(full_directions.float()),
+            cupy.int32(len(full_directions)),
+            _cupy(full_rows.float()),
+            optional(full_ghost),
+            _cupy(low_directions.float()),
+            cupy.int32(len(low_directions)),
+            _cupy(low_rows.float()),
+            optional(low_ghost),
+            _cupy(lows),
+            _cupy(alphas),
+            cupy.int32(len(schedule)),
+            cupy.float32(max_step),
+            cupy.float32(damping),
+            cupy.float32(margin),
+            cupy.float32(offset),
+            cupy.float32(floor),
+            _cupy(gradients[0]),
+            _cupy(gradients[1]),
             _cupy(out),
             _cupy(score),
             _cupy(refused),
