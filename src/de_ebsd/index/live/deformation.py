@@ -296,11 +296,13 @@ ANALYTIC_JACOBIAN = True
 #: pass: every pass's sums score where it stands, and the best-scored
 #: full-resolution point is kept. Empty for the line-searched fit instead
 #: (:data:`DEFORMATION_ITERATIONS`, :data:`DEFORMATION_LINE_SEARCH`).
-#: On a customer Zenith's Cu scan (full, half, half, full) fitted its single
-#: crystal's neighbours to 0.19/0.29 degrees at the 90th/99th percentile in
-#: 2.5 ms per 256 patterns, where the line-searched fit took 6.1 for 0.22/0.34.
+#: On a customer Zenith's Cu scan, from a refine stopped at 1 degree, (full, half,
+#: half, half, full) fitted its single crystal's neighbours to 0.17/0.25 degrees
+#: at the 90th/99th percentile in 2.5 ms per 256 patterns, where the
+#: line-searched fit took 6.1 ms (and a refine on to 0.5 degrees) for 0.22/0.34.
 FIT_SCHEDULE: tuple[tuple[bool, float], ...] = (
     (False, 1.0),
+    (True, 1.0),
     (True, 1.0),
     (True, 1.0),
     (False, 1.0),
