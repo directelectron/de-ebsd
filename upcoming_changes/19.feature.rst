@@ -1,1 +1,1 @@
-LiveIndexer.index took fit=True to fit the orientations without the strains, five to eight times more precise than the stepped refine on a real scan.
+LiveIndexer.index took fit=True to fit the orientations without the strains on fused CUDA kernels: on a real scan as precise as fitting the strains too, at the speed of the stepped refine alone.
