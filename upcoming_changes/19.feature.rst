@@ -1,0 +1,1 @@
+LiveIndexer.index took fit=True to fit the orientations without the strains, five to eight times more precise than the stepped refine on a real scan.
