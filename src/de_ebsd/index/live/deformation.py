@@ -287,146 +287,35 @@ def _texture_mean(texture: torch.Tensor) -> float:
     return _TEXTURE_MEANS[key]
 
 
-def _solve3(normal: torch.Tensor, gradient: torch.Tensor) -> torch.Tensor:
-    """``normal @ x = gradient`` for ``(N, 3, 3)`` and ``(N, 3)``, by the adjugate:
-    no batched solver, so nothing waits on the host, and a singular (or not
-    finite) system gives no step rather than an error."""
-    a = normal
-    cofactor = torch.stack(
-        [
-            torch.linalg.cross(a[:, 1], a[:, 2]),
-            torch.linalg.cross(a[:, 2], a[:, 0]),
-            torch.linalg.cross(a[:, 0], a[:, 1]),
-        ],
-        1,
-    )  # rows of the adjugate's transpose
-    determinant = (a[:, 0] * cofactor[:, 0]).sum(-1)
-    x = (cofactor.transpose(1, 2) @ gradient[..., None])[..., 0] / determinant[:, None]
-    scale = a.diagonal(dim1=-2, dim2=-1).abs().amax(-1)
-    usable = (determinant.abs() > 1e-12 * scale**3) & x.isfinite().all(-1)
-    return torch.where(usable[:, None], x, torch.zeros_like(x))
-
-
 def _fit_orientations_fused(
     indexer, refine_rows, phase, g, *, iterations, line_search, step, center_maps, ghost
 ):
-    """:func:`refine_deformation` without the strains on the fused kernels: each
-    iteration's seven candidates are projected and reduced in one kernel
-    (:func:`~de_ebsd.index._kernels.fit_moments`) to the 17 sums the step needs,
-    instead of stored as ``(N, 7, pixels)`` and reduced through some 130 passes
-    over them; the line search and the final score use
-    :func:`~de_ebsd.index._kernels.score_ghost`. The same arithmetic in float32,
-    so the same fit to rounding (``tests/index/test_live.py``)."""
+    """:func:`refine_deformation` without the strains on the fused path: every
+    iteration of every pattern in one launch
+    (:func:`~de_ebsd.index._kernels.fit_orientations`), one block per pattern,
+    rather than some 400 small operations a batch between projections. The same
+    arithmetic, so the same fit to float32 rounding (``tests/index/test_live.py``)."""
     from de_ebsd.index import _kernels
 
-    device = indexer.device
-    basis = trace_free_basis(device)[:3]
-    n, k = len(g), _kernels.FIT_CANDIDATES
-    eye = torch.eye(3, device=device)
-    offsets = step * torch.cat([torch.zeros(1, 3, device=device), torch.eye(3, device=device)])
-    offsets = torch.cat([offsets, -offsets[1:]])  # (7, 3): the fit, +each, -each
-    p = torch.zeros(n, 3, device=device)
-    bases = phase.repeat_interleave(k) * 2
-    if ghost is not None:
-        refine_rows = normalize_rows(refine_rows - (refine_rows @ ghost)[:, None] * ghost)
-    directions = indexer.refine_directions
-    pixels = len(directions)
-    # the master's mean, taken off its samples to keep the kernel's sums small
-    offset = _texture_mean(indexer.texture)
-
-    def turned(changes):
-        """The candidates ``g (I - beta)`` of rotation changes ``(N, K, 3)``."""
-        beta = torch.einsum("nkc,cij->nkij", changes, basis)
-        candidates = g[:, None] @ (eye - beta)
-        if center_maps is not None:
-            candidates = candidates @ center_maps[:, None]
-        return candidates.reshape(-1, 3, 3)
-
-    def scored(changes):
-        """Each candidate's score, off the ghost, ``(N, K)``."""
-        per = changes.shape[1]
-        scores, along = _kernels.score_ghost(
-            indexer.texture,
-            turned(changes),
-            phase.repeat_interleave(per) * 2,
-            directions,
-            refine_rows,
-            per,
-            ghost,
-        )
-        return (scores / (1 - along**2).sqrt()).view(n, per)
-
-    seed_score = None
-    for _ in range(iterations):
-        sums = _kernels.fit_moments(
-            indexer.texture,
-            turned(p[:, None] + offsets),
-            bases,
-            directions,
-            refine_rows,
-            ghost,
-            step,
-            offset,
-        ).double()
-        # the fit's samples s and their central differences j, normalized as
-        # normalize_rows does: with u = s - mean and sigma = |u|, the derivative
-        # of u / sigma is (j - mean j) / sigma - u (u.j) / sigma^3, so every
-        # product the step needs is a closed form in the kernel's raw sums
-        total, squares, j_sum, s_j = sums[:, 0], sums[:, 1], sums[:, 2:5], sums[:, 5:8]
-        jj_raw = sums[:, [8, 9, 10, 9, 11, 12, 10, 12, 13]].view(n, 3, 3)
-        s_row, j_row_raw, s_ghost, j_ghost_raw = (
-            sums[:, 14],
-            sums[:, 15:18],
-            sums[:, 18],
-            sums[:, 19:22],
-        )
-        sigma2 = (squares - total**2 / pixels).clamp_min(SINGLE_PRECISION_FLOOR)
-        sigma = sigma2.sqrt()
-        u_j = s_j - total[:, None] * j_sum / pixels
-        jj = (jj_raw - j_sum[:, :, None] * j_sum[:, None, :] / pixels) / sigma2[:, None, None]
-        jj = (jj - u_j[:, :, None] * u_j[:, None, :] / sigma2[:, None, None] ** 2).float()
-        fit_row = (s_row / sigma)[:, None].float()
-        fit_ghost = (s_ghost / sigma)[:, None].float()
-        j_row = (j_row_raw / sigma[:, None] - s_row[:, None] * u_j / sigma[:, None] ** 3).float()
-        j_ghost = (
-            j_ghost_raw / sigma[:, None] - s_ghost[:, None] * u_j / sigma[:, None] ** 3
-        ).float()
-        fit_j = torch.zeros_like(j_row)  # a unit vector's derivative is orthogonal to it
-        scale = fit_row / (1 - fit_ghost**2)
-        current = scale[:, 0] * (1 - fit_ghost[:, 0] ** 2).sqrt()
-        if seed_score is None:
-            seed_score = current
-        normal = jj - j_ghost[:, :, None] * j_ghost[:, None, :]
-        normal = (
-            normal
-            + 1e-3
-            * torch.eye(3, device=device)
-            * normal.diagonal(dim1=-2, dim2=-1).mean(-1)[:, None, None]
-        )
-        gradient = (j_row - scale * fit_j + scale * j_ghost * fit_ghost) / scale.clamp_min(
-            SINGLE_PRECISION_FLOOR
-        )
-        change = _solve3(normal, gradient)
-        reach = change.abs().amax(-1, keepdim=True)
-        change = change * (DEFORMATION_MAX_STEP / reach.clamp_min(DEFORMATION_MAX_STEP))
-        if not line_search:
-            p = p + change
-            continue
-        multiples = torch.tensor(line_search, device=device)
-        tried = p[:, None] + multiples[None, :, None] * change[:, None]
-        scores = torch.cat([current[:, None], scored(tried)], 1).nan_to_num(-torch.inf)
-        tried = torch.cat([p[:, None], tried], 1)
-        p = tried[torch.arange(n, device=device), scores.argmax(1)]
-    score = scored(p[:, None])[:, 0]
-    beta = torch.einsum("nc,cij->nij", p, basis)
-    rotation, _ = polar_parts(beta)
-    fitted = g @ rotation.transpose(-1, -2)
-    strain = torch.zeros(n, 3, 3, device=device)
-    if seed_score is not None:
-        refused = ~(score >= seed_score - DEFORMATION_SCORE_MARGIN)  # NaN is refused too
-        strain = torch.where(refused[:, None, None], torch.nan, strain)
-        fitted = torch.where(refused[:, None, None], g, fitted)
-        score = torch.where(refused, seed_score, score)
+    fitted, score, refused = _kernels.fit_orientations(
+        indexer.texture,
+        g,
+        phase * 2,
+        indexer.refine_directions,
+        refine_rows,
+        ghost,
+        center_maps,
+        iterations=iterations,
+        step=step,
+        max_step=DEFORMATION_MAX_STEP,
+        multiples=tuple(line_search) or (1.0,),
+        damping=1e-3,
+        margin=DEFORMATION_SCORE_MARGIN,
+        offset=_texture_mean(indexer.texture),
+        floor=SINGLE_PRECISION_FLOOR,
+    )
+    strain = torch.zeros(len(g), 3, 3, device=g.device)
+    strain = torch.where(refused[:, None, None], torch.nan, strain)
     return fitted, strain, score
 
 

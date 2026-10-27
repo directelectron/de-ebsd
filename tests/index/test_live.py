@@ -289,6 +289,31 @@ def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
 
 
 @fused
+def test_the_fused_stepped_refine_is_the_torch_one(master, point_group, detector):
+    """The stepped refine in one launch (one block per pattern, every level) against
+    the torch refine on the same seeds: the same orientations and scores."""
+    rotations = _known()
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused
+    g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32)).cuda()
+    phase = torch.zeros(len(g), dtype=torch.int64, device="cuda")
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, indexer.refine_directions))
+    off = rotations * Rotation.from_axes_angles([1, 2, 3], 1.5, degrees=True)
+    seed = quaternion_to_matrix(torch.as_tensor(off.data, dtype=torch.float32)).cuda()
+    fused, fused_score = indexer.refine(rows, phase, seed)
+    plain, plain_score = indexer.refine(rows, phase, seed, directions=indexer.refine_directions)
+    difference = Rotation.from_matrix(fused.cpu().numpy()).angle_with(
+        Rotation.from_matrix(plain.cpu().numpy()), degrees=True
+    )
+    assert np.max(difference) < 0.005, difference
+    assert torch.allclose(fused_score, plain_score, atol=1e-4), fused_score - plain_score
+    error = Rotation.from_matrix(fused.cpu().numpy()).angle_with(rotations, degrees=True)
+    assert np.max(error) < 0.2, error
+
+
+@fused
 def test_the_fused_orientation_fit_is_the_torch_one(master, point_group, detector):
     """The orientation-only fit on the fused kernels (one pass to its raw sums,
     the normalized products in closed form) against the torch path, seeds 0.3°

@@ -37,6 +37,7 @@ from dataclasses import replace
 import numpy as np
 import torch
 
+from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.device import resolve_device
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
@@ -323,6 +324,17 @@ class LiveIndexer:
         ``(g, score)``, the score being the last level's at the seed. *steps*
         (radians) default to the indexer's, *directions* to its pattern center's."""
         steps = self.refine_steps if steps is None else steps
+        if self.fused and directions is None and steps:
+            # every level of every pattern in one launch, one block per pattern
+            return _kernels.refine_stepped(
+                self.texture,
+                g,
+                phase * 2,
+                self.refine_directions,
+                refine_rows,
+                steps,
+                SINGLE_PRECISION_FLOOR,
+            )
         directions = self.refine_directions if directions is None else directions
         score = torch.zeros(len(g), device=self.device)
         for step in steps:
