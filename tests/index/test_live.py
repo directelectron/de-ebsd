@@ -289,6 +289,27 @@ def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
 
 
 @fused
+@pytest.mark.parametrize("blur", [None, 0.05])
+def test_the_fused_prepare_is_the_torch_one(master, point_group, detector, blur):
+    """The frames' preparation in one launch (static background, dynamic
+    background, both shapes, normalized) against the torch path: the same rows to
+    float32 rounding, with a plain and a blurred static background."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+    )
+    assert indexer.fused
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    frames = 100 + 20 * torch.rand(40, 256, 256, device="cuda", generator=generator)
+    indexer.restart_static(frames, blur=blur)
+    assert indexer._fused_prepare(frames) is not None
+    fused_search, fused_refine = indexer.prepare(frames)
+    indexer.fused = False
+    search, refine = indexer.prepare(frames)
+    assert torch.allclose(fused_search, search, atol=1e-5), (fused_search - search).abs().max()
+    assert torch.allclose(fused_refine, refine, atol=1e-5), (fused_refine - refine).abs().max()
+
+
+@fused
 def test_the_fused_stepped_refine_is_the_torch_one(master, point_group, detector):
     """The stepped refine in one launch (one block per pattern, every level) against
     the torch refine on the same seeds: the same orientations and scores."""

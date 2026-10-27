@@ -768,6 +768,133 @@ extern "C" __global__ void fit_passes(
         }
     }
 }
+// prepare: LiveIndexer.prepare in one launch, one block per frame. The frame
+// (frame_rows x frame_cols) is averaged to the refine shape, divided by the static
+// background (if any) less one, less its dynamic background (the refine rows
+// averaged to a quarter, Gaussian-blurred with reflected edges, drawn back up
+// bilinearly as F.interpolate does with align_corners=False), then averaged to
+// the search shape; both are normalized as normalize_rows does. Every shape must
+// divide the one before it. refine_out holds the unnormalized rows meanwhile.
+#define PREPARE_THREADS 256
+#define PREPARE_MAX_SMALL 1024
+extern "C" __global__ void prepare(
+    const float* __restrict__ frames, int frame_rows, int frame_cols,
+    const float* __restrict__ statics, int rows, int cols,
+    int coarse_rows, int coarse_cols, const float* __restrict__ weights, int radius,
+    int search_rows, int search_cols, float floor_,
+    float* __restrict__ refine_out, float* __restrict__ search_out)
+{
+    __shared__ float coarse[PREPARE_MAX_SMALL], blurred[PREPARE_MAX_SMALL];
+    __shared__ float search[PREPARE_MAX_SMALL], sums[2 * PREPARE_THREADS];
+    __shared__ float moments[4];
+    long long i = blockIdx.x;
+    int t = threadIdx.x, b = blockDim.x;
+    const float* frame = frames + i * (long long)frame_rows * frame_cols;
+    float* out = refine_out + i * (long long)rows * cols;
+    int fy = frame_rows / rows, fx = frame_cols / cols;
+    float inverse_bin = 1.f / (fy * fx);
+
+    // the frame at the refine shape, over its static background
+    for (int q = t; q < rows * cols; q += b) {
+        int y = q / cols, x = q - y * cols;
+        const float* corner = frame + (long long)y * fy * frame_cols + x * fx;
+        float total = 0.f;
+        for (int dy = 0; dy < fy; dy++)
+            for (int dx = 0; dx < fx; dx++) total += corner[dy * frame_cols + dx];
+        float v = total * inverse_bin;
+        if (statics) v = v / fmaxf(statics[q], floor_) - 1.f;
+        out[q] = v;
+    }
+    __syncthreads();
+
+    // the dynamic background: averaged down, blurred along each axis (reflected)
+    int cy = rows / coarse_rows, cx = cols / coarse_cols;
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int dy = 0; dy < cy; dy++)
+            for (int dx = 0; dx < cx; dx++) total += out[(y * cy + dy) * cols + x * cx + dx];
+        coarse[c] = total / (cy * cx);
+    }
+    __syncthreads();
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int k = -radius; k <= radius; k++) {
+            int xx = x + k;
+            xx = xx < 0 ? -xx : (xx >= coarse_cols ? 2 * coarse_cols - 2 - xx : xx);
+            total += weights[k + radius] * coarse[y * coarse_cols + xx];
+        }
+        blurred[c] = total;
+    }
+    __syncthreads();
+    for (int c = t; c < coarse_rows * coarse_cols; c += b) {
+        int y = c / coarse_cols, x = c - y * coarse_cols;
+        float total = 0.f;
+        for (int k = -radius; k <= radius; k++) {
+            int yy = y + k;
+            yy = yy < 0 ? -yy : (yy >= coarse_rows ? 2 * coarse_rows - 2 - yy : yy);
+            total += weights[k + radius] * blurred[yy * coarse_cols + x];
+        }
+        coarse[c] = total;
+    }
+    __syncthreads();
+
+    // less the background drawn back up; the sums for the refine rows' normalization
+    float sy_scale = (float)coarse_rows / rows, sx_scale = (float)coarse_cols / cols;
+    float total = 0.f, squares = 0.f;
+    for (int q = t; q < rows * cols; q += b) {
+        int y = q / cols, x = q - y * cols;
+        float sy = fmaxf((y + 0.5f) * sy_scale - 0.5f, 0.f);
+        float sx = fmaxf((x + 0.5f) * sx_scale - 0.5f, 0.f);
+        int y0 = (int)sy, x0 = (int)sx;
+        int y1 = min(y0 + 1, coarse_rows - 1), x1 = min(x0 + 1, coarse_cols - 1);
+        float ly = sy - y0, lx = sx - x0;
+        const float* top = coarse + y0 * coarse_cols;
+        const float* bottom = coarse + y1 * coarse_cols;
+        float up = (1.f - ly) * ((1.f - lx) * top[x0] + lx * top[x1])
+                 + ly * ((1.f - lx) * bottom[x0] + lx * bottom[x1]);
+        float v = out[q] - up;
+        out[q] = v;
+        total += v; squares += v * v;
+    }
+    sums[t] = total;
+    sums[b + t] = squares;
+    block_sums(sums, 2);
+    if (t == 0) {
+        float n = (float)(rows * cols), mean = sums[0] / n;
+        moments[0] = mean;
+        moments[1] = 1.f / fmaxf(sqrtf(fmaxf(sums[b] - mean * sums[0], 0.f)), floor_);
+    }
+    __syncthreads();
+
+    // the search rows: the background-free rows averaged down
+    int ry = rows / search_rows, rx = cols / search_cols;
+    total = 0.f; squares = 0.f;
+    for (int s = t; s < search_rows * search_cols; s += b) {
+        int y = s / search_cols, x = s - y * search_cols;
+        float acc = 0.f;
+        for (int dy = 0; dy < ry; dy++)
+            for (int dx = 0; dx < rx; dx++) acc += out[(y * ry + dy) * cols + x * rx + dx];
+        acc /= (ry * rx);
+        search[s] = acc;
+        total += acc; squares += acc * acc;
+    }
+    __syncthreads();
+    sums[t] = total;
+    sums[b + t] = squares;
+    block_sums(sums, 2);
+    if (t == 0) {
+        float n = (float)(search_rows * search_cols), mean = sums[0] / n;
+        moments[2] = mean;
+        moments[3] = 1.f / fmaxf(sqrtf(fmaxf(sums[b] - mean * sums[0], 0.f)), floor_);
+    }
+    __syncthreads();
+    float* searched = search_out + i * (long long)search_rows * search_cols;
+    for (int s = t; s < search_rows * search_cols; s += b)
+        searched[s] = (search[s] - moments[2]) * moments[3];
+    for (int q = t; q < rows * cols; q += b) out[q] = (out[q] - moments[0]) * moments[1];
+}
 """
 
 #: Threads per block of :func:`score`; a power of two for its reduction.
@@ -1049,3 +1176,62 @@ def fit_passes(
         ),
     )
     return out, score, refused.bool()
+
+
+#: Threads per block of :func:`prepare`, and the most pixels of its coarse and
+#: search shapes (PREPARE_THREADS and PREPARE_MAX_SMALL in the source).
+PREPARE_THREADS, PREPARE_MAX_SMALL = 256, 1024
+
+
+def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, floor):
+    """:meth:`LiveIndexer.prepare` in one launch, one block per frame: ``(search,
+    refine)`` rows, normalized, for *frames* ``(N, H, W)`` float32 whose shape the
+    refine shape divides, which divides the *coarse* (the dynamic background's)
+    and *search* shapes. *statics* is the static background at the refine shape,
+    or None; *weights* the dynamic background's Gaussian, its radius each side."""
+    import cupy
+
+    n, frame_rows, frame_cols = frames.shape
+    rows, cols = refine_shape
+    refine = torch.empty(n, rows * cols, device=frames.device, dtype=torch.float32)
+    search = torch.empty(
+        n, search_shape[0] * search_shape[1], device=frames.device, dtype=torch.float32
+    )
+    _launch(
+        "prepare",
+        (n,),
+        (PREPARE_THREADS,),
+        (
+            _cupy(frames),
+            cupy.int32(frame_rows),
+            cupy.int32(frame_cols),
+            _cupy(statics.float()) if statics is not None else cupy.uint64(0),
+            cupy.int32(rows),
+            cupy.int32(cols),
+            cupy.int32(coarse_shape[0]),
+            cupy.int32(coarse_shape[1]),
+            _cupy(weights.float()),
+            cupy.int32((len(weights) - 1) // 2),
+            cupy.int32(search_shape[0]),
+            cupy.int32(search_shape[1]),
+            cupy.float32(floor),
+            _cupy(refine),
+            _cupy(search),
+        ),
+    )
+    return search, refine
+
+
+def prepare_fits(frame_shape, refine_shape, coarse_shape, search_shape) -> bool:
+    """Whether :func:`prepare` takes these shapes: each divides the one before."""
+
+    def divides(big, small):
+        return all(s > 0 and b % s == 0 for b, s in zip(big, small, strict=True))
+
+    return (
+        divides(frame_shape, refine_shape)
+        and divides(refine_shape, coarse_shape)
+        and divides(refine_shape, search_shape)
+        and coarse_shape[0] * coarse_shape[1] <= PREPARE_MAX_SMALL
+        and search_shape[0] * search_shape[1] <= PREPARE_MAX_SMALL
+    )

@@ -51,7 +51,7 @@ from de_ebsd.index.live.common import (
     average_to,
     parabola_offset,
 )
-from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
+from de_ebsd.index.preprocess import _gaussian_kernel_1d, gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
 
@@ -302,9 +302,37 @@ class LiveIndexer:
     def prepare(self, frames) -> tuple[torch.Tensor, torch.Tensor]:
         """*frames* ``(N, H, W)`` corrected and normalized, as ``(search, refine)``
         rows ``(N, pixels)`` at the two shapes."""
+        fused = self._fused_prepare(frames)
+        if fused is not None:
+            return fused
         t = self.background.remove(self.pooled(frames))
         search = average_to(t, self.search_shape)
         return normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
+
+    def _fused_prepare(self, frames):
+        """:meth:`prepare` in one launch (:func:`~de_ebsd.index._kernels.prepare`)
+        where it can be: float32 frames on the device whose shape the refine shape
+        divides. None where it cannot, for :meth:`prepare` to do it."""
+        if not self.fused or not isinstance(frames, torch.Tensor):
+            return None
+        if frames.device.type != "cuda" or frames.dtype != torch.float32:
+            return None
+        frames = frames[None] if frames.ndim == 2 else frames
+        coarse = (self.refine_shape[0] // 4, self.refine_shape[1] // 4)
+        if not _kernels.prepare_fits(
+            tuple(frames.shape[-2:]), self.refine_shape, coarse, self.search_shape
+        ):
+            return None
+        weights, _ = _gaussian_kernel_1d(coarse[1] / 8.0, 4.0, self.device, torch.float32)
+        return _kernels.prepare(
+            frames.contiguous(),
+            self.background.static,
+            self.refine_shape,
+            coarse,
+            self.search_shape,
+            weights,
+            SINGLE_PRECISION_FLOOR,
+        )
 
     def search(self, search_rows: torch.Tensor):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
