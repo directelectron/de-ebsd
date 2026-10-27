@@ -328,13 +328,13 @@ FIT_MAX_STEP = 3e-2
 #: scan (a 301-texel master, a 128 x 128 refine) the smooth gradient stopped about
 #: 1e-3 short of the torch fit's converged strain however many passes it took,
 #: and scored lower (0.5395 against 0.5411, median over its single crystal).
-#: With the facets' slope, ten full-resolution passes came to 3.5e-4 of the
+#: With the facets' slope, ten full-resolution passes came to 3.3-3.6e-4 of the
 #: converged strain (median over the six components; the converged torch fit
 #: itself moves 2.4e-4 between difference steps of 1e-3 and 2e-3), where the
 #: torch fit's three iterations stop 2.6-3.8e-3 away. Coarse passes cost strain:
 #: averaged rows are not the coarse projection of the same strain (1e-4 on
 #: noise-free synthetic patterns at 128 x 128, 3.4e-4 at 64 x 64). The ten passes
-#: took 9.4 ms per 256 patterns on a Titan X, the torch fit 42 ms.
+#: took 9.0-9.2 ms per 256 patterns on a Titan X, the torch fit 42-43 ms.
 STRAIN_SCHEDULE: tuple[tuple[bool, float], ...] = ((False, 1.0),) * 10
 #: The largest change one of :data:`STRAIN_SCHEDULE`'s passes may make, as
 #: :data:`FIT_MAX_STEP`: with 1e-2 or 5e-3 the same passes fell further short.
