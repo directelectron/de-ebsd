@@ -1,0 +1,1 @@
+``LiveIndexer.index`` allocates nothing on the device once it has run: the indexer holds its working buffers from when it is built, and ``index`` takes an ``out=`` for its results. A 1,024-frame ``index(fit=True)`` peaked at 32 MiB rather than 260 MiB on a Titan X, with the same results to the bit.

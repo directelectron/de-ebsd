@@ -23,11 +23,51 @@ FUSED_BATCH = 1024
 
 def average_to(stack: torch.Tensor, shape) -> torch.Tensor:
     """*stack* ``(N, H, W)`` averaged down to *shape*: a whole-number bin when the
-    shapes divide, which runs several times faster than a fractional one."""
+    shapes divide, which runs several times faster than a fractional one. A stack
+    already at *shape* is returned as it is, not copied."""
+    if tuple(stack.shape[-2:]) == tuple(shape):
+        return stack
     rows, cols = stack.shape[-2] // shape[0], stack.shape[-1] // shape[1]
     if (rows * shape[0], cols * shape[1]) == tuple(stack.shape[-2:]):
         return F.avg_pool2d(stack[:, None], (rows, cols))[:, 0]
     return F.adaptive_avg_pool2d(stack[:, None], shape)[:, 0]
+
+
+def pool_into(frames: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    """*frames* ``(N, H, W)`` float32 averaged down into *out* ``(N, h, w)``, a
+    buffer the caller owns, such as a slot of a ring of frames waiting to be
+    indexed; *out* is returned.
+
+    The same operation as :func:`average_to`, so the same values to the bit, and
+    a stack pooled here can be given to :meth:`LiveIndexer.observe`,
+    :meth:`LiveIndexer.prepare` and :meth:`LiveIndexer.index` in place of the
+    frames: each then reads the small stack instead of the frames at full
+    resolution. At the refine shape a 512 x 512 frame is 16 times smaller."""
+    shape = tuple(out.shape[-2:])
+    if tuple(frames.shape[-2:]) == shape:
+        return out.copy_(frames)
+    rows, cols = frames.shape[-2] // shape[0], frames.shape[-1] // shape[1]
+    source, target = frames[:, None], out[:, None]
+    if (rows * shape[0], cols * shape[1]) == tuple(frames.shape[-2:]):
+        # the out variant of F.avg_pool2d, which the functional form does not expose
+        torch.ops.aten.avg_pool2d.out(
+            source, [rows, cols], [rows, cols], [0, 0], False, True, None, out=target
+        )
+    else:
+        torch.ops.aten.adaptive_avg_pool2d.out(source, list(shape), out=target)
+    return out
+
+
+def normalize_rows_into(rows: torch.Tensor, scratch: torch.Tensor) -> torch.Tensor:
+    """:func:`~de_ebsd.index.preprocess.normalize_rows` of *rows* ``(N, pixels)`` in
+    place, the same operations in the same order, so the same values to the bit.
+    *scratch*, at least ``2 N`` floats, holds each row's mean and length."""
+    mean = scratch[: len(rows)].view(-1, 1)
+    length = scratch[len(rows) : 2 * len(rows)].view(-1, 1)
+    torch.mean(rows, -1, keepdim=True, out=mean)
+    rows.sub_(mean)
+    torch.linalg.vector_norm(rows, dim=-1, keepdim=True, out=length)
+    return rows.div_(length.clamp_min_(SINGLE_PRECISION_FLOOR))
 
 
 def pick(frames: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:

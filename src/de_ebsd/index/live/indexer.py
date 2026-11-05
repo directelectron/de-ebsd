@@ -49,8 +49,11 @@ from de_ebsd.index.live.common import (
     FUSED_BATCH,
     STENCIL,
     average_to,
+    normalize_rows_into,
     parabola_offset,
+    pool_into,
 )
+from de_ebsd.index.live.workspace import Workspace
 from de_ebsd.index.preprocess import _gaussian_kernel_1d, gaussian_blur, normalize_rows
 
 __all__ = ["LiveIndexer"]
@@ -182,6 +185,23 @@ class LiveIndexer:
         self.sizes = [len(r) for r in rotations]
         self.set_pattern_center(detector.pattern_center)
         self.background = ScanBackground(self.refine_shape, self.device)
+        #: The dynamic background's Gaussian for the fused :meth:`prepare`.
+        self._prepare_weights, _ = _gaussian_kernel_1d(
+            (self.refine_shape[1] // 4) / 8.0, 4.0, self.device, torch.float32
+        )
+        #: The fused path's buffers (:class:`~de_ebsd.index.live.workspace.Workspace`),
+        #: for :data:`FUSED_BATCH` patterns; None off it.
+        self.workspace = None
+        if self.fused:
+            self.workspace = Workspace(
+                FUSED_BATCH,
+                search_pixels=len(self.search_directions),
+                refine_pixels=len(self.refine_directions),
+                coarse_pixels=len(self.coarse_directions),
+                entries_per_chunk=min(len(self.rotations), SEARCH_CHUNK),
+                dtype=self.dtype,
+                device=self.device,
+            )
 
     def directions_at(self, pattern_center, shape) -> torch.Tensor:
         detector = replace(
@@ -259,7 +279,9 @@ class LiveIndexer:
         return self.background.ghost
 
     def pooled(self, frames) -> torch.Tensor:
-        """*frames* on the device as float ``(N, H, W)`` averaged to the refine shape."""
+        """*frames* on the device as float ``(N, H, W)`` averaged to the refine shape:
+        *frames* themselves where they already are, such as a stack from
+        :func:`~de_ebsd.index.live.common.pool_into`."""
         t = torch.as_tensor(frames, device=self.device)
         t = t[None] if t.ndim == 2 else t
         return average_to(t.to(torch.float32), self.refine_shape)
@@ -280,8 +302,20 @@ class LiveIndexer:
             self.observe(frames)
 
     def observe(self, frames) -> None:
-        """Add *frames* to the scan's static background."""
-        self.background.observe(self.pooled(frames))
+        """Add *frames* to the scan's static background. Frames already at the refine
+        shape (:func:`~de_ebsd.index.live.common.pool_into`) are summed as they are."""
+        t = torch.as_tensor(frames, device=self.device)
+        t = t[None] if t.ndim == 2 else t
+        workspace = self.workspace
+        if (
+            workspace is not None
+            and t.dtype == torch.float32
+            and len(t) <= workspace.capacity
+            and tuple(t.shape[-2:]) != self.refine_shape
+        ):
+            # pooled into the workspace, which no index is using between calls
+            t = pool_into(t, workspace.refine_rows[: len(t)].view(len(t), *self.refine_shape))
+        self.background.observe(self.pooled(t))
 
     def add_fits(self, phase, g, center_maps=None) -> None:
         """Add the simulations of fitted orientations *g* ``(N, 3, 3)`` to the
@@ -309,10 +343,11 @@ class LiveIndexer:
         search = average_to(t, self.search_shape)
         return normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
 
-    def _fused_prepare(self, frames):
+    def _fused_prepare(self, frames, out=None):
         """:meth:`prepare` in one launch (:func:`~de_ebsd.index._kernels.prepare`)
         where it can be: float32 frames on the device whose shape the refine shape
-        divides. None where it cannot, for :meth:`prepare` to do it."""
+        divides. None where it cannot, for :meth:`prepare` to do it. *out* is the
+        ``(search, refine)`` buffers to write, where given."""
         if not self.fused or not isinstance(frames, torch.Tensor):
             return None
         if frames.device.type != "cuda" or frames.dtype != torch.float32:
@@ -323,15 +358,15 @@ class LiveIndexer:
             tuple(frames.shape[-2:]), self.refine_shape, coarse, self.search_shape
         ):
             return None
-        weights, _ = _gaussian_kernel_1d(coarse[1] / 8.0, 4.0, self.device, torch.float32)
         return _kernels.prepare(
             frames.contiguous(),
             self.background.static,
             self.refine_shape,
             coarse,
             self.search_shape,
-            weights,
+            self._prepare_weights,
             SINGLE_PRECISION_FLOOR,
+            out=out,
         )
 
     def search(self, search_rows: torch.Tensor):
@@ -447,7 +482,7 @@ class LiveIndexer:
             out.append((phase, g, strain, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
 
-    def index(self, frames, *, fit: bool = False):
+    def index(self, frames, *, fit: bool = False, out=None):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
         *entry* is the dictionary entry the search seeded the refine from (see
         :meth:`search`): anything worked out once per entry, such as a color, stands
@@ -456,18 +491,181 @@ class LiveIndexer:
         With *fit*, the refine's orientations are fitted on, rotations only
         (:meth:`refine_deformation` without the strains): the refine's steps stop
         a little short on a noisy pattern, a few degrees off for one in ten on a
-        real scan, and the fit takes them to a few tenths."""
-        out = []
+        real scan, and the fit takes them to a few tenths.
+
+        *frames* may be at any resolution, or already pooled to the refine shape
+        (:func:`~de_ebsd.index.live.common.pool_into`), which indexes the same.
+        *out*, four tensors of at least N rows (int64, ``(N, 3, 3)`` float32,
+        float32, int64), receives the results, and their first N rows are
+        returned; without it the results are new tensors. On the fused path
+        nothing else is allocated (:attr:`workspace`)."""
+        count = len(frames)
+        if out is None:
+            out = (
+                torch.empty(count, dtype=torch.int64, device=self.device),
+                torch.empty(count, 3, 3, device=self.device),
+                torch.empty(count, device=self.device),
+                torch.empty(count, dtype=torch.int64, device=self.device),
+            )
+        out = tuple(column[:count] for column in out)
         batch = FUSED_BATCH if fit and self.fused else BATCH
-        for lo in range(0, len(frames), batch):
-            search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
-            phase, g, score, entry = self.search(search_rows)
-            if self.refine_steps:
-                g, score = self.refine(refine_rows, phase, g)
-            if fit:
-                self.add_fits(phase, g)
-                g, _, score = self.refine_deformation(
-                    refine_rows, phase, g, ghost=self.ghost, strain=False
+        for lo in range(0, count, batch):
+            columns = self._index_batch(frames[lo : lo + batch], fit)
+            for target, column in zip(out, columns, strict=True):
+                target[lo : lo + len(column)].copy_(column)
+        return out
+
+    def _index_batch(self, frames, fit):
+        """:meth:`index` of one batch, in the :attr:`workspace` where there is one:
+        ``(phase, g, score, entry)``, which the next batch overwrites."""
+        workspace = self.workspace
+        if workspace is None or len(frames) > workspace.capacity or not self.refine_steps:
+            return self._index_batch_allocating(frames, fit)
+        n = len(frames)
+        search_rows, refine_rows = self._prepare_in_workspace(frames)
+        phase, g, _, entry = self._search_in_workspace(search_rows)
+        bases = workspace.bases[:n].copy_(phase).mul_(2)
+        g, score, coarse_rows = self._refine_in_workspace(refine_rows, g, bases)
+        if fit:
+            self._add_fits_in_workspace(phase, g, bases)
+            g, score = self._fit_in_workspace(refine_rows, phase, g, bases, coarse_rows)
+        return phase, g, score, entry
+
+    def _index_batch_allocating(self, frames, fit):
+        """:meth:`_index_batch` through the public steps, each returning new tensors."""
+        search_rows, refine_rows = self.prepare(frames)
+        phase, g, score, entry = self.search(search_rows)
+        if self.refine_steps:
+            g, score = self.refine(refine_rows, phase, g)
+        if fit:
+            self.add_fits(phase, g)
+            g, _, score = self.refine_deformation(
+                refine_rows, phase, g, ghost=self.ghost, strain=False
+            )
+        return phase, g, score, entry
+
+    # --- the same steps, in the workspace -----------------------------------------
+    #
+    # Each is its public step's arithmetic in the same order, writing into the
+    # workspace rather than into new tensors, so the results are the same to the bit.
+
+    def _prepare_in_workspace(self, frames):
+        n = len(frames)
+        workspace = self.workspace
+        prepared = self._fused_prepare(
+            frames, out=(workspace.search_rows[:n], workspace.refine_rows[:n])
+        )
+        return self.prepare(frames) if prepared is None else prepared
+
+    def _search_in_workspace(self, search_rows):
+        n = len(search_rows)
+        workspace = self.workspace
+        rows = search_rows
+        if workspace.typed_search_rows is not None:
+            rows = workspace.typed_search_rows[:n].copy_(search_rows)
+        score = workspace.score[:n].fill_(-math.inf)
+        entry = workspace.entry[:n].zero_()
+        chunk_score, chunk_entry = workspace.chunk_score[:n], workspace.chunk_entry[:n]
+        better = workspace.better[:n]
+        for lo in range(0, self.dictionary.shape[1], SEARCH_CHUNK):
+            chunk = self.dictionary[:, lo : lo + SEARCH_CHUNK]
+            scores = workspace.scores(n, chunk.shape[1], self.dtype)
+            scores = rows @ chunk if scores is None else torch.matmul(rows, chunk, out=scores)
+            torch.max(scores, 1, out=(chunk_score, chunk_entry))
+            # compared and kept in float32, as the search does
+            torch.gt(chunk_score, score, out=better)
+            torch.where(better, chunk_score, score, out=score)
+            torch.where(better, chunk_entry.add_(lo), entry, out=entry)
+        phase = torch.index_select(self.phase_of, 0, entry, out=workspace.phase[:n])
+        g = torch.index_select(self.rotations, 0, entry, out=workspace.seed[:n])
+        return phase, g, score, entry
+
+    def _coarse_rows_in_workspace(self, refine_rows):
+        """The refine rows averaged to the coarse shape and normalized again."""
+        n = len(refine_rows)
+        workspace = self.workspace
+        coarse = workspace.coarse_rows[:n]
+        pool_into(refine_rows.view(n, *self.refine_shape), coarse.view(n, *self.coarse_shape))
+        return normalize_rows_into(coarse, workspace.scratch)
+
+    def _refine_in_workspace(self, refine_rows, g, bases):
+        """:meth:`refine` on the fused path: ``(g, score, coarse_rows)``, the coarse
+        rows None where no level was coarse."""
+        n = len(g)
+        workspace = self.workspace
+        steps = self.refine_steps
+        coarse = [s for s in steps if s >= math.radians(COARSE_REFINE_STEP_DEG)]
+        fine = list(steps[len(coarse) :])
+        coarse_rows, score = None, None
+        if coarse:
+            coarse_rows = self._coarse_rows_in_workspace(refine_rows)
+            g, score = _kernels.refine_stepped(
+                self.texture,
+                g,
+                bases,
+                self.coarse_directions,
+                coarse_rows,
+                coarse,
+                SINGLE_PRECISION_FLOOR,
+                out=(workspace.coarse_refined[:n], workspace.score[:n]),
+            )
+        if fine:
+            g, score = _kernels.refine_stepped(
+                self.texture,
+                g,
+                bases,
+                self.refine_directions,
+                refine_rows,
+                fine,
+                SINGLE_PRECISION_FLOOR,
+                out=(workspace.refined[:n], workspace.score[:n]),
+            )
+        return g, score, coarse_rows
+
+    def _add_fits_in_workspace(self, phase, g, bases):
+        """:meth:`add_fits`, the simulations projected into the workspace."""
+        if self.background.blur:
+            return
+        workspace = self.workspace
+        simulations = workspace.simulations(len(g), len(self.refine_directions))
+        if simulations is None:
+            self.add_fits(phase, g)
+            return
+        _kernels.project(self.texture, g, bases, self.refine_directions, out=simulations)
+        self.background.add_fits_in_place(simulations, workspace.scratch)
+
+    def _fit_in_workspace(self, refine_rows, phase, g, bases, coarse_rows):
+        """:meth:`refine_deformation` without the strains: ``(g, score)``."""
+        workspace = self.workspace
+        ghost = self.background.ghost_into(workspace.ghost, workspace.scratch)
+        schedule = deformation.FIT_SCHEDULE
+        if not (deformation.ANALYTIC_JACOBIAN and schedule):
+            g, _, score = self.refine_deformation(refine_rows, phase, g, ghost=ghost, strain=False)
+            return g, score
+        low = None
+        if any(level for level, _ in schedule):
+            if coarse_rows is None:
+                coarse_rows = self._coarse_rows_in_workspace(refine_rows)
+            coarse_ghost = None
+            if ghost is not None:
+                coarse_ghost = workspace.coarse_ghost[None]
+                pool_into(
+                    ghost.view(1, *self.refine_shape), coarse_ghost.view(1, *self.coarse_shape)
                 )
-            out.append((phase, g, score, entry))
-        return tuple(torch.cat(column) for column in zip(*out, strict=True))
+                coarse_ghost = normalize_rows_into(coarse_ghost, workspace.scratch)[0]
+            low = (coarse_rows, coarse_ghost)
+        n = len(g)
+        g, score, _ = deformation._fit_passes(
+            self,
+            refine_rows,
+            phase,
+            g,
+            None,
+            ghost,
+            schedule,
+            deformation.FIT_MAX_STEP,
+            low=low,
+            bases=bases,
+            out=(workspace.fitted[:n], workspace.score[:n], workspace.refused[:n]),
+        )
+        return g, score

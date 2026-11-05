@@ -365,12 +365,28 @@ def _texture_gradients(texture: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
 
 
 def _fit_passes(
-    indexer, refine_rows, phase, g, center_maps, ghost, schedule, max_step, strain=False
+    indexer,
+    refine_rows,
+    phase,
+    g,
+    center_maps,
+    ghost,
+    schedule,
+    max_step,
+    strain=False,
+    *,
+    low=None,
+    bases=None,
+    out=None,
 ):
     """:func:`~de_ebsd.index._kernels.fit_passes` at the indexer's refine and
     coarse resolutions, the coarse rows (and ghost) averaged from the refine's.
     With *strain* the Jacobian is the bilinear master's own slope
-    (:data:`STRAIN_SCHEDULE`), without it the master's smooth gradient."""
+    (:data:`STRAIN_SCHEDULE`), without it the master's smooth gradient.
+
+    *low* is the coarse ``(rows, ghost)`` where the caller already has them,
+    *bases* the patterns' int32 channels (twice their phases), and *out* the
+    kernel's output buffers (:func:`~de_ebsd.index._kernels.fit_passes`)."""
     from de_ebsd.index import _kernels
     from de_ebsd.index.live.common import average_to
 
@@ -380,8 +396,11 @@ def _fit_passes(
         return normalize_rows(average_to(rows.view(len(rows), *shape), coarse_shape).flatten(1))
 
     full = (indexer.refine_directions, refine_rows, ghost)
-    low = full
-    if any(level for level, _ in schedule):
+    if not any(level for level, _ in schedule):
+        low = full
+    elif low is not None:
+        low = (indexer.coarse_directions, *low)
+    else:
         low = (
             indexer.coarse_directions,
             coarse(refine_rows),
@@ -390,7 +409,7 @@ def _fit_passes(
     return _kernels.fit_passes(
         indexer.texture,
         g,
-        phase * 2,
+        phase * 2 if bases is None else bases,
         center_maps,
         full,
         low,
@@ -403,6 +422,7 @@ def _fit_passes(
         gradients=None if strain else _texture_gradients(indexer.texture),
         strain=strain,
         threads=_kernels.FIT_STRAIN_THREADS if strain else _kernels.FIT_THREADS,
+        out=out,
     )
 
 
