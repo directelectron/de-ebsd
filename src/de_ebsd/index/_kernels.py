@@ -1059,6 +1059,20 @@ def _cupy(tensor: torch.Tensor):
     return cupy.from_dlpack(tensor.contiguous())
 
 
+@functools.cache
+def _device_constant(values: tuple, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    """*values* as a tensor on *device*, uploaded once: a schedule's levels are the
+    same every call, and copying a Python list to the device waits for it."""
+    return torch.tensor(values, dtype=dtype, device=device)
+
+
+def _output(out, index, shape, device, dtype):
+    """``out[index]`` when the caller gave buffers, else a new tensor of *shape*."""
+    if out is not None:
+        return out[index]
+    return torch.empty(shape, device=device, dtype=dtype)
+
+
 def _launch(name, grid, block, arguments, shared_mem=0):
     import cupy
 
@@ -1069,15 +1083,21 @@ def _launch(name, grid, block, arguments, shared_mem=0):
 
 
 def project(
-    texture: torch.Tensor, rotations: torch.Tensor, bases: torch.Tensor, directions: torch.Tensor
+    texture: torch.Tensor,
+    rotations: torch.Tensor,
+    bases: torch.Tensor,
+    directions: torch.Tensor,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Patterns ``(M, pixels)``: *texture* ``(1, channels, n, n)`` sampled at
     *directions* ``(pixels, 3)`` turned by *rotations* ``(M, 3, 3)``, each from the
-    hemisphere pair starting at its channel ``bases[m]``."""
+    hemisphere pair starting at its channel ``bases[m]``. Written into *out*, a
+    contiguous float32 ``(M, pixels)``, when given."""
     import cupy
 
     m, pixels = len(rotations), len(directions)
-    out = torch.empty(m, pixels, device=rotations.device, dtype=torch.float32)
+    if out is None:
+        out = torch.empty(m, pixels, device=rotations.device, dtype=torch.float32)
     count = m * pixels
     threads = 256
     texture = texture.contiguous()
@@ -1135,19 +1155,20 @@ def score(
     return out
 
 
-def refine_stepped(texture, g, bases, directions, rows, steps, floor):
+def refine_stepped(texture, g, bases, directions, rows, steps, floor, out=None):
     """:meth:`LiveIndexer.refine` in one launch, one block per pattern: ``(g,
     score)`` for seeds *g* ``(N, 3, 3)``, *rows* ``(N, pixels)`` zero-mean and
-    unit-norm, and *steps* (radians), at most :data:`MAX_LEVELS`."""
+    unit-norm, and *steps* (radians), at most :data:`MAX_LEVELS`. *out*, when
+    given, is the contiguous ``(g, score)`` buffers to write, not *g* itself."""
     import cupy
 
     n = len(g)
     if len(steps) > MAX_LEVELS:
         raise ValueError(f"at most {MAX_LEVELS} refine levels")
-    out = torch.empty(n, 3, 3, device=g.device, dtype=torch.float32)
-    score = torch.empty(n, device=g.device, dtype=torch.float32)
+    score = _output(out, 1, (n,), g.device, torch.float32)
+    out = _output(out, 0, (n, 3, 3), g.device, torch.float32)
     texture = texture.contiguous()
-    steps = torch.as_tensor(steps, dtype=torch.float32, device=g.device)
+    steps = _device_constant(tuple(float(s) for s in steps), torch.float32, g.device)
     _launch(
         "refine_stepped",
         (n,),
@@ -1204,7 +1225,7 @@ def fit_orientations(
     out = torch.empty(n, 3, 3, device=g.device, dtype=torch.float32)
     score = torch.empty(n, device=g.device, dtype=torch.float32)
     texture = texture.contiguous()
-    multiples = torch.as_tensor(multiples, dtype=torch.float32, device=g.device)
+    multiples = _device_constant(tuple(float(m) for m in multiples), torch.float32, g.device)
     refused = torch.empty(n, device=g.device, dtype=torch.int32)
     _launch(
         "fit_orientations",
@@ -1256,6 +1277,7 @@ def fit_passes(
     gradients,
     strain=False,
     threads=FIT_THREADS,
+    out=None,
 ):
     """The orientation fit as a *schedule* of ``(coarse, alpha)`` passes, in one
     launch, one block per pattern: ``(g, score, refused)``. *full* and *coarse*
@@ -1267,7 +1289,11 @@ def fit_passes(
     With *strain*, the five deviatoric strains are fitted with the rotations, and
     the first of the result is ``(N, 8)``: the best-scored point's numbers on
     :func:`~de_ebsd.index.live.deformation.trace_free_basis`, zero where refused.
-    *threads* per block is a multiple of 32, at most 32 * MAX_FIT_WARPS."""
+    *threads* per block is a multiple of 32, at most 32 * MAX_FIT_WARPS.
+
+    *out*, when given, is the contiguous ``(g, score, refused)`` buffers to write,
+    *refused* int32; it then comes back as that buffer, nonzero where refused,
+    rather than as a new boolean tensor."""
     import cupy
 
     if not schedule or schedule[0][0]:
@@ -1275,13 +1301,13 @@ def fit_passes(
     if threads % 32 or not 0 < threads <= 32 * MAX_FIT_WARPS:
         raise ValueError(f"threads must be a multiple of 32, at most {32 * MAX_FIT_WARPS}")
     n = len(g)
-    shape = (n, 8) if strain else (n, 3, 3)
-    out = torch.empty(shape, device=g.device, dtype=torch.float32)
-    score = torch.empty(n, device=g.device, dtype=torch.float32)
-    refused = torch.empty(n, device=g.device, dtype=torch.int32)
+    given = out is not None
+    score = _output(out, 1, (n,), g.device, torch.float32)
+    refused = _output(out, 2, (n,), g.device, torch.int32)
+    out = _output(out, 0, (n, 8) if strain else (n, 3, 3), g.device, torch.float32)
     texture = texture.contiguous()
-    lows = torch.tensor([int(c) for c, _ in schedule], dtype=torch.int32, device=g.device)
-    alphas = torch.tensor([float(a) for _, a in schedule], dtype=torch.float32, device=g.device)
+    lows = _device_constant(tuple(int(c) for c, _ in schedule), torch.int32, g.device)
+    alphas = _device_constant(tuple(float(a) for _, a in schedule), torch.float32, g.device)
 
     def optional(tensor):
         return _cupy(tensor.float()) if tensor is not None else cupy.uint64(0)
@@ -1320,7 +1346,7 @@ def fit_passes(
             _cupy(refused),
         ),
     )
-    return out, score, refused.bool()
+    return out, score, refused if given else refused.bool()
 
 
 #: Threads per block of :func:`prepare`, and the most pixels of its coarse and
@@ -1328,20 +1354,20 @@ def fit_passes(
 PREPARE_THREADS, PREPARE_MAX_SMALL = 256, 1024
 
 
-def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, floor):
+def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, floor, out=None):
     """:meth:`LiveIndexer.prepare` in one launch, one block per frame: ``(search,
     refine)`` rows, normalized, for *frames* ``(N, H, W)`` float32 whose shape the
     refine shape divides, which divides the *coarse* (the dynamic background's)
     and *search* shapes. *statics* is the static background at the refine shape,
-    or None; *weights* the dynamic background's Gaussian, its radius each side."""
+    or None; *weights* the dynamic background's Gaussian, its radius each side.
+    *out*, when given, is the contiguous ``(search, refine)`` buffers to write."""
     import cupy
 
     n, frame_rows, frame_cols = frames.shape
     rows, cols = refine_shape
-    refine = torch.empty(n, rows * cols, device=frames.device, dtype=torch.float32)
-    search = torch.empty(
-        n, search_shape[0] * search_shape[1], device=frames.device, dtype=torch.float32
-    )
+    search_pixels = search_shape[0] * search_shape[1]
+    refine = _output(out, 1, (n, rows * cols), frames.device, torch.float32)
+    search = _output(out, 0, (n, search_pixels), frames.device, torch.float32)
     _launch(
         "prepare",
         (n,),
