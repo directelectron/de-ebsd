@@ -23,7 +23,7 @@ from de_ebsd.index.io import phase_from_crystal
 from de_ebsd.index.live import LiveIndexer
 from de_ebsd.index.live import indexer as live_indexer
 from de_ebsd.index.live.background import MIN_FRAMES_FOR_STATIC
-from de_ebsd.index.live.common import pick
+from de_ebsd.index.live.common import pick, pool_into
 from de_ebsd.index.live.deformation import DEFORMATION_LINE_SEARCH, DEFORMATION_MAX_STEP
 from de_ebsd.index.live.indexer import texture_of
 from de_ebsd.index.preprocess import normalize_rows
@@ -504,6 +504,109 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     plain = (fit(iterations=2, line_search=()) - converged).abs().amax((1, 2))
     searched = (fit(iterations=2) - converged).abs().amax((1, 2))
     assert searched.median() < plain.median() / 3, (searched, plain)
+
+
+def _camera_frames(master, detector, shape=(256, 256), device="cuda"):
+    """The known orientations' patterns as a camera shows them: at *shape*, under a
+    backscatter falloff, with counting noise."""
+    camera = replace(detector, shape=shape)
+    patterns = master.to(device).project(camera, _known(), rescale=True)
+    y, x = torch.meshgrid(
+        torch.linspace(-1, 1, shape[0], device=device),
+        torch.linspace(-1, 1, shape[1], device=device),
+        indexing="ij",
+    )
+    backscatter = torch.exp(-(x**2 + (y - 0.3) ** 2) / 0.8)
+    generator = torch.Generator(device=device).manual_seed(0)
+    frames = 400 * backscatter * (0.6 + 0.4 * patterns)
+    return torch.poisson(frames.repeat(8, 1, 1), generator=generator)
+
+
+def test_frames_at_the_refine_shape_are_pooled_as_they_are(master, point_group, detector):
+    """Frames already at the refine shape are not copied, and :func:`pool_into`
+    averages into a buffer exactly as :meth:`LiveIndexer.pooled` does."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    frames = _camera_frames(master, detector, device="cpu")
+    pooled = torch.empty(len(frames), *indexer.refine_shape)
+    assert pool_into(frames, pooled) is pooled
+    assert torch.equal(pooled, indexer.pooled(frames))
+    assert indexer.pooled(pooled) is pooled
+
+
+def test_index_writes_into_the_buffers_it_is_given(master, point_group, detector):
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    patterns = master.project(detector, _known())
+    expected = indexer.index(patterns)
+    out = tuple(torch.full((len(patterns) + 3, *c.shape[1:]), -1, dtype=c.dtype) for c in expected)
+    found = indexer.index(patterns, out=out)
+    for column, target, want in zip(found, out, expected, strict=True):
+        assert column.data_ptr() == target.data_ptr()
+        assert torch.equal(column, want)
+
+
+def _index_twice(indexer, frames, **options):
+    """``index(frames, fit=True)`` from the same ghost twice: in the workspace,
+    then through the allocating steps."""
+    fit_sum = indexer.background._fit_sum.clone()
+    fit_count = indexer.background._fit_count
+    in_workspace = tuple(c.clone() for c in indexer.index(frames, fit=True, **options))
+    indexer.background._fit_sum.copy_(fit_sum)
+    indexer.background._fit_count = fit_count
+    workspace, indexer.workspace = indexer.workspace, None
+    allocating = indexer.index(frames, fit=True)
+    indexer.workspace = workspace
+    return in_workspace, allocating
+
+
+@fused
+def test_the_workspace_indexes_as_the_allocating_steps(master, point_group, detector):
+    """Indexing in the workspace is the same arithmetic as the public steps, so the
+    same phases, orientations, scores and entries to the bit."""
+    indexer = _small_indexer(master, point_group, detector, device="cuda")
+    assert indexer.workspace is not None
+    frames = _camera_frames(master, detector)
+    indexer.restart_static(frames)
+    indexer.index(frames, fit=True)  # a ghost to fit with
+    for found, expected in zip(*_index_twice(indexer, frames), strict=True):
+        assert torch.equal(found, expected)
+
+
+@fused
+def test_pooled_frames_index_as_the_frames(master, point_group, detector):
+    """Frames pooled once (:func:`pool_into`) and given to :meth:`observe` and
+    :meth:`index` in place of the frames give the same static background and the
+    same results to the bit: the refine shape is a whole-number bin of the
+    frames, which averages the same however it is done."""
+    frames = _camera_frames(master, detector)
+    results = []
+    for given in ("frames", "pooled"):
+        indexer = _small_indexer(master, point_group, detector, device="cuda")
+        if given == "pooled":
+            pooled = torch.empty(len(frames), *indexer.refine_shape, device="cuda")
+            frames = pool_into(frames, pooled)
+        indexer.restart_static(frames)
+        results.append((indexer.static.clone(), *indexer.index(frames, fit=True)))
+    for from_frames, from_pooled in zip(*results, strict=True):
+        assert torch.equal(from_frames, from_pooled)
+
+
+@fused
+def test_index_allocates_nothing_once_it_has_run(master, point_group, detector):
+    """With buffers given for its results, a second :meth:`index` allocates nothing
+    of its own on the device: every step writes into the workspace. Only the two
+    column sums (the static background's and the ghost's) may ask torch for a
+    reduction's staging buffer, kept so that both stay exact."""
+    indexer = _small_indexer(master, point_group, detector, device="cuda")
+    frames = _camera_frames(master, detector)
+    indexer.restart_static(frames)
+    first = indexer.index(frames, fit=True)
+    out = tuple(torch.empty_like(column) for column in first)
+    indexer.index(frames, fit=True, out=out)
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_stats()["allocation.all.allocated"]
+    indexer.index(frames, fit=True, out=out)
+    torch.cuda.synchronize()
+    assert torch.cuda.memory_stats()["allocation.all.allocated"] - before <= 2
 
 
 def test_uint16_frames_are_picked_as_they_are():

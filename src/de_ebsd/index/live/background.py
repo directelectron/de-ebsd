@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
-from de_ebsd.index.live.common import average_to
+from de_ebsd.index.live.common import average_to, normalize_rows_into
 from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
 
 #: Frames the static background is averaged over before it is used: fewer still
@@ -29,6 +29,10 @@ class ScanBackground:
         self.blur = None
         self._static_sum = torch.zeros(refine_shape, device=device)
         self._static_count = 0
+        # what one observe adds, and the mean the static background is, written in
+        # place: a scan observes every buffer of frames it indexes
+        self._observed = torch.empty(refine_shape, device=device)
+        self._static_mean = torch.empty(refine_shape, device=device)
         self._fit_sum = torch.zeros(refine_shape[0] * refine_shape[1], device=device)
         self._fit_count = 0
 
@@ -46,10 +50,10 @@ class ScanBackground:
 
     def observe(self, pooled: torch.Tensor) -> None:
         """Add *pooled* frames ``(N, H, W)``, at the refine shape, to the static background."""
-        self._static_sum += pooled.sum(0)
+        self._static_sum += torch.sum(pooled, 0, out=self._observed)
         self._static_count += len(pooled)
         if self._static_count >= MIN_FRAMES_FOR_STATIC:
-            static = self._static_sum / self._static_count
+            static = torch.div(self._static_sum, self._static_count, out=self._static_mean)
             if self.blur:
                 static = gaussian_blur(static[None], self.blur * static.shape[-1], 4.0)[0]
             self.static = static
@@ -86,6 +90,23 @@ class ScanBackground:
             return
         self._fit_sum += normalize_rows(simulations).sum(0)
         self._fit_count += len(simulations)
+
+    def add_fits_in_place(self, simulations: torch.Tensor, scratch: torch.Tensor) -> None:
+        """:meth:`add_fits`, normalizing *simulations* where they are and summing
+        them into *scratch*, at least ``max(2 N, pixels)`` floats: the same
+        operations, so the same ghost to the bit."""
+        if self.blur:
+            return
+        normalize_rows_into(simulations, scratch)
+        self._fit_sum += torch.sum(simulations, 0, out=scratch[: simulations.shape[1]])
+        self._fit_count += len(simulations)
+
+    def ghost_into(self, out: torch.Tensor, scratch: torch.Tensor) -> torch.Tensor | None:
+        """:attr:`ghost` written into *out* ``(pixels,)``, *scratch* at least two
+        floats, or None where there is none."""
+        if self.static is None or not self._fit_count:
+            return None
+        return normalize_rows_into(out.copy_(self._fit_sum)[None], scratch)[0]
 
     @property
     def ghost(self) -> torch.Tensor | None:
