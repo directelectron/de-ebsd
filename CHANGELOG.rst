@@ -9,6 +9,27 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.3.0 (2026-11-05)
+==================
+
+New Features
+------------
+
+- ``de_ebsd.index.live.common.pool_into`` averages frames into a buffer the caller owns, at the refine shape; ``observe``, ``prepare`` and ``index`` take such a stack in place of the frames, so each frame is read at full resolution once. (`#21 <https://github.com/directelectron/de-ebsd/pull/21>`_)
+
+
+Bug Fixes
+---------
+
+- A pattern the strain fit could not move kept its seed orientation instead of stopping its whole batch with a singular-matrix error. (`#18 <https://github.com/directelectron/de-ebsd/pull/18>`_)
+
+
+Performance
+-----------
+
+- ``LiveIndexer.index`` allocates nothing on the device once it has run: the indexer holds its working buffers from when it is built, and ``index`` takes an ``out=`` for its results. A 1,024-frame ``index(fit=True)`` peaked at 32 MiB rather than 260 MiB on a Titan X, with the same results to the bit. (`#21 <https://github.com/directelectron/de-ebsd/pull/21>`_)
+
+
 0.2.1 (2026-10-26)
 ==================
 

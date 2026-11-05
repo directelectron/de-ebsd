@@ -1,1 +1,0 @@
-``de_ebsd.index.live.common.pool_into`` averages frames into a buffer the caller owns, at the refine shape; ``observe``, ``prepare`` and ``index`` take such a stack in place of the frames, so each frame is read at full resolution once.
