@@ -25,6 +25,7 @@ from de_ebsd.core.constants import electron_wavelength_nm
 from de_ebsd.core.rotation import matrix_to_quaternion
 
 __all__ = [
+    "DetectorSpots",
     "KinematicPattern",
     "KinematicPatternModel",
     "orientation_from_zone_axis",
@@ -53,6 +54,26 @@ class KinematicPattern:
     spot_hkl: np.ndarray
     intensities: np.ndarray
     direct_beam: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float64))
+    excitation_errors: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=np.float64), repr=False
+    )
+
+
+@dataclass(frozen=True)
+class DetectorSpots:
+    """A kinematic pattern's spots on a detector, from
+    :meth:`KinematicPatternModel.spots_on`.
+
+    ``pixels`` are fractional ``(row, col)`` with pixel centers on integers, of the
+    spots on the screen, ``hkl`` their Miller indices and ``intensities`` relative
+    to the brightest of them. ``direct_beam`` is the direct beam's ``(row, col)``,
+    kept apart as :class:`KinematicPattern` keeps it.
+    """
+
+    pixels: np.ndarray
+    hkl: np.ndarray
+    intensities: np.ndarray
+    direct_beam: np.ndarray
     excitation_errors: np.ndarray = field(
         default_factory=lambda: np.empty(0, dtype=np.float64), repr=False
     )
@@ -412,4 +433,51 @@ class KinematicPatternModel:
             spot_hkl=spot_hkl,
             intensities=np.asarray(intensities, dtype=np.float64),
             excitation_errors=np.asarray(spot_excitation, dtype=np.float64),
+        )
+
+    def spots_on(
+        self, orientation: Any, detector: Any, excitation_width: float = 0.1
+    ) -> DetectorSpots:
+        """The spots of :meth:`project` where they land on *detector*.
+
+        Parameters
+        ----------
+        orientation
+            As in :meth:`project`: sample-frame vectors into the crystal frame.
+        detector
+            A :class:`~de_ebsd.sim.detector.TEMDetector`, whose stage tilts turn the
+            sample relative to the beam (``detector.detector_to_sample()``), and whose
+            ``gnomonic_bounds`` and ``pixels`` place a spot.
+        excitation_width
+            As in :meth:`project`, in nm :sup:`-1`: a spot further than this from the
+            Ewald sphere is not drawn, and one at it is half as bright. The default
+            (0.1) is a sample some 10 nm thick; at 200 keV a cubic [001] zone then
+            reaches about 9 nm :sup:`-1` (Ag: the {200} and {220} spots, not {400}).
+
+        Returns
+        -------
+        DetectorSpots
+        """
+        rotation = _as_rotation_matrix(orientation) @ np.asarray(
+            detector.detector_to_sample(), dtype=np.float64
+        )
+        bounds = np.asarray(detector.gnomonic_bounds, dtype=np.float64)
+        semiangle = float(np.rad2deg(np.arctan(np.abs(bounds).max()))) * (1.0 + 1e-9)
+        pattern = self.project(rotation, semiangle, excitation_width)
+        x_min, x_max, y_min, y_max = bounds
+        on = (
+            (pattern.spots[:, 0] >= x_min)
+            & (pattern.spots[:, 0] <= x_max)
+            & (pattern.spots[:, 1] >= y_min)
+            & (pattern.spots[:, 1] <= y_max)
+        )
+        intensities = pattern.intensities[on]
+        if len(intensities) and intensities.max() > 0.0:
+            intensities = intensities / intensities.max()
+        return DetectorSpots(
+            pixels=detector.pixels(pattern.spots[on]).reshape(-1, 2),
+            hkl=pattern.spot_hkl[on],
+            intensities=intensities,
+            direct_beam=detector.pixels(np.zeros(2)),
+            excitation_errors=pattern.excitation_errors[on],
         )
