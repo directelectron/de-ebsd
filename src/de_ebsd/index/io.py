@@ -1,4 +1,5 @@
-"""Bridges to orix and kikuchipy: phases, crystal maps, EMsoft master patterns.
+"""Bridges to orix and kikuchipy: phases, crystal maps and EMsoft master patterns, and
+the maps read off an indexed scan.
 
 Every orix ``Phase`` made here has its lattice in Angstrom, orix's and diffsims'
 unit, whatever the source's: a :class:`~de_ebsd.crystal.Crystal` is in nm.
@@ -150,24 +151,28 @@ def _crystal_name(crystal) -> str:
     return "".join(elements) if elements else f"sg{int(crystal.space_group)}"
 
 
-def to_crystal_map(rotations, quality, shape, phase, step=1.0):
+def to_crystal_map(rotations, quality=None, shape=None, phase=None, step=1.0):
     """Assemble indexed orientations + a quality metric into an orix ``CrystalMap``.
 
     Parameters
     ----------
-    rotations : orix.quaternion.Rotation
+    rotations : orix.quaternion.Rotation or array
         A **flat** orix ``Rotation`` of length ``rows * cols`` in **row-major**
         scan order (point ``(r, c)`` is at flat index ``r * cols + c``), e.g. the
-        concatenated output of :meth:`SphericalIndexer.index` over the scan.
+        concatenated output of :meth:`SphericalIndexer.index` over the scan; or
+        Bunge Euler angles in radians, ``(rows, cols, 3)`` or row-major
+        ``(rows * cols, 3)``.
     quality
         A length-``rows * cols`` real array or torch tensor of the per-point peak
-        score, stored under ``prop["quality"]`` as a plain numpy array.
+        score, stored under ``prop["quality"]`` as a plain numpy array; ``None``
+        stores none.
     shape : tuple of int
-        ``(rows, cols)`` of the scan.
+        ``(rows, cols)`` of the scan; taken from ``(rows, cols, 3)`` Euler angles
+        when ``None``.
     phase
         An :class:`orix.crystal_map.Phase`, **or** a de_ebsd
         :class:`~de_ebsd.sim.Crystal` (converted via :func:`phase_from_crystal`).
-        This carries the crystal symmetry of the returned map.
+        This carries the crystal symmetry of the returned map. Required.
     step : float, optional
         Scan step size (same value for both axes). Default ``1.0``.
 
@@ -185,7 +190,17 @@ def to_crystal_map(rotations, quality, shape, phase, step=1.0):
     (a phase list plus a per-point phase assignment) are a future extension.
     """
     from orix.crystal_map import CrystalMap, PhaseList, create_coordinate_arrays
+    from orix.quaternion import Rotation
 
+    if not isinstance(rotations, Rotation):
+        euler = np.asarray(rotations, dtype=np.float64)
+        if shape is None and euler.ndim == 3:
+            shape = euler.shape[:2]
+        rotations = Rotation.from_euler(euler.reshape(-1, 3))
+    if shape is None:
+        raise ValueError("shape=(rows, cols) is required unless Euler angles are (rows, cols, 3)")
+    if phase is None:
+        raise ValueError("phase is required: it gives the map its crystal symmetry")
     rows, cols = int(shape[0]), int(shape[1])
     n = rows * cols
     if rotations.size != n:
@@ -194,12 +209,15 @@ def to_crystal_map(rotations, quality, shape, phase, step=1.0):
             f"shape {(rows, cols)}"
         )
 
-    quality_np = _to_numpy(quality).reshape(-1)
-    if quality_np.size != n:
-        raise ValueError(
-            f"quality has length {quality_np.size}, expected rows*cols = {n} for "
-            f"shape {(rows, cols)}"
-        )
+    prop = {}
+    if quality is not None:
+        quality_np = _to_numpy(quality).reshape(-1)
+        if quality_np.size != n:
+            raise ValueError(
+                f"quality has length {quality_np.size}, expected rows*cols = {n} for "
+                f"shape {(rows, cols)}"
+            )
+        prop["quality"] = quality_np
 
     if not _is_orix_phase(phase):
         phase = phase_from_crystal(phase)  # accept a de_ebsd Crystal
@@ -215,9 +233,102 @@ def to_crystal_map(rotations, quality, shape, phase, step=1.0):
         x=coords["x"],
         y=coords["y"],
         phase_list=PhaseList(phase),
-        prop={"quality": quality_np},
+        prop=prop,
         scan_unit="um",
     )
+
+
+def orientation_similarity_map(indices, shape) -> np.ndarray:
+    """How much each point's ranked match list agrees with its four neighbors'.
+
+    A score map shows how well a pattern matched *something*, and a confidently
+    wrong match scores as high as a right one; agreement with the neighborhood is
+    what exposes it. Each point's value is the mean, over its neighbors, of the
+    fraction of its *k* best dictionary entries that are among the neighbor's.
+
+    Parameters
+    ----------
+    indices
+        ``(rows * cols, k)`` dictionary indices, best first, in row-major scan order:
+        :meth:`DictionaryIndexer.match <de_ebsd.index.dictionary.DictionaryIndexer.match>`
+        with ``keep=k``. With ``k = 1`` it says only whether the best matches agree.
+    shape
+        ``(rows, cols)`` of the scan.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(rows, cols)`` in ``[0, 1]``.
+    """
+    idx = _to_numpy(indices)
+    if idx.ndim != 2:
+        raise ValueError(f"indices must be (rows * cols, k), got shape {idx.shape}")
+    if shape is None:
+        raise ValueError("shape=(rows, cols) is required to find the neighbors")
+    rows, cols = int(shape[0]), int(shape[1])
+    n, k = idx.shape
+    if rows * cols != n:
+        raise ValueError(f"shape {(rows, cols)} does not match {n} points")
+    grid = idx.reshape(rows, cols, k)
+    total = np.zeros((rows, cols))
+    count = np.zeros((rows, cols))
+    for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        here = (slice(max(0, dr), rows + min(0, dr)), slice(max(0, dc), cols + min(0, dc)))
+        there = (slice(max(0, -dr), rows + min(0, -dr)), slice(max(0, -dc), cols + min(0, -dc)))
+        shared = (grid[here][..., :, None] == grid[there][..., None, :]).any(-1)
+        total[here] += shared.sum(-1) / float(k)
+        count[here] += 1.0
+    return total / np.maximum(count, 1.0)
+
+
+def merge_phases(orientations, scores, shape=None):
+    """Choose each point's phase from per-phase indexing runs: the best score wins.
+
+    Parameters
+    ----------
+    orientations
+        One per phase, in the order of *scores*: orix ``Rotation`` objects, or arrays
+        whose leading axes are the scan (Euler angles ``(..., 3)``, quaternions
+        ``(..., 4)``), all covering the same points.
+    scores
+        One per phase: the best match score at each point.
+    shape
+        ``(rows, cols)`` to shape the results to; ``None`` leaves them flat.
+
+    Returns
+    -------
+    orientations
+        The winning phase's orientation at each point: a ``Rotation`` when given
+        ``Rotation`` objects, else an array.
+    phase_id : numpy.ndarray
+        The index of the winning phase at each point.
+    score : numpy.ndarray
+        The winning score at each point.
+    """
+    from orix.quaternion import Rotation
+
+    as_rotations = all(isinstance(o, Rotation) for o in orientations)
+    values = [np.asarray(o.data if as_rotations else o, dtype=np.float64) for o in orientations]
+    width = 4 if as_rotations else values[0].shape[-1]
+    values = [v.reshape(-1, width) for v in values]
+    raw_scores = [_to_numpy(s).astype(np.float64).reshape(-1) for s in scores]
+    if len(values) != len(raw_scores):
+        raise ValueError(f"{len(values)} phase maps but {len(raw_scores)} score arrays")
+    # checked before stacking, whose own error does not say which phase disagreed
+    sizes = {len(v) for v in values} | {s.size for s in raw_scores}
+    if len(sizes) != 1:
+        raise ValueError(f"every phase map must cover the same positions, got {sorted(sizes)}")
+    score = np.stack(raw_scores)  # (n_phase, P)
+    phase_id = score.argmax(0)
+    points = np.arange(score.shape[1])
+    best = np.stack(values)[phase_id, points]
+    score = score[phase_id, points]
+    if shape is not None:
+        shape = (int(shape[0]), int(shape[1]))
+        best = best.reshape(shape + (width,))
+        phase_id = phase_id.reshape(shape)
+        score = score.reshape(shape)
+    return (Rotation(best) if as_rotations else best), phase_id, score
 
 
 def _is_orix_phase(obj) -> bool:

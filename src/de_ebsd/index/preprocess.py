@@ -1,7 +1,8 @@
-"""Background removal for experimental patterns.
+"""Background removal for experimental patterns, and a pattern-quality map.
 
 Static (mean over the scan) and dynamic (Gaussian-blurred per pattern)
-background correction, batched on the GPU.
+background correction, batched on the GPU, and the average dot product map of a
+scan's neighbors.
 """
 
 from __future__ import annotations
@@ -10,8 +11,10 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.constants import DIVISION_FLOOR, SINGLE_PRECISION_FLOOR
+from de_ebsd.core.device import holds_lock
 
 __all__ = [
+    "average_dot_product_map",
     "remove_static_background",
     "remove_dynamic_background",
     "remove_background",
@@ -193,3 +196,41 @@ def remove_background(
             out, sigma=sigma, operation=operation, truncate=truncate, device=device, dtype=dtype
         )
     return out
+
+
+@holds_lock
+def average_dot_product_map(patterns, device=None, dtype=torch.float32, lock=None):
+    """The mean normalized dot product of each pattern with its four neighbors.
+
+    A pattern-quality map: high inside a grain, where neighbors look alike, and low
+    at boundaries and where patterns are poor. Computed over the whole scan at once.
+
+    Parameters
+    ----------
+    patterns
+        A scan ``(rows, cols, H, W)``, numpy or torch.
+    device, dtype
+        As in :func:`remove_static_background`.
+    lock
+        Held around the device work; see :func:`~de_ebsd.core.device.resolve_lock`.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(rows, cols)``, each entry in ``[-1, 1]``.
+    """
+    if device is None:
+        device = torch.as_tensor(patterns).device if torch.is_tensor(patterns) else "cpu"
+    x = torch.as_tensor(patterns, device=device, dtype=dtype)
+    if x.ndim != 4:
+        raise ValueError(f"patterns must be a scan (rows, cols, H, W), got shape {tuple(x.shape)}")
+    rows, cols = x.shape[:2]
+    x = normalize_rows(x.reshape(rows, cols, -1))
+    total = torch.zeros((rows, cols), device=x.device, dtype=dtype)
+    count = torch.zeros((rows, cols), device=x.device, dtype=dtype)
+    for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        here = (slice(max(0, dr), rows + min(0, dr)), slice(max(0, dc), cols + min(0, dc)))
+        there = (slice(max(0, -dr), rows + min(0, -dr)), slice(max(0, -dc), cols + min(0, -dc)))
+        total[here] += (x[here] * x[there]).sum(-1)
+        count[here] += 1.0
+    return total / count.clamp_min(1.0)
