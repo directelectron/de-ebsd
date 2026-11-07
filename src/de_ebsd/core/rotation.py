@@ -5,6 +5,10 @@ Quaternions are (a, b, c, d) with the scalar part first (the order of
 via ``torch.as_tensor(rotation.data)``. The matrix construction reproduces
 kikuchipy's ``rotate_vector`` exactly , so
 projections agree with kikuchipy to numerical precision.
+
+Bunge Euler angles ``(phi1, Phi, phi2)`` are ZXZ, in radians, and their matrices are
+orix's ``Rotation.from_euler(euler).to_matrix()``: they take a sample-frame
+direction to the crystal frame, ``v_crystal = g @ v_sample``.
 """
 
 from __future__ import annotations
@@ -18,7 +22,11 @@ from de_ebsd.core.constants import DIVISION_FLOOR
 
 __all__ = [
     "axis_angle_matrix",
+    "euler_to_matrix",
+    "euler_to_matrix_torch",
+    "matrix_to_euler",
     "matrix_to_quaternion",
+    "misorientation_deg",
     "quaternion_to_matrix",
     "rotate_vectors",
     "rotation_vector_to_matrix",
@@ -137,3 +145,78 @@ def matrix_to_quaternion(matrix: np.ndarray) -> np.ndarray:
             )
     q = q / np.linalg.norm(q)
     return q if q[0] >= 0 else -q
+
+
+def euler_to_matrix(euler) -> np.ndarray:
+    """Bunge Euler angles ``(..., 3)`` in radians as matrices ``(..., 3, 3)``.
+
+    Equal to orix's ``Rotation.from_euler(euler).to_matrix()`` without building the
+    quaternions: sample to crystal, ``v_crystal = g @ v_sample``.
+    """
+    euler = np.asarray(euler, dtype=np.float64)
+    phi1, Phi, phi2 = euler[..., 0], euler[..., 1], euler[..., 2]
+    c1, s1 = np.cos(phi1), np.sin(phi1)
+    c, s = np.cos(Phi), np.sin(Phi)
+    c2, s2 = np.cos(phi2), np.sin(phi2)
+    rows = (
+        (c1 * c2 - s1 * s2 * c, s1 * c2 + c1 * s2 * c, s2 * s),
+        (-c1 * s2 - s1 * c2 * c, -s1 * s2 + c1 * c2 * c, c2 * s),
+        (s1 * s, -c1 * s, c),
+    )
+    return np.stack([np.stack(row, axis=-1) for row in rows], axis=-2)
+
+
+def euler_to_matrix_torch(euler: torch.Tensor) -> torch.Tensor:
+    """:func:`euler_to_matrix` in torch, differentiable: ``(..., 3)`` to ``(..., 3, 3)``.
+
+    Built by stacking rather than by writing into an empty tensor: an in-place write
+    into a tensor that carries gradients is the classic way to lose them.
+    """
+    phi1, Phi, phi2 = euler.unbind(-1)
+    c1, s1 = torch.cos(phi1), torch.sin(phi1)
+    c, s = torch.cos(Phi), torch.sin(Phi)
+    c2, s2 = torch.cos(phi2), torch.sin(phi2)
+    row0 = torch.stack([c1 * c2 - s1 * s2 * c, s1 * c2 + c1 * s2 * c, s2 * s], dim=-1)
+    row1 = torch.stack([-c1 * s2 - s1 * c2 * c, -s1 * s2 + c1 * c2 * c, c2 * s], dim=-1)
+    row2 = torch.stack([s1 * s, -c1 * s, c], dim=-1)
+    return torch.stack([row0, row1, row2], dim=-2)
+
+
+def matrix_to_euler(matrix) -> np.ndarray:
+    """Bunge Euler angles ``(..., 3)`` in radians of matrices ``(..., 3, 3)``.
+
+    The inverse of :func:`euler_to_matrix`, with ``phi1`` and ``phi2`` in ``[0, 2 pi)``
+    and ``Phi`` in ``[0, pi]``. At ``Phi = 0`` only ``phi1 + phi2`` is defined (at
+    ``Phi = pi`` only ``phi1 - phi2``), and all of it is given to ``phi1``.
+    """
+    m = np.asarray(matrix, dtype=np.float64)
+    Phi = np.arccos(np.clip(m[..., 2, 2], -1.0, 1.0))
+    general = np.abs(np.sin(Phi)) > 1e-8
+    phi1 = np.where(
+        general,
+        np.arctan2(m[..., 2, 0], -m[..., 2, 1]),
+        np.arctan2(m[..., 0, 1], m[..., 0, 0]),
+    )
+    phi2 = np.where(general, np.arctan2(m[..., 0, 2], m[..., 1, 2]), 0.0)
+    return np.mod(np.stack([phi1, Phi, phi2], axis=-1), 2 * np.pi)
+
+
+def misorientation_deg(rotations, reference, symmetry) -> np.ndarray:
+    """The angle in degrees ``(N,)`` from each of *rotations* ``(N, 3, 3)`` to
+    *reference* ``(3, 3)``, the smallest over the crystal's point group.
+
+    Parameters
+    ----------
+    rotations, reference
+        Orientation matrices, sample to crystal (:func:`euler_to_matrix`), both in
+        the same sample frame. Which frame does not matter: a turn of the sample
+        frame cancels in ``g @ reference.T``.
+    symmetry
+        The point group, as an orix ``Symmetry`` or its operators as matrices
+        ``(K, 3, 3)``.
+    """
+    operators = symmetry.to_matrix() if hasattr(symmetry, "to_matrix") else symmetry
+    turn = np.asarray(rotations, dtype=np.float64) @ np.asarray(reference, dtype=np.float64).T
+    # trace(S^T M) for every operator S at once; a group holds each S's transpose too
+    traces = np.einsum("kij,nij->nk", np.asarray(operators, dtype=np.float64), turn).max(-1)
+    return np.degrees(np.arccos(np.clip((traces - 1.0) / 2.0, -1.0, 1.0)))
