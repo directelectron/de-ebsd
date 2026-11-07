@@ -30,7 +30,7 @@ from de_ebsd.core.constants import electron_wavelength_nm
 from de_ebsd.core.device import resolve_device
 from de_ebsd.core.geometry import pixels_from_rays, sample_to_detector_matrix
 from de_ebsd.core.rotation import quaternion_to_matrix
-from de_ebsd.diffraction.kinematic import _clip_line
+from de_ebsd.diffraction.kinematic import _clip_line, _reflections
 from de_ebsd.sim.masterpattern import SphereProjection, _as_quaternions
 
 __all__ = [
@@ -131,10 +131,11 @@ def reflectors_from_phase(phase, *, dmin=0.07, energy=20e3, max_bands=60) -> Ref
     Parameters
     ----------
     phase
-        An orix ``Phase`` with a structure (lattice in Angstrom, as from
-        :func:`~de_ebsd.index.io.phase_from_cif`), or a de_ebsd
-        :class:`~de_ebsd.crystal.Crystal` (converted with
-        :func:`~de_ebsd.index.io.phase_from_crystal`).
+        A de_ebsd :class:`~de_ebsd.crystal.Crystal`, whose reflections and
+        structure factors are de-ebsd's own (the enumeration the kinematic STEM
+        model uses: Lobato factors with the crystal's occupancies and Debye-Waller
+        factors), or an orix ``Phase`` with a structure (lattice in Angstrom, as
+        from :func:`~de_ebsd.index.io.phase_from_cif`), whose are diffsims'.
     dmin
         Smallest d-spacing kept, in nm.
     energy
@@ -151,22 +152,12 @@ def reflectors_from_phase(phase, *, dmin=0.07, energy=20e3, max_bands=60) -> Ref
         structure factors (a ``Phase(space_group=...)`` with no atoms) gives
         :func:`cubic_reflectors`, with a log message saying so.
     """
-    from diffsims.crystallography import ReciprocalLatticeVector
-
-    if not hasattr(phase, "point_group"):
-        from de_ebsd.index.io import phase_from_crystal
-
-        phase = phase_from_crystal(phase)
     try:
-        rlv = ReciprocalLatticeVector.from_min_dspacing(phase, float(dmin) / _NM_PER_ANGSTROM)
-        rlv = rlv.unique(use_symmetry=True).symmetrise()
-        rlv.sanitise_phase()
-        rlv.calculate_structure_factor()
-        # the structure factor is complex: its modulus, never its real part
-        factor = np.abs(np.asarray(rlv.structure_factor)).astype(float).reshape(-1)
-        normals = np.asarray(rlv.unit.data, float).reshape(-1, 3)
-        d = np.asarray(rlv.dspacing, float).reshape(-1) * _NM_PER_ANGSTROM
-        hkl = np.rint(np.asarray(rlv.hkl, float).reshape(-1, 3)).astype(int)
+        if hasattr(phase, "g_cartesian"):  # a de_ebsd Crystal
+            hkl, g, g_cart, elastic, _ = _reflections(phase, float(dmin))
+            normals, d, factor = g_cart / g[:, None], 1.0 / g, np.sqrt(elastic)
+        else:
+            normals, d, factor, hkl = _diffsims_reflections(phase, float(dmin))
     except Exception as e:  # diffsims raises a variety on a structure it cannot use
         log.warning(
             "reflectors for %s could not be computed (%s); using the generic cubic set",
@@ -193,6 +184,22 @@ def reflectors_from_phase(phase, *, dmin=0.07, energy=20e3, max_bands=60) -> Ref
     widths = np.clip(wavelength / (2.0 * d), 1e-4, 0.25)
     weights = factor / float(factor.max())
     return Reflectors(normals, weights, widths, hkl).brightest(max_bands)
+
+
+def _diffsims_reflections(phase, dmin):
+    """``(normals, d, |F|, hkl)`` of an orix ``Phase``, d in nm, through diffsims."""
+    from diffsims.crystallography import ReciprocalLatticeVector
+
+    rlv = ReciprocalLatticeVector.from_min_dspacing(phase, dmin / _NM_PER_ANGSTROM)
+    rlv = rlv.unique(use_symmetry=True).symmetrise()
+    rlv.sanitise_phase()
+    rlv.calculate_structure_factor()
+    # the structure factor is complex: its modulus, never its real part
+    factor = np.abs(np.asarray(rlv.structure_factor)).astype(float).reshape(-1)
+    normals = np.asarray(rlv.unit.data, float).reshape(-1, 3)
+    d = np.asarray(rlv.dspacing, float).reshape(-1) * _NM_PER_ANGSTROM
+    hkl = np.rint(np.asarray(rlv.hkl, float).reshape(-1, 3)).astype(int)
+    return normals, d, factor, hkl
 
 
 def _one_per_friedel_pair(hkl: np.ndarray) -> np.ndarray:

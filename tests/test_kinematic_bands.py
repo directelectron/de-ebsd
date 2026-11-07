@@ -249,6 +249,28 @@ class TestReflectors:
         r = Reflectors(np.eye(3), 1.0, 0.05)
         assert r.weights.shape == (3,) and r.widths.shape == (3,)
 
+    def test_a_crystal_and_its_phase_give_the_same_bands(self, ni_crystal):
+        """de-ebsd's own reflections for a Crystal and diffsims' for its orix phase are
+        the same planes at the same Bragg widths; only the structure-factor tables
+        behind the weights differ."""
+        from de_ebsd.index.io import phase_from_crystal
+
+        def bands(source):
+            r = reflectors_from_phase(source, dmin=0.08, max_bands=None)
+            canonical = [tuple(h if next(x for x in h if x) > 0 else -h) for h in r.hkl]
+            return dict(zip(canonical, r.widths, strict=True)), dict(
+                zip(canonical, r.weights, strict=True)
+            )
+
+        our_widths, our_weights = bands(ni_crystal)
+        their_widths, their_weights = bands(phase_from_crystal(ni_crystal))
+        assert our_widths.keys() == their_widths.keys()
+        assert all(np.isclose(our_widths[k], their_widths[k], rtol=1e-6) for k in our_widths)
+        keys = list(our_weights)
+        ours = [our_weights[k] for k in keys]
+        theirs = [their_weights[k] for k in keys]
+        assert np.corrcoef(ours, theirs)[0, 1] > 0.99
+
     def test_from_a_real_phase(self, ni_crystal):
         """Bragg-angle widths, an order of magnitude narrower than the cubic set's."""
         from de_ebsd.index.io import phase_from_crystal

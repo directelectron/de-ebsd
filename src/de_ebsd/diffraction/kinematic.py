@@ -254,6 +254,51 @@ def _clip_line(normal: np.ndarray, bounds) -> np.ndarray | None:
     return np.asarray(unique[:2], dtype=np.float64)
 
 
+def _reflections(crystal: Any, dmin: float, adapter=None):
+    """Every reflection of *crystal* with ``d >= dmin`` (nm) that its structure allows.
+
+    Shared by the STEM :class:`KinematicPatternModel` and the EBSD bands of
+    :func:`~de_ebsd.sim.kinematic_bands.reflectors_from_phase`. Returns
+    ``(hkl, g, g_cart, elastic, forbidden_hkl)``, ordered by ``|g|``: Miller
+    indices ``(N, 3)``, lengths ``|g|`` in nm^-1, Cartesian ``g`` ``(N, 3)``, the
+    coherent elastic ``|F_g|^2``, and the centering-allowed reflections whose
+    structure factor vanishes. *adapter* computes ``|F_g|^2``; by default diffsims'
+    Lobato factors with the crystal's occupancies and Debye-Waller factors.
+    """
+
+    adapter = _DiffsimsElasticScatteringAdapter(crystal) if adapter is None else adapter
+    # The reciprocal-space sphere can project farther along a Miller
+    # coordinate than its axial reflection in a skew cell (metric terms
+    # can cancel).  The direct-metric ellipsoid bound
+    # ``|h_i| <= |a_i| / dmin`` is safe for every cell.
+    lengths = np.asarray([crystal.a, crystal.b, crystal.c], dtype=float)
+    if not np.isfinite(lengths).all() or np.any(lengths <= 0):
+        raise ValueError("lattice lengths must be finite and positive")
+    limits = np.ceil(lengths / dmin)
+    if np.prod(2 * limits + 1) > 2_000_000:
+        raise ValueError("reflection search too large for the explorer; increase dmin")
+    axes = [np.arange(-int(limit), int(limit) + 1) for limit in limits]
+    hh, kk, ll = np.meshgrid(*axes, indexing="ij")
+    all_hkl = np.stack((hh, kk, ll), axis=-1).reshape(-1, 3)
+    all_g = np.asarray(crystal.g_length(all_hkl), dtype=np.float64)
+    keep = all_g > 0.0
+    keep &= np.divide(1.0, all_g, out=np.zeros_like(all_g), where=all_g > 0.0) >= dmin
+    keep &= crystal.allowed_by_centering(all_hkl)
+    order = np.argsort(all_g[keep], kind="stable")
+    all_hkl = all_hkl[keep][order]
+    all_g = all_g[keep][order]
+    all_g_cart = np.asarray(crystal.g_cartesian(all_hkl), dtype=np.float64)
+    all_elastic = adapter.elastic_intensities(all_hkl, all_g)
+    allowed = all_elastic > _ABSENCE_TOL
+    return (
+        all_hkl[allowed],
+        all_g[allowed],
+        all_g_cart[allowed],
+        all_elastic[allowed],
+        all_hkl[~allowed],
+    )
+
+
 class KinematicPatternModel:
     """Cached reflection geometry and lightweight kinematic STEM projection."""
 
@@ -266,34 +311,8 @@ class KinematicPatternModel:
         # Enumerate the reciprocal sphere once.  Intensities and absences are
         # also orientation independent, so they are cached on the model.
         self._adapter = _DiffsimsElasticScatteringAdapter(crystal)
-        # The reciprocal-space sphere can project farther along a Miller
-        # coordinate than its axial reflection in a skew cell (metric terms
-        # can cancel).  The direct-metric ellipsoid bound
-        # ``|h_i| <= |a_i| / dmin`` is safe for every cell.
-        lengths = np.asarray([crystal.a, crystal.b, crystal.c], dtype=float)
-        if not np.isfinite(lengths).all() or np.any(lengths <= 0):
-            raise ValueError("lattice lengths must be finite and positive")
-        limits = np.ceil(lengths / self.dmin)
-        if np.prod(2 * limits + 1) > 2_000_000:
-            raise ValueError("reflection search too large for the explorer; increase dmin")
-        axes = [np.arange(-int(limit), int(limit) + 1) for limit in limits]
-        hh, kk, ll = np.meshgrid(*axes, indexing="ij")
-        all_hkl = np.stack((hh, kk, ll), axis=-1).reshape(-1, 3)
-        all_g = np.asarray(crystal.g_length(all_hkl), dtype=np.float64)
-        keep = all_g > 0.0
-        keep &= np.divide(1.0, all_g, out=np.zeros_like(all_g), where=all_g > 0.0) >= self.dmin
-        keep &= crystal.allowed_by_centering(all_hkl)
-        order = np.argsort(all_g[keep], kind="stable")
-        self._all_hkl = all_hkl[keep][order]
-        self._all_g = all_g[keep][order]
-        self._all_g_cart = np.asarray(crystal.g_cartesian(self._all_hkl), dtype=np.float64)
-        all_elastic = self._adapter.elastic_intensities(self._all_hkl, self._all_g)
-        allowed = all_elastic > _ABSENCE_TOL
-        self._elastic = all_elastic[allowed].copy()
-        self.forbidden_hkl = self._all_hkl[~allowed].copy()
-        self._hkl = self._all_hkl[allowed].copy()
-        self._g = self._all_g[allowed].copy()
-        self._g_cart = self._all_g_cart[allowed].copy()
+        reflections = _reflections(crystal, self.dmin, self._adapter)
+        self._hkl, self._g, self._g_cart, self._elastic, self.forbidden_hkl = reflections
 
         # Unique primitive planes, retaining the shortest allowed harmonic.
         selected: dict[tuple[int, int, int], int] = {}
