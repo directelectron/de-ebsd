@@ -111,7 +111,10 @@ class TestTheMatch:
         monkeypatch.setattr(dictionary, "_MAX_SCORE_ELEMS", indexer.n_dict * 3)
         pieces = indexer.match(flat(patterns), keep=5)
         np.testing.assert_array_equal(whole[0][:, 0], pieces[0][:, 0])
-        np.testing.assert_allclose(whole[1], pieces[1], atol=1e-6)
+        # The scores are float32 matrix products; a chunk is accumulated in another
+        # order than the whole, so they agree to float32's precision, not to 1e-6
+        # absolute (CI measured 1.3e-6, a relative 2e-6). The best entry is exact.
+        np.testing.assert_allclose(whole[1], pieces[1], rtol=1e-5, atol=0)
 
     def test_scores_are_sorted_best_first(self, scan, euler_grid):
         _, scores = euler_grid(15, False).match(flat(scan[0]), keep=4)
