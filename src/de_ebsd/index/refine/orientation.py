@@ -80,7 +80,18 @@ def _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype):
 
 
 def _lm_refine(
-    master, dirs, r0_mat, e, mask, n_steps, damping, keep_best, return_history, device, dtype
+    master,
+    dirs,
+    r0_mat,
+    e,
+    mask,
+    n_steps,
+    damping,
+    keep_best,
+    return_history,
+    device,
+    dtype,
+    progress=None,
 ):
     e_c, e_s = _standardize(e)
     e_hat = e_c / e_s  # (Np, M) standardized experimental field
@@ -94,7 +105,7 @@ def _lm_refine(
     cur_score = seed_score
     history = [] if return_history else None
 
-    for _ in range(n_steps):
+    for step in range(n_steps):
         if return_history:
             history.append(cur_score)
         res, j_r, _ = _lm_residual_jacobian(master, dirs, r_mat, e_hat, device, dtype)
@@ -114,6 +125,8 @@ def _lm_refine(
             r_mat = torch.where(better[:, None, None], r_new, r_mat)
             damping = adapt_damping(damping, better)
             cur_score = torch.where(better, new_score, cur_score)
+        if progress is not None:
+            progress(step + 1, n_steps)
 
     refined_score = cur_score
     if keep_best:
@@ -148,6 +161,7 @@ def refine_orientation(
     device=None,
     keep_best=True,
     return_history=False,
+    progress=None,
     lock=None,
 ):
     """Refine ``rotations`` (and optionally the pattern center) by autograd.
@@ -206,6 +220,10 @@ def refine_orientation(
         low-quality real patterns.
     return_history
         Also return the per-step NCC trajectory.
+    progress
+        Called as ``progress(done, total)`` after each step, on the calling thread,
+        so an application can keep its interface alive through a long refinement; an
+        exception raised in it stops the refinement.
     lock
         Held around the device work, for an application that shares the device
         between threads; see :func:`~de_ebsd.core.device.resolve_lock`.
@@ -289,6 +307,7 @@ def refine_orientation(
             return_history,
             device,
             dtype,
+            progress,
         )
         from orix.quaternion import Rotation
 
@@ -338,13 +357,15 @@ def refine_orientation(
     with torch.no_grad():
         seed_score = _score().detach()
 
-    for _ in range(n_iterations):
+    for step in range(n_iterations):
         opt.zero_grad()
         s = _score()
         if return_history:
             history.append(s.detach())
         (-s.sum()).backward()
         opt.step()
+        if progress is not None:
+            progress(step + 1, n_iterations)
 
     with torch.no_grad():
         refined_score = _score().detach()
