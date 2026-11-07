@@ -2,35 +2,84 @@
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 
+from de_ebsd.crystal.lattice import element_symbol
 from de_ebsd.viz.figures import apl, label, to_uint8_rgb
 
 __all__ = [
+    "ELEMENT_COLORS",
     "crystal_structure_figure",
+    "element_color",
     "hemispheres_figure",
     "phase_overview_figure",
     "sampling_sphere_figure",
     "sphere_figure",
+    "unit_cell",
 ]
 
-_ELEMENT_COLORS = {
-    "H": (1.00, 1.00, 1.00),
-    "C": (0.36, 0.40, 0.45),
-    "N": (0.25, 0.40, 0.95),
-    "O": (0.93, 0.20, 0.22),
-    "Al": (0.75, 0.65, 0.65),
-    "Si": (0.94, 0.66, 0.48),
-    "Ti": (0.75, 0.76, 0.78),
-    "Cr": (0.54, 0.60, 0.78),
-    "Mn": (0.61, 0.48, 0.78),
-    "Fe": (0.88, 0.40, 0.20),
-    "Co": (0.94, 0.56, 0.63),
-    "Ni": (0.31, 0.82, 0.31),
-    "Cu": (0.78, 0.50, 0.20),
-    "Zn": (0.49, 0.50, 0.69),
-}
-_DEFAULT_COLOR = (0.40, 0.75, 0.90)
+#: Display colors of common elements, Jmol's scheme, as hex; others get
+#: :data:`DEFAULT_COLOR`. One table for every figure that draws atoms.
+ELEMENT_COLORS = {
+    "H": "#ffffff", "C": "#909090", "N": "#3050f8", "O": "#ff0d0d",
+    "F": "#90e050", "Na": "#ab5cf2", "Mg": "#8aff00", "Al": "#bfa6a6",
+    "Si": "#f0c8a0", "P": "#ff8000", "S": "#ffff30", "Cl": "#1ff01f",
+    "K": "#8f40d4", "Ca": "#3dff00", "Ti": "#bfc2c7", "V": "#a6a6ab",
+    "Cr": "#8a99c7", "Mn": "#9c7ac7", "Fe": "#e06633", "Co": "#f090a0",
+    "Ni": "#50d050", "Cu": "#c88033", "Zn": "#7d80b0", "Ga": "#c28f8f",
+    "Ge": "#668f8f", "As": "#bd80e3", "Zr": "#94e0e0", "Nb": "#73c2c9",
+    "Mo": "#54b5b5", "Ag": "#c0c0c0", "Sn": "#668080", "Hf": "#4dc2ff",
+    "Ta": "#4da6ff", "W": "#2194d6", "Pt": "#d0d0e0", "Au": "#ffd123",
+    "Pb": "#575961",
+}  # fmt: skip
+DEFAULT_COLOR = "#66bfe6"
+
+
+def element_color(symbol: str) -> tuple[float, float, float]:
+    """The display color of *symbol* (or of a CIF label such as ``"Fe2+"``) as RGB
+    in ``[0, 1]``."""
+    try:
+        symbol = element_symbol(symbol)
+    except ValueError:
+        pass
+    code = ELEMENT_COLORS.get(symbol, DEFAULT_COLOR)
+    return tuple(int(code[i : i + 2], 16) / 255.0 for i in (1, 3, 5))
+
+
+def unit_cell(crystal) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """``(positions, elements, edges)`` of a :class:`~de_ebsd.crystal.Crystal`'s unit cell.
+
+    *positions* ``(N, 3)`` are Cartesian, in nm, in the crystal frame
+    (``Crystal.direct_structure_matrix``): every atom of the cell plus its periodic
+    images on the faces, edges and corners, so a cubic cell shows its 8 corner atoms
+    rather than one. *elements* are their symbols; *edges* ``(12, 2, 3)`` the cell's
+    edges, in nm.
+    """
+    base = np.asarray(crystal.direct_structure_matrix, dtype=np.float64)  # columns a, b, c
+    fractional, elements = [], []
+    for site, orbit in zip(crystal.sites, crystal.positions, strict=True):
+        for xyz in np.asarray(orbit, dtype=np.float64).reshape(-1, 3):
+            xyz = np.mod(xyz, 1.0)
+            xyz[np.isclose(xyz, 1.0, atol=1e-6)] = 0.0
+            # an atom on a face, edge or corner has images on the opposite side
+            shifts = [(0.0, 1.0) if np.isclose(v, 0.0, atol=1e-6) else (0.0,) for v in xyz]
+            for shift in itertools.product(*shifts):
+                image = xyz + shift
+                if not any(np.allclose(image, seen, atol=1e-6) for seen in fractional):
+                    fractional.append(image)
+                    elements.append(site.element)
+    positions = np.asarray(fractional).reshape(-1, 3) @ base.T
+    corners = np.array(list(itertools.product((0.0, 1.0), repeat=3)))
+    edges = np.array(
+        [
+            [corners[i] @ base.T, corners[j] @ base.T]
+            for i, j in itertools.combinations(range(8), 2)
+            if np.abs(corners[i] - corners[j]).sum() == 1
+        ]
+    )
+    return positions, elements, edges
 
 
 def hemispheres_figure(north: np.ndarray, south: np.ndarray, title: str = "", cmap: str = "gray"):
@@ -91,21 +140,16 @@ def phase_overview_figure(crystal, equirectangular: np.ndarray, *, name="Phase",
 
 
 def crystal_structure_figure(crystal, title: str = ""):
-    """Expanded atoms of one unit cell as a 3-D plot, in Cartesian nanometres."""
+    """One unit cell's atoms, with their images on its faces, edges and corners
+    (:func:`unit_cell`), as a 3-D plot in Cartesian nanometres."""
     fig, ax = apl().subplots(1, 1, figsize=(480, 420))
     _crystal_structure_panel(ax, crystal, title or "Crystal structure")
     return fig
 
 
 def _crystal_structure_panel(ax, crystal, title: str):
-    fractional = np.concatenate(crystal.positions, axis=0)
-    elements = [
-        site.element
-        for site, positions in zip(crystal.sites, crystal.positions, strict=True)
-        for _ in positions
-    ]
-    cartesian = fractional @ crystal.direct_structure_matrix.T
-    colors = np.asarray([_ELEMENT_COLORS.get(e, _DEFAULT_COLOR) for e in elements])
+    cartesian, elements, _ = unit_cell(crystal)
+    colors = np.asarray([element_color(e) for e in elements])
 
     # include the cell corners so non-orthogonal cells are not clipped
     corners = np.asarray([[i, j, k] for i in (0.0, 1.0) for j in (0.0, 1.0) for k in (0.0, 1.0)])

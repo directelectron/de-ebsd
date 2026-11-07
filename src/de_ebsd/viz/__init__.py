@@ -5,12 +5,14 @@ never pay for (or require) them.
 """
 
 __all__ = [
+    "ELEMENT_COLORS",
     "CrystalExplorer",
     "DepthWidget",
     "MicroscopeWidget",
     "PhaseOverview",
     "bar_figure",
     "crystal_structure_figure",
+    "element_color",
     "hemispheres_figure",
     "image_figure",
     "ipf_colors",
@@ -22,17 +24,21 @@ __all__ = [
     "show_refinement",
     "sphere_figure",
     "to_uint8_rgb",
+    "unit_cell",
 ]
 
 _MODULES = {
     "explorer": ("CrystalExplorer",),
     "figures": ("bar_figure", "image_figure", "to_uint8_rgb"),
     "patterns": (
+        "ELEMENT_COLORS",
         "crystal_structure_figure",
+        "element_color",
         "hemispheres_figure",
         "phase_overview_figure",
         "sampling_sphere_figure",
         "sphere_figure",
+        "unit_cell",
     ),
     "maps": ("ipf_colors", "show_correlation", "show_map", "show_match", "show_refinement"),
     "views": ("PhaseOverview",),

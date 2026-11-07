@@ -17,7 +17,7 @@ from diffpy.structure.spacegroups import GetSpaceGroup
 from de_ebsd.core.constants import C_AVOGADRO
 from de_ebsd.crystal.scattering import atomic_number, atomic_weight
 
-__all__ = ["AtomSite", "Crystal"]
+__all__ = ["AtomSite", "Crystal", "element_symbol"]
 
 
 @dataclass(frozen=True)
@@ -225,7 +225,7 @@ class Crystal:
             position = to_cell @ np.asarray(atom.xyz, dtype=np.float64)
             sites.append(
                 AtomSite(
-                    element=_element_symbol(atom.element),
+                    element=element_symbol(atom.element),
                     position=tuple(float(x) for x in position),
                     occupancy=float(atom.occupancy),
                     debye_waller=b_nm2,
@@ -552,7 +552,7 @@ def _cif_origin_choice(parser, default: int = 2) -> int:
     return default
 
 
-def _element_symbol(raw: str) -> str:
+def element_symbol(raw: str) -> str:
     """Element symbol from a CIF ``type_symbol``/label (``"Si4+"``, ``"Si1"`` -> ``"Si"``)."""
     letters = re.match(r"[A-Za-z]+", str(raw).strip())
     if letters is None:
