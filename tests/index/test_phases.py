@@ -122,4 +122,10 @@ def test_a_crystal_phase_is_in_angstrom_as_a_cif_phase_is():
 
     hexagonal = phase_from_crystal(Crystal.from_cif(str(_path("hexagonal")))).structure.lattice
     from_file = phase_from_cif(_path("hexagonal")).structure.lattice
-    assert np.allclose(hexagonal.cell_parms(), from_file.cell_parms())
+    # The six parameters by name: diffpy renamed cell_parms() to cell_params()
+    # between the versions Python 3.11 and 3.13 resolve to.
+    parameters = ("a", "b", "c", "alpha", "beta", "gamma")
+    assert np.allclose(
+        [getattr(hexagonal, name) for name in parameters],
+        [getattr(from_file, name) for name in parameters],
+    )
