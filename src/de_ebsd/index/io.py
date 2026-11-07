@@ -1,8 +1,18 @@
-"""Bridges to orix and kikuchipy: phases, crystal maps, EMsoft master patterns."""
+"""Bridges to orix and kikuchipy: phases, crystal maps, EMsoft master patterns.
+
+Every orix ``Phase`` made here has its lattice in Angstrom, orix's and diffsims'
+unit, whatever the source's: a :class:`~de_ebsd.crystal.Crystal` is in nm.
+"""
 
 from __future__ import annotations
 
+import warnings
+from pathlib import Path
+
 import numpy as np
+
+#: nm to Angstrom, for a Crystal's lattice handed to orix.
+ANGSTROM_PER_NM = 10.0
 
 
 def phase_from_crystal(crystal):
@@ -26,8 +36,8 @@ def phase_from_crystal(crystal):
     -------
     orix.crystal_map.Phase
         A phase carrying the space group (and the point group orix derives from
-        it) plus a diffpy ``Structure`` with the lattice and the asymmetric-unit
-        atoms.
+        it) plus a diffpy ``Structure`` with the lattice, **in Angstrom**, and the
+        asymmetric-unit atoms at the crystal's fractional coordinates.
 
     Notes
     -----
@@ -35,10 +45,10 @@ def phase_from_crystal(crystal):
     space groups) shifts the atom positions but not the point group, so it does
     not change the symmetry the ``CrystalMap`` carries; it is recorded on the
     diffpy lattice only through the fractional coordinates already stored on the
-    crystal. Lattice lengths are passed through in nm (the crystal's own unit).
+    crystal. Lattice lengths are converted from the crystal's nm to Angstrom, the
+    unit orix and diffsims compute d-spacings and structure factors in.
     """
     from diffpy.structure import Atom, Lattice, Structure
-    from orix.crystal_map import Phase
 
     if not hasattr(crystal, "space_group"):
         # MasterPattern.save() stringifies metadata, so a master round-tripped
@@ -51,7 +61,8 @@ def phase_from_crystal(crystal):
 
     name = getattr(crystal, "name", None) or _crystal_name(crystal)
 
-    lattice = Lattice(crystal.a, crystal.b, crystal.c, crystal.alpha, crystal.beta, crystal.gamma)
+    lengths = (ANGSTROM_PER_NM * length for length in (crystal.a, crystal.b, crystal.c))
+    lattice = Lattice(*lengths, crystal.alpha, crystal.beta, crystal.gamma)
     atoms = []
     for site in getattr(crystal, "sites", ()):  # asymmetric unit
         atoms.append(
@@ -65,7 +76,69 @@ def phase_from_crystal(crystal):
 
     # orix derives the point group from the space-group number -- this is the
     # symmetry the CrystalMap inherits.
-    return Phase(name=name, space_group=int(crystal.space_group), structure=structure)
+    return _orix_phase(name, int(crystal.space_group), structure)
+
+
+def phase_from_cif(path):
+    """An orix ``Phase`` read from the CIF at *path*, named after the file.
+
+    The lattice is the file's, in Angstrom, and the atoms are the whole cell (the
+    file's asymmetric unit expanded by its symmetry) at exactly the fractional
+    coordinates the file gives. ``orix.crystal_map.Phase.from_cif`` would move
+    them; see :func:`_orix_phase`.
+
+    For a :class:`~de_ebsd.crystal.Crystal` to simulate with, read the file with
+    :meth:`Crystal.from_cif <de_ebsd.crystal.Crystal.from_cif>` instead; this is
+    the phase that gives a crystal map, an IPF key or a misorientation its
+    symmetry, for a CIF that is not simulated.
+
+    Parameters
+    ----------
+    path
+        Path to the CIF file.
+
+    Returns
+    -------
+    orix.crystal_map.Phase
+        Its ``space_group`` is diffpy's number, which for a non-standard setting
+        is 1000 times the setting plus the International Tables number (a
+        rhombohedral cell on rhombohedral axes, ``R 3 m :R``, is 1160); the point
+        group is the same either way.
+    """
+    from diffpy.structure.parsers import p_cif
+
+    path = Path(path)
+    parser = p_cif.P_cif()
+    # newer diffpy names it parse_file and deprecates parseFile, older has only parseFile
+    read = getattr(parser, "parse_file", None) or parser.parseFile
+    structure = read(str(path))
+    space_group = getattr(getattr(parser, "spacegroup", None), "number", None)
+    if space_group is None:
+        warnings.warn(f"could not read the space group from {str(path)!r}", stacklevel=2)
+    return _orix_phase(path.stem, space_group, structure)
+
+
+def _orix_phase(name, space_group, structure):
+    """An orix ``Phase`` holding *structure* with its atoms where *structure* has them.
+
+    orix re-expresses a structure in its own Cartesian frame (``a`` along x, ``c*``
+    along z) by turning the lattice while keeping every atom's Cartesian position.
+    For a cell whose ``a`` is not already along x in diffpy's frame -- every
+    hexagonal, trigonal, monoclinic and triclinic cell -- the lattice turns and the
+    atoms do not, so their fractional coordinates come out wrong: hexagonal BaTiO3
+    put Ba at (0.577, 0.577, z) instead of (1/3, 2/3, z), and the structure lost
+    the symmetry of its own space group.
+
+    Fractional coordinates do not depend on the Cartesian frame, so the given ones
+    are right in orix's frame too. Restoring them is a no-op for the cells orix
+    does not turn, and stays one if orix moves the atoms itself one day.
+    """
+    from orix.crystal_map import Phase
+
+    phase = Phase(name=name, space_group=space_group, structure=structure)
+    for atom, given in zip(phase.structure, structure, strict=True):
+        atom.xyz = np.array(given.xyz, dtype=np.float64)
+    return phase
 
 
 def _crystal_name(crystal) -> str:
