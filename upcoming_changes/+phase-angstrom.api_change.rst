@@ -1,0 +1,1 @@
+:func:`~de_ebsd.index.phase_from_crystal` gave its orix phase a lattice in Angstrom, the unit orix and diffsims compute d-spacings in, where it used to pass the crystal's nanometres through, and kept a hexagonal or trigonal crystal's atoms at their own fractional coordinates, where orix had moved them off their sites.

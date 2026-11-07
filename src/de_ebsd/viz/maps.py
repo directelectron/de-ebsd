@@ -7,7 +7,7 @@ import numpy as np
 from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.viz.figures import apl, label
 
-__all__ = ["show_correlation", "show_map", "show_match", "show_refinement"]
+__all__ = ["ipf_colors", "show_correlation", "show_map", "show_match", "show_refinement"]
 
 
 def _to_numpy(x) -> np.ndarray:
@@ -90,15 +90,76 @@ def show_match(experimental, master, detector, orientation, energy_kev=None):
     return fig
 
 
-def _ipf_rgb(crystal_map) -> np.ndarray:
+def ipf_colors(orientations, point_group=None, *, direction=None) -> np.ndarray:
+    """Inverse-pole-figure colors (orix's TSL key) of orientations, as float RGB
+    ``(..., 3)`` in ``[0, 1]``.
+
+    Parameters
+    ----------
+    orientations
+        One of
+
+        * an orix ``CrystalMap``: each point colored by its own phase's point group,
+          points of no phase (``phase_id`` -1) black, shaped like the map;
+        * an orix ``Rotation``, shaped like it;
+        * Bunge Euler angles ``(..., 3)`` in radians, shaped like their leading axes.
+    point_group
+        The crystal's symmetry: an orix ``Symmetry``, an orix ``Phase`` or a space
+        group number. Required unless *orientations* is a ``CrystalMap``, which
+        carries its own.
+    direction
+        The sample direction the colors show, a 3-vector or orix ``Vector3d``;
+        default z (IPF-Z). In which sample frame it is read is the orientations'
+        own; see :doc:`/user/conventions`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Float RGB, ``(..., 3)``.
+    """
+    from orix.crystal_map import CrystalMap
+
+    if isinstance(orientations, CrystalMap):
+        rgb = np.zeros((orientations.size, 3))
+        for phase_id, phase in orientations.phases:
+            if phase_id < 0 or phase.point_group is None:
+                continue
+            here = orientations.phase_id == phase_id
+            rgb[here] = ipf_colors(
+                orientations.rotations[here], phase.point_group, direction=direction
+            )
+        return rgb.reshape(*orientations.shape, 3)
+
+    from orix.crystal_map import Phase
     from orix.plot import IPFColorKeyTSL
+    from orix.quaternion import Rotation
     from orix.vector import Vector3d
 
-    point_group = crystal_map.phases[crystal_map.phase_id[0]].point_group
-    key = IPFColorKeyTSL(point_group, direction=Vector3d.zvector())
-    rgb = key.orientation2color(crystal_map.rotations)  # (N, 3) floats in [0, 1]
-    rgb = np.asarray(rgb, dtype=np.float64).reshape(*crystal_map.shape, 3)
-    return (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if point_group is None:
+        raise ValueError("a point group is needed to color anything but a CrystalMap")
+    if isinstance(point_group, Phase):
+        point_group = point_group.point_group
+    elif isinstance(point_group, int | np.integer):
+        point_group = Phase(space_group=int(point_group)).point_group
+
+    if isinstance(orientations, Rotation):
+        shape = orientations.shape
+        rotations = orientations.flatten()
+    else:
+        euler = np.asarray(orientations, dtype=np.float64)
+        shape = euler.shape[:-1]
+        rotations = Rotation.from_euler(euler.reshape(-1, 3))
+    if direction is None:
+        direction = Vector3d.zvector()
+    elif not isinstance(direction, Vector3d):
+        direction = Vector3d(np.asarray(direction, dtype=np.float64))
+    key = IPFColorKeyTSL(point_group, direction=direction)
+    rgb = np.asarray(key.orientation2color(rotations), dtype=np.float64)
+    return np.clip(rgb, 0.0, 1.0).reshape(*shape, 3)
+
+
+def _ipf_image(crystal_map) -> np.ndarray:
+    return (ipf_colors(crystal_map) * 255.0).astype(np.uint8)
 
 
 def _quality_image(crystal_map) -> np.ndarray:
@@ -135,7 +196,7 @@ def show_map(crystal_map, value: str = "ipf"):
     if value == "both":
         fig, axes = apl().subplots(1, 2, figsize=(1000, 480))
         ax_ipf, ax_q = np.ravel(axes)[:2]
-        label(ax_ipf.imshow(_ipf_rgb(crystal_map), origin="upper"), "IPF-z")
+        label(ax_ipf.imshow(_ipf_image(crystal_map), origin="upper"), "IPF-z")
         panel_q = ax_q.imshow(_quality_image(crystal_map), cmap="viridis", origin="upper")
         label(panel_q, "quality")
         _colorbar_label(panel_q, "quality")
@@ -143,7 +204,7 @@ def show_map(crystal_map, value: str = "ipf"):
 
     fig, ax = apl().subplots(1, 1, figsize=(560, 520))
     if value == "ipf":
-        label(ax.imshow(_ipf_rgb(crystal_map), origin="upper"), "IPF-z orientation map")
+        label(ax.imshow(_ipf_image(crystal_map), origin="upper"), "IPF-z orientation map")
     else:
         panel = ax.imshow(_quality_image(crystal_map), cmap="viridis", origin="upper")
         label(panel, "quality map")

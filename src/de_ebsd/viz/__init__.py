@@ -13,6 +13,7 @@ __all__ = [
     "crystal_structure_figure",
     "hemispheres_figure",
     "image_figure",
+    "ipf_colors",
     "phase_overview_figure",
     "sampling_sphere_figure",
     "show_correlation",
@@ -33,7 +34,7 @@ _MODULES = {
         "sampling_sphere_figure",
         "sphere_figure",
     ),
-    "maps": ("show_correlation", "show_map", "show_match", "show_refinement"),
+    "maps": ("ipf_colors", "show_correlation", "show_map", "show_match", "show_refinement"),
     "views": ("PhaseOverview",),
     "widgets": ("DepthWidget", "MicroscopeWidget"),
 }
