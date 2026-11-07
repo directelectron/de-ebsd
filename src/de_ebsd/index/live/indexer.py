@@ -48,15 +48,24 @@ from de_ebsd.index.live.common import (
     BATCH,
     FUSED_BATCH,
     STENCIL,
+    as_frames,
     average_to,
     normalize_rows_into,
     parabola_offset,
     pool_into,
+    shape_in_aspect,
 )
 from de_ebsd.index.live.workspace import Workspace
 from de_ebsd.index.preprocess import _gaussian_kernel_1d, gaussian_blur, normalize_rows
 
-__all__ = ["LiveIndexer"]
+__all__ = [
+    "FITTED_REFINE_STEPS_DEG",
+    "LiveIndexer",
+    "dynamical_indexing_available",
+    "fitted_refine_steps_deg",
+    "fused_fit_available",
+    "lambert_masters",
+]
 
 
 #: Refine steps, in degrees, each half the last. On a twin scan rendered from a
@@ -86,6 +95,56 @@ COARSE_REFINE_STEP_DEG = 1.0
 #: score into 750 MB per batch.
 SEARCH_CHUNK = 65_536
 
+#: The refine's steps when :meth:`LiveIndexer.index` fits the orientations after it
+#: (``fit=True``) on the fused kernels: the fit does what the finer levels did. On a
+#: real Zenith Cu scan, stopping at 1 degree took indexing from 28,800 to 33,600
+#: patterns a second and a single crystal's neighbours from 0.19 to 0.17 degrees
+#: apart at the 90th percentile; no orientation moved more than 5 degrees. See
+#: :func:`fitted_refine_steps_deg`.
+FITTED_REFINE_STEPS_DEG = (2.0, 1.0)
+
+
+def fused_fit_available(device) -> bool:
+    """Whether :meth:`LiveIndexer.index` fits orientations (``fit=True``) on the fused
+    kernels on *device*: CUDA with CuPy, and a scheduled analytic fit."""
+    return (
+        _kernels.available(device)
+        and bool(deformation.FIT_SCHEDULE)
+        and bool(deformation.ANALYTIC_JACOBIAN)
+    )
+
+
+def fitted_refine_steps_deg(device) -> tuple[float, ...]:
+    """The ``refine_steps_deg`` to build a :class:`LiveIndexer` with when it will index
+    with ``fit=True`` on *device*: :data:`FITTED_REFINE_STEPS_DEG` where the fit is
+    fused (:func:`fused_fit_available`), and a level of 0.5 degrees more where it is
+    not -- the torch fit, with no pass schedule, reached 0.53 degrees from 1 degree
+    on a real scan where it reaches 0.21 from 0.5."""
+    if fused_fit_available(device):
+        return FITTED_REFINE_STEPS_DEG
+    return (*FITTED_REFINE_STEPS_DEG, 0.5)
+
+
+def dynamical_indexing_available(device) -> bool:
+    """Whether indexing against dynamical master patterns keeps up with a camera on
+    *device*: a GPU. On a CPU a master takes minutes to simulate and the refine runs
+    far slower than a camera, so a kinematic master
+    (:class:`~de_ebsd.sim.KinematicMaster`, which :class:`LiveIndexer` takes too)
+    is the one to index against there."""
+    return resolve_device(device).type == "cuda"
+
+
+def lambert_masters(masters) -> list:
+    """*masters* as Lambert-stored :class:`~de_ebsd.sim.MasterPattern` s: each
+    :class:`~de_ebsd.sim.KinematicMaster` sampled onto the grid the others are on
+    (:meth:`~de_ebsd.sim.KinematicMaster.to_master_pattern`), or onto its default
+    grid when every master is kinematic."""
+    from de_ebsd.sim.kinematic_bands import LAMBERT_NPX
+
+    stored = [m.npx for m in masters if hasattr(m, "npx")]
+    npx = stored[0] if stored else LAMBERT_NPX
+    return [m if hasattr(m, "npx") else m.to_master_pattern(npx) for m in masters]
+
 
 def texture_of(masters, device, blur_deg: float = 0.0) -> torch.Tensor:
     """Every phase's hemispheres as channels of one texture ``(1, 2 * phases, n, n)``:
@@ -106,8 +165,11 @@ class LiveIndexer:
     Parameters
     ----------
     masters
-        One :class:`~de_ebsd.sim.MasterPattern` per phase, all at the same ``npx``.
-        Each is used at its highest energy bin.
+        One master per phase: a :class:`~de_ebsd.sim.MasterPattern` (all at the
+        same ``npx``), used at its highest energy bin, or a
+        :class:`~de_ebsd.sim.KinematicMaster`, sampled onto the same Lambert grid
+        (:func:`lambert_masters`). Either physics, or a mix: every phase is
+        searched in one product, and the best score gives the phase.
     point_groups
         Each phase's orix point group, whose fundamental zone its dictionary samples.
     detector
@@ -117,7 +179,10 @@ class LiveIndexer:
     resolution
         The dictionary's sampling, in degrees.
     search_shape, refine_shape
-        Detector shapes the search and the refine compare patterns at.
+        Detector shapes the search and the refine compare patterns at, as
+        ``(rows, cols)`` or as one number: that many pixels on the long side of
+        *detector*'s shape, in its aspect
+        (:func:`~de_ebsd.index.live.common.shape_in_aspect`).
     refine_steps_deg
         The refine levels' steps; empty for no refine.
     search_blur_deg
@@ -158,6 +223,9 @@ class LiveIndexer:
 
         if len(masters) != len(point_groups):
             raise ValueError("one point group per master")
+        if not len(masters):
+            raise ValueError("indexing needs at least one phase")
+        masters = lambert_masters(masters)
         self.device = resolve_device(device, masters[0].device)
         if dtype is None:
             tensor_cores = (
@@ -167,8 +235,8 @@ class LiveIndexer:
         self.dtype = dtype
         self.dictionary = None
         self.detector = detector
-        self.search_shape = tuple(search_shape)
-        self.refine_shape = tuple(refine_shape)
+        self.search_shape = shape_in_aspect(search_shape, detector.shape)
+        self.refine_shape = shape_in_aspect(refine_shape, detector.shape)
         #: Where the refine's coarse levels (:data:`COARSE_REFINE_STEP_DEG` and up)
         #: are scored on the fused path: half the refine's resolution.
         self.coarse_shape = tuple(max(8, s // 2) for s in self.refine_shape)
@@ -190,6 +258,8 @@ class LiveIndexer:
         self.rotations = torch.cat(rotations)
         self.phase_of = torch.cat(phases)
         self.sizes = [len(r) for r in rotations]
+        #: Where each phase's entries start in :attr:`rotations`.
+        self.offsets = np.cumsum([0, *self.sizes[:-1]])
         self.set_pattern_center(detector.pattern_center)
         self.background = ScanBackground(self.refine_shape, self.device)
         #: The dynamic background's Gaussian for the fused :meth:`prepare`.
@@ -276,6 +346,25 @@ class LiveIndexer:
         simulated = normalize_rows(self.project(self.texture, flat, bases // 2, directions))
         return torch.einsum("nkp,np->nk", simulated.view(n, k, -1), rows)
 
+    # --- the phases' dictionaries ----------------------------------------------
+
+    @holds_lock
+    def phase_entries(self, phase, entry):
+        """Each dictionary *entry* (an index into :attr:`rotations`, as :meth:`index`
+        returns it) as an index into its own *phase*'s entries
+        (:meth:`phase_rotations`), so that anything worked out once per phase entry,
+        such as an IPF color, stands for the orientation. NumPy or torch, as given."""
+        if isinstance(entry, torch.Tensor):
+            offsets = torch.as_tensor(self.offsets, device=entry.device)
+            return entry - offsets[phase.to(entry.device)]
+        return np.asarray(entry) - self.offsets[np.asarray(phase)]
+
+    def phase_rotations(self, number: int) -> torch.Tensor:
+        """Phase *number*'s dictionary orientations ``(entries, 3, 3)``, in
+        kikuchipy's sample frame, on the device."""
+        first = int(self.offsets[number])
+        return self.rotations[first : first + self.sizes[number]]
+
     # --- the scan's backgrounds ------------------------------------------------
 
     @property
@@ -294,7 +383,7 @@ class LiveIndexer:
         """*frames* on the device as float ``(N, H, W)`` averaged to the refine shape:
         *frames* themselves where they already are, such as a stack from
         :func:`~de_ebsd.index.live.common.pool_into`."""
-        t = torch.as_tensor(frames, device=self.device)
+        t = as_frames(frames).to(self.device)
         t = t[None] if t.ndim == 2 else t
         return average_to(t.to(torch.float32), self.refine_shape)
 
@@ -318,7 +407,7 @@ class LiveIndexer:
     def observe(self, frames) -> None:
         """Add *frames* to the scan's static background. Frames already at the refine
         shape (:func:`~de_ebsd.index.live.common.pool_into`) are summed as they are."""
-        t = torch.as_tensor(frames, device=self.device)
+        t = as_frames(frames).to(self.device)
         t = t[None] if t.ndim == 2 else t
         workspace = self.workspace
         if (
@@ -345,7 +434,7 @@ class LiveIndexer:
     def corrected(self, frames) -> torch.Tensor:
         """*frames* ``(N, H, W)`` with the backgrounds removed as :meth:`prepare` removes
         them, at their own resolution: what the indexer matches, to be looked at."""
-        t = torch.as_tensor(frames, device=self.device)
+        t = as_frames(frames).to(self.device)
         t = t[None] if t.ndim == 2 else t
         return self.background.remove(t.to(torch.float32))
 
@@ -462,7 +551,7 @@ class LiveIndexer:
         """The pattern center that best fits the best-scored patterns of *frames*
         ``(N, H, W)``, which the indexer then uses; see
         :func:`~de_ebsd.index.live.calibration.refine_pattern_center`."""
-        return calibration.refine_pattern_center(self, frames, **kwargs)
+        return calibration.refine_pattern_center(self, _stack(frames), **kwargs)
 
     @holds_lock
     def center_maps(self, pattern_centers) -> torch.Tensor:
@@ -481,7 +570,9 @@ class LiveIndexer:
     def strain_from_reference(self, frames, reference, **kwargs):
         """The strain of *frames* relative to one real *reference* frame; see
         :func:`~de_ebsd.index.live.deformation.strain_from_reference`."""
-        return deformation.strain_from_reference(self, frames, reference, **kwargs)
+        return deformation.strain_from_reference(
+            self, _stack(frames), as_frames(reference), **kwargs
+        )
 
     @holds_lock
     def index_with_strain(self, frames, pattern_centers=None):
@@ -490,7 +581,10 @@ class LiveIndexer:
         *pattern_centers* ``(N, 3)``, one per frame, default to the indexer's.
 
         Each buffer's orientations join the scan's :attr:`ghost` before its
-        strains are fitted, as its frames joined the static background."""
+        strains are fitted, as its frames joined the static background. The strain
+        is deviatoric, ``(N, 3, 3)``, in kikuchipy's sample frame as the orientations
+        are; :func:`~de_ebsd.core.frames.scan_tensor` turns it into a scan's."""
+        frames = _stack(frames)
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
         out = []
         batch = FUSED_BATCH if self.fused and deformation.STRAIN_SCHEDULE else BATCH
@@ -523,7 +617,14 @@ class LiveIndexer:
         *out*, four tensors of at least N rows (int64, ``(N, 3, 3)`` float32,
         float32, int64), receives the results, and their first N rows are
         returned; without it the results are new tensors. On the fused path
-        nothing else is allocated (:attr:`workspace`)."""
+        nothing else is allocated (:attr:`workspace`).
+
+        *frames* may be one ``(H, W)`` frame, and a NumPy, torch or CuPy (any
+        DLPack) array: a GPU array is read where it is, without a copy
+        (:func:`~de_ebsd.index.live.common.as_frames`). The orientations are in
+        kikuchipy's sample frame, which :mod:`de_ebsd.core.frames` turns into a
+        scan's; :meth:`phase_entries` gives each entry within its own phase."""
+        frames = _stack(frames)
         count = len(frames)
         if out is None:
             out = (
@@ -694,3 +795,10 @@ class LiveIndexer:
             out=(workspace.fitted[:n], workspace.score[:n], workspace.refused[:n]),
         )
         return g, score
+
+
+def _stack(frames) -> torch.Tensor:
+    """*frames* where they are (:func:`~de_ebsd.index.live.common.as_frames`), one
+    ``(H, W)`` frame as a stack of one."""
+    t = as_frames(frames)
+    return t[None] if t.ndim == 2 else t
