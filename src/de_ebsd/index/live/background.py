@@ -20,11 +20,23 @@ MIN_FRAMES_FOR_STATIC = 32
 
 
 class ScanBackground:
-    """The static background and ghost of one scan, at the refine shape."""
+    """The static background and ghost of one scan, at the refine shape.
 
-    def __init__(self, refine_shape: tuple[int, int], device: torch.device) -> None:
+    *min_frames* is how many frames the static background waits for. A live scan's
+    frames come from a few grains at a time, so it waits for
+    :data:`MIN_FRAMES_FOR_STATIC`; frames chosen from all over a scan, as a
+    pattern-center search's are, average their bands away in fewer.
+    """
+
+    def __init__(
+        self,
+        refine_shape: tuple[int, int],
+        device: torch.device,
+        min_frames: int = MIN_FRAMES_FOR_STATIC,
+    ) -> None:
         self.refine_shape = refine_shape
         self.device = device
+        self.min_frames = int(min_frames)
         self.static = None
         self.blur = None
         self._static_sum = torch.zeros(refine_shape, device=device)
@@ -52,7 +64,7 @@ class ScanBackground:
         """Add *pooled* frames ``(N, H, W)``, at the refine shape, to the static background."""
         self._static_sum += torch.sum(pooled, 0, out=self._observed)
         self._static_count += len(pooled)
-        if self._static_count >= MIN_FRAMES_FOR_STATIC:
+        if self._static_count >= self.min_frames:
             static = torch.div(self._static_sum, self._static_count, out=self._static_mean)
             if self.blur:
                 static = gaussian_blur(static[None], self.blur * static.shape[-1], 4.0)[0]

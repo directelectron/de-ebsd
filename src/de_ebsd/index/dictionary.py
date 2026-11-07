@@ -22,7 +22,7 @@ from orix.sampling import get_sample_fundamental
 from de_ebsd.core.device import holds_lock, resolve_device, resolve_lock
 from de_ebsd.index.preprocess import normalize_rows, remove_dynamic_background
 
-__all__ = ["DictionaryIndexer", "sample_orientations"]
+__all__ = ["DictionaryIndexer", "dictionary_scores", "sample_orientations"]
 
 # orientations projected per chunk when building the dictionary, so a large
 # fundamental zone never materializes its whole (n_dict, P, 3) sampling tensor
@@ -58,6 +58,80 @@ def sample_orientations(
     ]
     grid = np.meshgrid(*axes, indexing="ij")
     return Rotation.from_euler(np.stack([g.ravel() for g in grid], -1))
+
+
+def _projected(master, detector, rotations, device, *, energy_kev=None, dynamic_background=False):
+    """The dictionary of *master* on *detector* at *rotations*, a chunk at a time.
+
+    Yields ``(start, entries)``: the index of the chunk's first orientation and its
+    normalized simulations ``(n, H * W)`` in float32 on *device*. One projection for
+    a dictionary that is kept (:class:`DictionaryIndexer`) and one that is only
+    scored against (:func:`dictionary_scores`), so both see the same entries.
+    """
+    if master.device != device:
+        master = master.to(device)
+    q = torch.as_tensor(np.asarray(rotations.data), dtype=torch.float32).reshape(-1, 4)
+    for start in range(0, len(q), _PROJ_CHUNK):
+        sim = master.project(
+            detector, q[start : start + _PROJ_CHUNK], energy_kev=energy_kev, rescale=False
+        )
+        if dynamic_background:
+            sim = remove_dynamic_background(sim, device=device)
+        # normalize in fp32
+        yield start, normalize_rows(sim.reshape(sim.shape[0], -1).to(torch.float32))
+
+
+@holds_lock
+def dictionary_scores(
+    patterns, master, detector, rotations, *, energy_kev=None, device=None, lock=None
+):
+    """Every pattern's NCC against every orientation's simulation, without keeping
+    the dictionary.
+
+    :class:`DictionaryIndexer` holds its whole dictionary on the device, which is
+    right for indexing a scan against it many times. A dictionary used once -- by a
+    pattern-center search, scored at each of a hundred candidate centers -- would
+    cost that memory for nothing (a 3-degree m-3m dictionary of 160 x 160 patterns
+    is ~3 GB); this projects it a chunk at a time and keeps only the scores.
+
+    Parameters
+    ----------
+    patterns
+        ``(H, W)`` or ``(Np, H, W)``, numpy or torch, at *detector*'s shape.
+    master
+        A :class:`~de_ebsd.sim.MasterPattern` or :class:`~de_ebsd.sim.KinematicMaster`.
+    detector
+        :class:`~de_ebsd.sim.detector.EBSDDetector`.
+    rotations
+        The orientations, an orix ``Rotation`` (for instance from
+        :func:`sample_orientations`).
+    energy_kev
+        Energy bin projected; ``None`` is the highest.
+    device
+        Defaults to the master's.
+    lock
+        Held around the device work; see :func:`~de_ebsd.core.device.resolve_lock`.
+
+    Returns
+    -------
+    torch.Tensor
+        ``(Np, n_rotations)`` float32 NCC in ``[-1, 1]``.
+    """
+    device = resolve_device(device, getattr(master, "device", "cpu"))
+    patt = torch.as_tensor(patterns).to(device=device, dtype=torch.float32)
+    if patt.ndim == 2:
+        patt = patt[None]
+    shape = (detector.nrows, detector.ncols)
+    if patt.ndim != 3 or tuple(patt.shape[1:]) != shape:
+        raise ValueError(
+            f"patterns must be {shape} or a stack of them, got shape {tuple(patt.shape)}"
+        )
+    flat = normalize_rows(patt.reshape(len(patt), -1))
+    parts = [
+        flat @ entries.T
+        for _, entries in _projected(master, detector, rotations, device, energy_kev=energy_kev)
+    ]
+    return torch.cat(parts, dim=1)
 
 
 class DictionaryIndexer:
@@ -251,26 +325,17 @@ class DictionaryIndexer:
         return phase_from_crystal(crystal).point_group
 
     def _build_dictionary(self) -> torch.Tensor:
-        # master.project runs on the master's device, so move the master here once
-        master = self.master
-        if master.device != self.device:
-            master = master.to(self.device)
-
-        det = self._match_detector
-        q = torch.as_tensor(np.asarray(self.dictionary_rotations.data), dtype=torch.float32)
-        n_px = int(det.nrows * det.ncols)
+        n_px = int(self._match_detector.nrows * self._match_detector.ncols)
         dictionary = torch.empty(self.n_dict, n_px, device=self.device, dtype=self.dtype)
-        for i in range(0, self.n_dict, _PROJ_CHUNK):
-            sim = master.project(
-                det,
-                q[i : i + _PROJ_CHUNK],
-                energy_kev=self.energy_kev,
-                rescale=False,
-            )
-            if self.dynamic_background:
-                sim = remove_dynamic_background(sim, device=self.device)
-            sim = sim.reshape(sim.shape[0], -1).to(torch.float32)  # normalize in fp32
-            dictionary[i : i + _PROJ_CHUNK] = normalize_rows(sim).to(self.dtype)
+        for start, entries in _projected(
+            self.master,
+            self._match_detector,
+            self.dictionary_rotations,
+            self.device,
+            energy_kev=self.energy_kev,
+            dynamic_background=self.dynamic_background,
+        ):
+            dictionary[start : start + len(entries)] = entries.to(self.dtype)
         return dictionary.T.contiguous()
 
     def _match_chunk(self, n_patterns: int) -> int:
