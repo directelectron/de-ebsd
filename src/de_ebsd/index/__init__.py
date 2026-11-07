@@ -27,11 +27,13 @@ __all__ = [
     "remove_background",
     "remove_dynamic_background",
     "remove_static_background",
+    "sample_orientations",
     "to_crystal_map",
 ]
 
 _ORIGIN = {
     "DictionaryIndexer": "de_ebsd.index.dictionary",
+    "sample_orientations": "de_ebsd.index.dictionary",
     "SphericalIndexer": "de_ebsd.index.spherical",
     "determine_pattern_center": "de_ebsd.index.refine",
     "HREBSDResult": "de_ebsd.index.crosscorr",
