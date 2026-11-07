@@ -199,7 +199,7 @@ def refine_orientation(
         ``method="lm"`` requires an all-in-FOV set; the default satisfies this, but a
         custom non-FOV set is unsafe for LM (use Adam, whose masked NCC handles it).
     device
-        Defaults to ``master.data.device``; otherwise everything is moved there.
+        Defaults to ``master.device``; otherwise everything is moved there.
     keep_best
         Never return an orientation worse than the seed, making refinement monotone.
         This removes the stray outliers gradient refinement can introduce on
@@ -233,10 +233,10 @@ def refine_orientation(
     if n_iterations is None:
         n_iterations = 12 if method == "lm" else 60
 
-    device = resolve_device(device, master.data.device)
-    dtype = master.data.dtype
-    # master.data.device drives sampling, so move the master to honor `device`
-    if master.data.device != device:
+    device = resolve_device(device, master.device)
+    dtype = master.dtype
+    # the master's device drives sampling, so move the master to honor `device`
+    if master.device != device:
         master = master.to(device)
 
     patt = torch.as_tensor(patterns, device=device, dtype=dtype)

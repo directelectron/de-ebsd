@@ -10,7 +10,12 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-__all__ = ["detector_rays", "sample_to_detector_matrix", "sample_to_detector_tensor"]
+__all__ = [
+    "detector_rays",
+    "pixels_from_rays",
+    "sample_to_detector_matrix",
+    "sample_to_detector_tensor",
+]
 
 
 def _rodrigues_step(basis: np.ndarray, axis_row: int, angle: float) -> np.ndarray:
@@ -65,3 +70,20 @@ def detector_rays(detector, pattern_center: torch.Tensor, rows: torch.Tensor, co
     y_d = pcy - (rows + 0.5) / detector.nrows
     z_d = pcz + torch.zeros_like(x_d)
     return torch.stack([x_d, y_d, z_d], dim=-1)
+
+
+def pixels_from_rays(detector, pattern_center, ray):
+    """The fractional ``(row, col)`` a detector-frame ray lands on: the inverse of
+    :func:`detector_rays`, pixel centers on integers.
+
+    ``col + 0.5 = ncols * pcx + nrows * pcz * (r1 / r3)`` and
+    ``row + 0.5 = nrows * pcy - nrows * pcz * (r2 / r3)``. Both gnomonic axes scale
+    by ``nrows``, so a pattern-center change is a pure scale-and-shift of the pattern
+    in pixel coordinates -- the magnification-about-the-pattern-center that the
+    moving-screen method exploits.
+    """
+    pcx, pcy, pcz = pattern_center[..., 0:1], pattern_center[..., 1:2], pattern_center[..., 2:3]
+    inv_z = 1.0 / ray[..., 2]
+    col = detector.ncols * pcx + detector.nrows * pcz * (ray[..., 0] * inv_z) - 0.5
+    row = detector.nrows * pcy - detector.nrows * pcz * (ray[..., 1] * inv_z) - 0.5
+    return row, col

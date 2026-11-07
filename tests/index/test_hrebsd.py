@@ -37,11 +37,10 @@ import torch
 
 from band_master import make_band_master
 from de_ebsd import EBSDDetector, MasterPattern
-from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
+from de_ebsd.core.geometry import detector_rays, pixels_from_rays, sample_to_detector_tensor
 from de_ebsd.index.crosscorr import (
     _design,
     _measure_shifts,
-    _pixels_from_ray,
     _solve_beta,
     _window,
     hrebsd,
@@ -121,7 +120,7 @@ def _exact_shifts(detector, f, centers, pattern_center=None):
         detector.pattern_center if pattern_center is None else pattern_center, dtype=DT
     )[None]
     ray = detector_rays(detector, pattern_center, centers[:, 0], centers[:, 1])
-    row1, col1 = _pixels_from_ray(detector, pattern_center, torch.einsum("ij,nkj->nki", f, ray))
+    row1, col1 = pixels_from_rays(detector, pattern_center, torch.einsum("ij,nkj->nki", f, ray))
     return torch.stack([row1[0] - centers[:, 0], col1[0] - centers[:, 1]], dim=-1)
 
 

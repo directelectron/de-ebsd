@@ -219,23 +219,30 @@ def _primitive_hkl(hkl: np.ndarray) -> tuple[int, int, int]:
     return tuple(values)
 
 
-def _clip_line(normal: np.ndarray, bound: float) -> np.ndarray | None:
-    """Clip ``normal[:2] @ (x,y) + normal[2] == 0`` to a square."""
+def _clip_line(normal: np.ndarray, bounds) -> np.ndarray | None:
+    """Clip the line ``normal[:2] @ (x, y) + normal[2] == 0`` to a rectangle.
+
+    *bounds* is ``(x_min, x_max, y_min, y_max)``, such as a square view's
+    ``(-b, b, -b, b)`` or a detector's
+    :attr:`~de_ebsd.sim.detector.EBSDDetector.gnomonic_bounds`. Returns the two
+    endpoints ``(2, 2)``, or ``None`` when the line misses the rectangle.
+    """
 
     nx, ny, nz = (float(v) for v in normal)
+    x_min, x_max, y_min, y_max = (float(v) for v in bounds)
     if abs(nx) <= _GEOMETRY_TOL and abs(ny) <= _GEOMETRY_TOL:
         return None
     points: list[tuple[float, float]] = []
     if abs(ny) > _GEOMETRY_TOL:
-        for x in (-bound, bound):
+        for x in (x_min, x_max):
             y = -(nx * x + nz) / ny
-            if -bound - _GEOMETRY_TOL <= y <= bound + _GEOMETRY_TOL:
-                points.append((x, float(np.clip(y, -bound, bound))))
+            if y_min - _GEOMETRY_TOL <= y <= y_max + _GEOMETRY_TOL:
+                points.append((x, float(np.clip(y, y_min, y_max))))
     if abs(nx) > _GEOMETRY_TOL:
-        for y in (-bound, bound):
+        for y in (y_min, y_max):
             x = -(ny * y + nz) / nx
-            if -bound - _GEOMETRY_TOL <= x <= bound + _GEOMETRY_TOL:
-                points.append((float(np.clip(x, -bound, bound)), y))
+            if x_min - _GEOMETRY_TOL <= x <= x_max + _GEOMETRY_TOL:
+                points.append((float(np.clip(x, x_min, x_max)), y))
     unique: list[tuple[float, float]] = []
     for point in points:
         if not any(np.linalg.norm(np.subtract(point, old)) < 1.0e-9 for old in unique):
@@ -331,7 +338,7 @@ class KinematicPatternModel:
         line_segments: list[np.ndarray] = []
         line_indices: list[np.ndarray] = []
         for normal, hkl in zip(normals_beam, self._band_hkl, strict=True):
-            segment = _clip_line(normal, bound)
+            segment = _clip_line(normal, (-bound, bound, -bound, bound))
             if segment is not None:
                 line_segments.append(segment)
                 line_indices.append(hkl)
