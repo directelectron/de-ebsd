@@ -16,7 +16,7 @@ import math
 
 import torch
 
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device, resolve_lock
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.spherical.correlation import so3_cross_correlation
 from de_ebsd.index.spherical.harmonics import SphericalHarmonicTransform
@@ -45,6 +45,10 @@ class SphericalIndexer:
         Resolved as explicit argument > ``master.device`` > CPU.
     energy_kev
         Energy bin to sample the master at; ``None`` (default) selects the highest.
+    lock
+        Held around every call that runs device work, building included, for an
+        application that shares the device between threads; see
+        :func:`~de_ebsd.core.device.resolve_lock`.
 
     Attributes
     ----------
@@ -54,7 +58,9 @@ class SphericalIndexer:
         Spectra of the master and of ``M^2``, complex, shape ``((L+1)**2,)``.
     """
 
-    def __init__(self, master, detector, bandwidth=53, device=None, energy_kev=None):
+    @holds_lock
+    def __init__(self, master, detector, bandwidth=53, device=None, energy_kev=None, lock=None):
+        self.lock = resolve_lock(lock)
         self.master = master
         self.detector = detector
         self.bandwidth = int(bandwidth)
@@ -118,6 +124,7 @@ class SphericalIndexer:
         self._denom_geo = denom
         return denom
 
+    @holds_lock
     def index(self, patterns, normalize=True, return_surface=False):
         """Index one pattern or a stack, returning orix orientations and quality.
 
@@ -187,6 +194,7 @@ class SphericalIndexer:
             return rotations, quality.detach(), surface.detach()
         return rotations, quality.detach()
 
+    @holds_lock
     def refine(
         self,
         patterns,
@@ -233,6 +241,7 @@ class SphericalIndexer:
             return_history=return_history,
         )
 
+    @holds_lock
     def index_scan(
         self,
         patterns,

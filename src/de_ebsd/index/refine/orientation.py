@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import DIVISION_FLOOR
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix, skew_matrix
 from de_ebsd.index.backproject import pattern_to_sphere
 from de_ebsd.index.refine.levenberg import adapt_damping
@@ -131,6 +131,7 @@ def _lm_refine(
     return r_final, score, hist
 
 
+@holds_lock
 def refine_orientation(
     patterns,
     master,
@@ -147,6 +148,7 @@ def refine_orientation(
     device=None,
     keep_best=True,
     return_history=False,
+    lock=None,
 ):
     """Refine ``rotations`` (and optionally the pattern center) by autograd.
 
@@ -204,6 +206,9 @@ def refine_orientation(
         low-quality real patterns.
     return_history
         Also return the per-step NCC trajectory.
+    lock
+        Held around the device work, for an application that shares the device
+        between threads; see :func:`~de_ebsd.core.device.resolve_lock`.
 
     Returns
     -------

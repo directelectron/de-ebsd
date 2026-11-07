@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.highres import (
     direction_cosine_derivative,
@@ -58,6 +58,7 @@ def _blurred(master, sigma: float):
     return MasterPattern(flat.reshape(data.shape), master.energies_kev, dict(master.metadata))
 
 
+@holds_lock
 def determine_pattern_center(
     patterns,
     master,
@@ -75,6 +76,7 @@ def determine_pattern_center(
     return_orientations: bool = False,
     n_orientation_steps: int = 15,
     blur=_DEFAULT_BLUR,
+    lock=None,
 ):
     """Calibrate one shared pattern center from many EBSD patterns.
 
@@ -127,6 +129,9 @@ def determine_pattern_center(
         fine, spread evenly over the rounds. A sharp dynamical master only has a
         slope within ~0.01 of the true PC; the blurred stages pull a further-off
         seed into that basin. ``None`` or ``(0,)`` fits the sharp master only.
+    lock
+        Held around the device work, for an application that shares the device
+        between threads; see :func:`~de_ebsd.core.device.resolve_lock`.
 
     Returns
     -------
