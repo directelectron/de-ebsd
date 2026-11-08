@@ -6,6 +6,7 @@ never pay for (or require) them.
 
 __all__ = [
     "ELEMENT_COLORS",
+    "PHASE_COLORS",
     "CrystalExplorer",
     "DepthWidget",
     "MicroscopeWidget",
@@ -16,6 +17,7 @@ __all__ = [
     "hemispheres_figure",
     "image_figure",
     "ipf_colors",
+    "phase_color",
     "phase_overview_figure",
     "sampling_sphere_figure",
     "show_correlation",
@@ -40,7 +42,15 @@ _MODULES = {
         "sphere_figure",
         "unit_cell",
     ),
-    "maps": ("ipf_colors", "show_correlation", "show_map", "show_match", "show_refinement"),
+    "maps": (
+        "PHASE_COLORS",
+        "ipf_colors",
+        "phase_color",
+        "show_correlation",
+        "show_map",
+        "show_match",
+        "show_refinement",
+    ),
     "views": ("PhaseOverview",),
     "widgets": ("DepthWidget", "MicroscopeWidget"),
 }

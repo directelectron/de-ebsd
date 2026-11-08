@@ -7,7 +7,25 @@ import numpy as np
 from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.viz.figures import apl, label
 
-__all__ = ["ipf_colors", "show_correlation", "show_map", "show_match", "show_refinement"]
+__all__ = [
+    "PHASE_COLORS",
+    "ipf_colors",
+    "phase_color",
+    "show_correlation",
+    "show_map",
+    "show_match",
+    "show_refinement",
+]
+
+#: Phase colors, as hex, in the order phases take them: SpyDE's and Autopilot's
+#: cycle (Catppuccin Mocha's red, green, blue, yellow, teal and mauve), so a phase
+#: looks the same in every application that lists phases.
+PHASE_COLORS = ("#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af", "#94e2d5", "#cba6f7")
+
+
+def phase_color(number: int) -> str:
+    """Phase *number*'s color from :data:`PHASE_COLORS`, cycling past the last."""
+    return PHASE_COLORS[int(number) % len(PHASE_COLORS)]
 
 
 def _to_numpy(x) -> np.ndarray:

@@ -83,3 +83,13 @@ parabola through each axis's scores, refines the seed. The same machinery
 calibrates the pattern center from a buffer of frames and fits each pattern's
 strain together with its orientation. Fused CUDA kernels, compiled at run time
 when CuPy is installed, do the projection and scoring in one pass.
+
+It is the one multi-phase indexer, for either physics. Each phase's master may be
+a dynamical :class:`~de_ebsd.sim.MasterPattern` or a kinematic
+:class:`~de_ebsd.sim.KinematicMaster`, sampled onto the same Lambert grid
+(:meth:`~de_ebsd.sim.KinematicMaster.to_master_pattern`), so a CPU without the
+minutes a dynamical master takes indexes several phases the same way a GPU does
+(:func:`~de_ebsd.index.live.dynamical_indexing_available` says which to use).
+Frames may be NumPy, torch or CuPy arrays; a GPU array is read in place through
+DLPack. Orientations and strains come back in kikuchipy's sample frame; turning
+them into a scan's is the caller's, with :mod:`de_ebsd.core.frames`.

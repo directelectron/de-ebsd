@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -19,6 +20,28 @@ BATCH = 256
 #: often. On a Titan X, 256 to 1024 took the refine and the orientation fit from
 #: 37 to 15 ms per 256 patterns.
 FUSED_BATCH = 1024
+
+
+def as_frames(frames) -> torch.Tensor:
+    """*frames* as a tensor where they already are, without a copy: a torch tensor as
+    it is, a CuPy (or any DLPack) array handed over through DLPack, so a camera's GPU
+    frames reach the indexer without leaving the device, and a NumPy array wrapped
+    in place. Their dtype is kept; each step converts what it reads."""
+    if isinstance(frames, torch.Tensor):
+        return frames
+    if hasattr(frames, "__dlpack__") and not isinstance(frames, np.ndarray):
+        return torch.from_dlpack(frames)
+    return torch.as_tensor(np.asarray(frames))
+
+
+def shape_in_aspect(side, shape) -> tuple[int, int]:
+    """*side* pixels on the long side of *shape* ``(rows, cols)``, in its aspect, and
+    at least 8 on either; a ``(rows, cols)`` *side* is returned as it is."""
+    if not isinstance(side, int | np.integer):
+        return tuple(int(n) for n in side)
+    rows, cols = int(shape[0]), int(shape[1])
+    scale = int(side) / max(rows, cols)
+    return max(8, round(rows * scale)), max(8, round(cols * scale))
 
 
 def average_to(stack: torch.Tensor, shape) -> torch.Tensor:

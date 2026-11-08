@@ -29,9 +29,10 @@ import torch
 from de_ebsd.core.constants import electron_wavelength_nm
 from de_ebsd.core.device import resolve_device
 from de_ebsd.core.geometry import pixels_from_rays, sample_to_detector_matrix
+from de_ebsd.core.lambert import master_pattern_grid
 from de_ebsd.core.rotation import quaternion_to_matrix
 from de_ebsd.diffraction.kinematic import _clip_line, _reflections
-from de_ebsd.sim.masterpattern import SphereProjection, _as_quaternions
+from de_ebsd.sim.masterpattern import MasterPattern, SphereProjection, _as_quaternions
 
 __all__ = [
     "KinematicMaster",
@@ -49,6 +50,10 @@ _NM_PER_ANGSTROM = 0.1
 #: Elements of the ``(directions, bands)`` table :meth:`KinematicMaster.sample`
 #: holds at once, so a whole dictionary chunk never materializes it.
 _SAMPLE_BLOCK_ELEMENTS = 1 << 24
+#: Half-width of the Lambert grid :meth:`KinematicMaster.to_master_pattern` samples
+#: onto by default. Near the grid's center a pixel then spans 0.45 degrees, finer
+#: than the narrowest band a 20 keV pattern draws (a Bragg angle of about a degree).
+LAMBERT_NPX = 200
 
 
 @dataclass
@@ -282,6 +287,19 @@ class KinematicMaster(SphereProjection):
             for i in range(0, flat.shape[0], block)
         ]
         return torch.cat(parts).reshape(lead)
+
+    def to_master_pattern(self, npx: int = LAMBERT_NPX) -> MasterPattern:
+        """The bands sampled onto a square-Lambert grid of half-width *npx*: a
+        :class:`~de_ebsd.sim.MasterPattern`, for what reads a master's Lambert
+        storage, such as :class:`~de_ebsd.index.live.LiveIndexer`, which indexes
+        several phases' kinematic bands this way.
+
+        Its one energy bin is labelled ``NaN``: the widths already carry the energy.
+        """
+        north = master_pattern_grid(int(npx), device=self.device, dtype=self.dtype)
+        south = north * torch.tensor([1.0, 1.0, -1.0], device=self.device, dtype=self.dtype)
+        data = torch.stack([self.sample(north), self.sample(south)])[None]
+        return MasterPattern(data, np.array([np.nan]), dict(self.metadata))
 
     def __repr__(self) -> str:
         return f"KinematicMaster({len(self.reflectors)} bands, device={self.device.type})"
