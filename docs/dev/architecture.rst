@@ -36,7 +36,7 @@ nothing from de-ebsd:
     core/          frames, constants, coordinate maps
     crystal/       unit cells, scattering, structure factors
     diffraction/   reflection lists, Bethe partition, Bloch-wave backends
-    sim/           master-pattern generation, detector geometry, Monte Carlo
+    sim/           master patterns (dynamical and kinematic), detector geometry, Monte Carlo
     index/         orientation indexing and refinement (the inverse problem)
     viz/           the anyplotlib display layer
 

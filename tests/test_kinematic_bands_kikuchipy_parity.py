@@ -1,0 +1,651 @@
+"""The kinematic band overlay's detector convention, pinned against **kikuchipy**.
+
+``test_kinematic_bands`` proves the overlay is self-consistent: its lines land on
+the bands :class:`~de_ebsd.sim.kinematic_bands.KinematicMaster` projects. That
+cannot see a mirrored, transposed or sheared projection that both share, so this
+file pins the convention against kikuchipy. The numbers were captured from it (see
+``TestAgainstLiveKikuchipy`` for the recipe, which re-derives them whenever
+kikuchipy is installed) with ``sample_tilt=90, tilt=0, azimuthal=0, twist=90``,
+which makes kikuchipy's sample-to-detector matrix the identity: the plane normals
+are then given in the DETECTOR frame and drawn at the identity orientation, which
+isolates the projection and the pixel convention. ``TestTiltedDetectorMatchesKikuchipy``
+then pins the rotations at a real 70 degree set-up.
+
+The one difference left is pixel INDEXING: kikuchipy maps the gnomonic bounds onto
+indices ``0 ... N-1`` (an index is a detector edge), de-ebsd onto pixel centers
+``-0.5 ... N-0.5``. :func:`_to_kikuchipy_pixels` is that affine, after which the two
+agree to ~1e-6 px. The non-square detector is the load-bearing case: on a square one
+an aspect-ratio error is invisible.
+
+Ported from de-ebsd's ``test_ebsd_bands_kikuchipy_parity``.
+"""
+
+import numpy as np
+import pytest
+import torch
+from orix.quaternion import Rotation
+
+from de_ebsd import EBSDDetector
+from de_ebsd.core.geometry import sample_to_detector_matrix
+from de_ebsd.sim.kinematic_bands import KinematicMaster, Reflectors, band_lines, zone_axis_points
+
+
+def detector(shape, pc, sample_tilt=70.0, tilt=0.0, azimuthal=0.0, twist=0.0):
+    return EBSDDetector(
+        shape=shape,
+        pattern_center=pc,
+        sample_tilt=sample_tilt,
+        tilt=tilt,
+        azimuthal=azimuthal,
+        twist=twist,
+    )
+
+
+def euler_rotation(euler_deg):
+    return Rotation.from_euler(np.deg2rad([euler_deg]))
+
+
+#: kikuchipy's ``sample_tilt=90, twist=90``: sample and detector frames coincide.
+IDENTITY_FRAME = {"sample_tilt": 90.0, "twist": 90.0}
+
+# ── captured kikuchipy reference ─────────────────────────────────────────────
+# Ni (Fm-3m, a=3.52 A), reflectors from min_dspacing=1.2 A at 20 kV, orientation
+# Bunge (33.3, 30.0, 15.0) deg -- deliberately off any zone axis, so the band
+# pattern is visibly handed and a mirror cannot hide in the symmetry.
+EULER_DEG = (33.3, 30.0, 15.0)
+
+NONSQUARE_SHAPE = (60, 80)
+NONSQUARE_PC = (0.42, 0.63, 0.55)
+NONSQUARE_NORMALS = np.array(
+    [
+        [0.68426782, 0.71765641, 0.12940952],
+        [-0.67558940, 0.55706892, 0.48296291],
+        [0.27451141, -0.41790368, 0.86602540],
+        [0.00613657, 0.90136693, 0.43301270],
+        [-0.96156426, -0.11355250, 0.25000000],
+        [-0.28974154, -0.80296224, 0.52086608],
+        [0.67182273, -0.68940974, 0.27086608],
+        [0.67795929, 0.21195719, 0.70387879],
+        [0.30989498, 0.89102021, 0.33173498],
+        [-0.91027940, 0.17731189, 0.37410146],
+        [-0.48150030, 0.31136538, 0.81927350],
+        [-0.48926251, -0.82878362, 0.27155094],
+        [0.73479298, 0.45499920, 0.50304573],
+        [-0.29825166, 0.81920330, 0.48984886],
+    ]
+)
+NONSQUARE_KP_LINES = np.array(
+    [  # x0, y0, x1, y1 in kikuchipy detector pixels
+        [72.907504, 80.740836, -12.417097, -0.270812],
+        [82.864984, 5.301644, 11.229856, 91.811103],
+        [-12.452639, -0.227851, 16.835424, -19.385336],
+        [90.061142, 53.144454, -23.914291, 52.371775],
+        [34.675549, -21.661826, 48.396438, 94.036611],
+        [-12.421727, -0.265221, 92.279744, 37.355930],
+        [-15.033473, 71.205829, 68.594260, -9.944681],
+        [17.129181, 93.808700, -12.410840, -0.278367],
+        [84.176569, 66.913095, -25.345274, 28.982349],
+        [57.099614, -16.645163, 35.066489, 95.990683],
+        [92.043504, 31.910006, 52.512879, 92.782848],
+        [-12.419573, -0.267822, 88.128060, 58.838820],
+        [46.521610, 94.501509, -12.414221, -0.274285],
+        [92.245564, 35.160149, -13.357472, 73.445377],
+    ]
+)
+
+SQUARE_SHAPE = (60, 60)
+SQUARE_PC = (0.42, 0.63, 0.55)
+SQUARE_NORMALS = np.array(
+    [
+        [0.68426782, 0.71765641, 0.12940952],
+        [-0.67558940, 0.55706892, 0.48296291],
+        [0.00613657, 0.90136693, 0.43301270],
+        [-0.96156426, -0.11355250, 0.25000000],
+        [-0.28974154, -0.80296224, 0.52086608],
+        [0.67182273, -0.68940974, 0.27086608],
+        [0.67795929, 0.21195719, 0.70387879],
+        [0.30989498, 0.89102021, 0.33173498],
+        [-0.91027940, 0.17731189, 0.37410146],
+        [-0.48150030, 0.31136538, 0.81927350],
+        [-0.48926251, -0.82878362, 0.27155094],
+        [0.73479298, 0.45499920, 0.50304573],
+        [-0.29825166, 0.81920330, 0.48984886],
+        [-0.91416051, -0.39276261, 0.10024019],
+    ]
+)
+SQUARE_KP_LINES = np.array(
+    [
+        [58.294843, 74.977044, -14.579671, 5.492980],
+        [68.646726, 12.103535, 8.531089, 85.009212],
+        [72.731233, 53.085292, -23.383483, 52.430937],
+        [27.257567, -13.292649, 38.943905, 85.667434],
+        [-12.222049, 2.768464, 75.223112, 34.322245],
+        [-17.180785, 65.310892, 53.995577, -4.049744],
+        [5.717602, 83.959340, -17.539170, 9.570993],
+        [67.518137, 64.115667, -25.455075, 31.779777],
+        [46.958584, -8.225239, 28.298633, 87.570759],
+        [74.613718, 45.489727, 52.812723, 79.203127],
+        [-13.352941, 4.026432, 72.221983, 54.544566],
+        [33.391789, 86.954078, -15.948313, 7.273147],
+        [75.293275, 38.183091, -13.258044, 70.422436],
+        [7.881387, -10.443592, 47.686129, 82.202505],
+    ]
+)
+
+CASES = [
+    pytest.param(SQUARE_SHAPE, SQUARE_PC, SQUARE_NORMALS, SQUARE_KP_LINES, id="square-60x60"),
+    pytest.param(
+        NONSQUARE_SHAPE, NONSQUARE_PC, NONSQUARE_NORMALS, NONSQUARE_KP_LINES, id="nonsquare-60x80"
+    ),
+]
+
+#: How close de-ebsd and kikuchipy have to be, in detector pixels. They agree to
+#: ~1e-6 px; a flip / transpose / dropped aspect ratio misses by 10-100 px.
+TOL_PX = 1e-3
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+def _to_kikuchipy_pixels(seg, shape):
+    """de-ebsd pixel-CENTRE coordinates -> kikuchipy's pixel-INDEX ones.
+
+    de-ebsd spans the detector over ``-0.5 … N-0.5`` (pixel centres on integers,
+    the convention anyplotlib's ``transform="data"`` markers draw in and the one
+    ``KinematicMaster.project`` renders in). kikuchipy divides the gnomonic bounds by
+    ``x_scale = (x_max-x_min)/(N-1)``, so its indices run ``0 … N-1`` over the
+    same physical span. Hence the ``(N-1)/N`` shrink on top of the half-pixel
+    shift. This is a pure relabelling of the axis — it cannot hide a flip, a
+    transpose or a scale error, all of which are odd or anisotropic.
+    """
+    dy, dx = int(shape[0]), int(shape[1])
+    return (np.asarray(seg, float) + 0.5) * np.array([(dx - 1) / dx, (dy - 1) / dy])
+
+
+def _line_through(p0, p1):
+    """Normalised ``(n, c)`` with ``n·p + c = 0``."""
+    d = np.asarray(p1, float) - np.asarray(p0, float)
+    n = np.array([-d[1], d[0]])
+    n = n / max(np.linalg.norm(n), 1e-30)
+    return n, -float(n @ np.asarray(p0, float))
+
+
+def _spyde_segment(normal, shape, pc):
+    """The band-centre segment de-ebsd draws for one DETECTOR-frame plane normal.
+
+    Identity Euler angles and the identity detector frame, so the normal
+    reaches the projection untouched.
+    """
+    refl = Reflectors(np.asarray(normal, float).reshape(1, 3), np.array([1.0]), np.array([0.05]))
+    segs, _w = band_lines(Rotation.identity(), refl, detector(shape, pc, **IDENTITY_FRAME))
+    return None if len(segs) == 0 else np.asarray(segs[0], float)
+
+
+def _max_distance_to_kp_line(seg_kp_px, kp_line):
+    """Largest perpendicular distance from a segment's endpoints to kikuchipy's
+    line. Compared as LINES, not endpoint-to-endpoint: kikuchipy draws its
+    plane traces out to a fixed gnomonic radius while de-ebsd clips to the
+    detector, so the segments coincide but their ends do not.
+    """
+    n, c = _line_through(kp_line[:2], kp_line[2:])
+    return float(np.abs(np.asarray(seg_kp_px) @ n + c).max())
+
+
+def _pairs(shape, pc, normals, kp_lines):
+    """(normal, spyde segment, kikuchipy line) for every band de-ebsd draws.
+
+    kikuchipy's in-bounds test is looser than a clip to the detector box, so a
+    few of its lines miss the frame entirely; those have no de-ebsd counterpart.
+    """
+    out = []
+    for n, kl in zip(normals, kp_lines, strict=True):
+        seg = _spyde_segment(n, shape, pc)
+        if seg is not None:
+            out.append((n, seg, kl))
+    return out
+
+
+# ── the tests ────────────────────────────────────────────────────────────────
+class TestMatchesKikuchipy:
+    """de-ebsd's drawn band lines ARE kikuchipy's, to a millionth of a pixel."""
+
+    @pytest.mark.parametrize("shape,pc,normals,kp_lines", CASES)
+    def test_band_lines_match(self, shape, pc, normals, kp_lines):
+        pairs = _pairs(shape, pc, normals, kp_lines)
+        assert len(pairs) >= 8, "too few comparable bands to prove anything"
+        worst = max(
+            _max_distance_to_kp_line(_to_kikuchipy_pixels(seg, shape), kl) for _n, seg, kl in pairs
+        )
+        assert worst < TOL_PX, (
+            f"de-ebsd's band lines are up to {worst:.4f} px from kikuchipy's on a "
+            f"{shape} detector — the overlay's projection disagrees with the "
+            f"reference implementation"
+        )
+
+    @pytest.mark.parametrize("shape,pc,normals,kp_lines", CASES)
+    def test_line_directions_match(self, shape, pc, normals, kp_lines):
+        """Position and DIRECTION separately: a sheared projection can keep a
+        line's distance from the centre while rotating it (that is exactly what
+        dropping the aspect ratio does — up to 8 degrees on a 4:3 detector)."""
+        worst = 0.0
+        for _n, seg, kl in _pairs(shape, pc, normals, kp_lines):
+            q = _to_kikuchipy_pixels(seg, shape)
+            d_s = q[1] - q[0]
+            d_k = np.array([kl[2] - kl[0], kl[3] - kl[1]])
+            d_s = d_s / np.linalg.norm(d_s)
+            d_k = d_k / np.linalg.norm(d_k)
+            worst = max(worst, float(np.degrees(np.arccos(np.clip(abs(d_s @ d_k), 0, 1)))))
+        assert worst < 0.01, (
+            f"band lines are rotated by up to {worst:.4f} deg relative to "
+            f"kikuchipy's on a {shape} detector"
+        )
+
+
+class TestTheIdentityFrame:
+    def test_it_is_the_identity(self):
+        assert np.allclose(sample_to_detector_matrix(90.0, 0.0, 0.0, 90.0), np.eye(3), atol=1e-12)
+
+
+class TestTheTestHasTeeth:
+    """Every way the overlay could plausibly be wrong, and the margin by which
+    :class:`TestMatchesKikuchipy` rejects it. Without this the parity test could
+    be passing on a symmetry rather than on the geometry."""
+
+    #: name -> transform of a de-ebsd segment already in kikuchipy pixels
+    VARIANTS = {
+        "flip-x": lambda p, dy, dx: np.column_stack([dx - 1 - p[:, 0], p[:, 1]]),
+        "flip-y": lambda p, dy, dx: np.column_stack([p[:, 0], dy - 1 - p[:, 1]]),
+        "flip-both": lambda p, dy, dx: np.column_stack([dx - 1 - p[:, 0], dy - 1 - p[:, 1]]),
+        "transpose": lambda p, dy, dx: np.column_stack([p[:, 1], p[:, 0]]),
+    }
+
+    @pytest.mark.parametrize("name", list(VARIANTS))
+    @pytest.mark.parametrize("shape,pc,normals,kp_lines", CASES)
+    def test_a_flip_or_transpose_would_be_rejected(self, name, shape, pc, normals, kp_lines):
+        dy, dx = shape
+        fn = self.VARIANTS[name]
+        worst = max(
+            _max_distance_to_kp_line(fn(_to_kikuchipy_pixels(seg, shape), dy, dx), kl)
+            for _n, seg, kl in _pairs(shape, pc, normals, kp_lines)
+        )
+        assert worst > 5.0, (
+            f"a {name} of the overlay is only {worst:.3f} px from the correct "
+            f"answer on a {shape} detector — this parity test cannot see it"
+        )
+
+    def test_dropping_the_aspect_ratio_would_be_rejected(self):
+        """The bug this file was written for: normalising x by the detector
+        WIDTH and y by its HEIGHT (rather than both by the height) assumes
+        non-square pixels and shears every band. Exactly zero effect on a square
+        detector, which is why it survived — so it is checked on the 4:3 one.
+        """
+        dy, dx = NONSQUARE_SHAPE
+        pcx, pcy, L = NONSQUARE_PC
+        aspect = dx / dy
+        worst_px, worst_deg = 0.0, 0.0
+        for n, _seg, kl in _pairs(
+            NONSQUARE_SHAPE, NONSQUARE_PC, NONSQUARE_NORMALS, NONSQUARE_KP_LINES
+        ):
+            # the pre-fix closed form: a = nx/dx (not nx/dy), no aspect on pcx
+            a, b = n[0] / dx, -n[1] / dy
+            c = L * n[2] - pcx * n[0] + pcy * n[1]
+            # two points on that line, in de-ebsd pixel-centre coordinates
+            if abs(b) > abs(a):
+                us = np.array([0.0, float(dx)])
+                pts = np.column_stack([us, -(c + a * us) / b]) - 0.5
+            else:
+                vs = np.array([0.0, float(dy)])
+                pts = np.column_stack([-(c + b * vs) / a, vs]) - 0.5
+            q = _to_kikuchipy_pixels(pts, NONSQUARE_SHAPE)
+            worst_px = max(worst_px, _max_distance_to_kp_line(q, kl))
+            d_s = q[1] - q[0]
+            d_k = np.array([kl[2] - kl[0], kl[3] - kl[1]])
+            d_s = d_s / np.linalg.norm(d_s)
+            d_k = d_k / np.linalg.norm(d_k)
+            worst_deg = max(worst_deg, float(np.degrees(np.arccos(np.clip(abs(d_s @ d_k), 0, 1)))))
+        assert worst_px > 5.0 and worst_deg > 1.0, (
+            f"the width/height-normalised projection is only {worst_px:.3f} px "
+            f"/ {worst_deg:.3f} deg from kikuchipy's — this test cannot see the "
+            f"regression it exists to catch"
+        )
+        assert aspect != 1.0
+
+
+class TestBrukerConventionHoldsEverywhere:
+    """The same convention, stated as an equation, applied to the other two
+    entry points. ``band_lines`` is what the overlay draws, but the DICTIONARY
+    is rendered through ``EBSDDetector.direction_cosines`` and the zone-axis markers
+    through :func:`zone_axis_points`; all three have to mean the same detector
+    or the overlay drifts off the very bands it was matched against.
+
+    For a detector pixel whose CENTRE is at plot coordinates ``(x, y)``, the
+    Bruker gnomonic coordinates are::
+
+        x_g = ((x + 0.5)/dx - pcx) * (dx/dy) / pcz
+        y_g = (pcy - (y + 0.5)/dy) / pcz
+
+    and a band of plane normal ``n`` passes through it when
+    ``nx*x_g + ny*y_g + nz = 0``.
+    """
+
+    @staticmethod
+    def _gnomonic(x, y, shape, pc):
+        dy, dx = int(shape[0]), int(shape[1])
+        pcx, pcy, L = (float(v) for v in pc)
+        x_g = ((np.asarray(x, float) + 0.5) / dx - pcx) * (dx / dy) / L
+        y_g = (pcy - (np.asarray(y, float) + 0.5) / dy) / L
+        return x_g, y_g
+
+    @pytest.mark.parametrize("shape,pc,normals,kp_lines", CASES)
+    def test_band_line_pixels_satisfy_the_relation(self, shape, pc, normals, kp_lines):
+        for n, seg, _kl in _pairs(shape, pc, normals, kp_lines):
+            x_g, y_g = self._gnomonic(seg[:, 0], seg[:, 1], shape, pc)
+            resid = np.abs(n[0] * x_g + n[1] * y_g + n[2])
+            assert resid.max() < 1e-5, (
+                f"a drawn band pixel is not on the plane {np.round(n, 4)} "
+                f"(residual {resid.max():.2e})"
+            )
+
+    @pytest.mark.parametrize(
+        "shape,pc", [(SQUARE_SHAPE, SQUARE_PC), (NONSQUARE_SHAPE, NONSQUARE_PC)]
+    )
+    def test_direction_cosines_satisfy_the_relation(self, shape, pc):
+        """The simulator's rays and the overlay's lines must be the same
+        detector — this is the link that makes the overlay meaningful."""
+        # the identity frame, so the sample-frame direction cosines are detector rays
+        r = detector(shape, pc, **IDENTITY_FRAME).direction_cosines(dtype=torch.float64)
+        dy, dx = shape
+        r = r.numpy().reshape(dy, dx, 3)
+        gy, gx = np.mgrid[0:dy, 0:dx]
+        x_g, y_g = self._gnomonic(gx, gy, shape, pc)
+        # r is the unit ray, so (x_g, y_g, 1) is parallel to it
+        want = np.stack([x_g, y_g, np.ones_like(x_g)], -1)
+        want = want / np.linalg.norm(want, axis=-1, keepdims=True)
+        assert np.allclose(r, want, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "shape,pc", [(SQUARE_SHAPE, SQUARE_PC), (NONSQUARE_SHAPE, NONSQUARE_PC)]
+    )
+    def test_zone_axes_satisfy_the_relation(self, shape, pc):
+        """A zone axis is drawn where the crystal direction pierces the
+        detector, so its gnomonic coordinates must be ``(tx/tz, ty/tz)``."""
+        euler = euler_rotation(EULER_DEG)
+        za = zone_axis_points(euler, detector=detector(shape, pc), max_axes=12)
+        assert len(za) >= 1, "no zone axes drawn — nothing tested"
+        segs, _w = band_lines(euler, detector=detector(shape, pc))
+        assert len(segs) >= 3
+        # Every drawn zone axis lies on at least two drawn band lines, and it
+        # does so in the SAME gnomonic frame the bands use.
+        for p in za:
+            d = sorted(abs(float((p - s[0]) @ _line_through(s[0], s[1])[0])) for s in segs)
+            assert d[1] < 1.0, f"zone axis {p} lies on fewer than 2 bands"
+
+    def test_a_square_detector_is_unaffected_by_the_aspect_ratio(self):
+        """Carrying the aspect ratio must be a NO-OP where ``dx == dy`` — the
+        bundled synthetic EBSD scan, every existing test and every PC stamped on
+        stored data live on a square detector, and none of them may move."""
+        shape, pc = SQUARE_SHAPE, SQUARE_PC
+        dy, dx = shape
+        pcx, pcy, L = pc
+        assert dx == dy, "this test is only meaningful on a square detector"
+        for n, seg, _kl in _pairs(shape, pc, SQUARE_NORMALS, SQUARE_KP_LINES):
+            # the PRE-FIX closed form: a = nx/dx, and no aspect factor on pcx
+            a, b = n[0] / dx, -n[1] / dy
+            c = L * n[2] - pcx * n[0] + pcy * n[1]
+            # every pixel the current code draws still satisfies it exactly
+            u, v = seg[:, 0] + 0.5, seg[:, 1] + 0.5
+            assert np.abs(a * u + b * v + c).max() < 1e-6, (
+                "the aspect-ratio fix moved a band line on a SQUARE detector"
+            )
+
+
+class TestAgainstLiveKikuchipy:
+    """Regenerate the reference from kikuchipy itself, when it is installed.
+
+    kikuchipy is an OPTIONAL extra (``spyde[ebsd]``), so the captured numbers
+    above are what runs in CI. This is how they were produced and how to check
+    they are still what kikuchipy says.
+    """
+
+    def test_reference_still_matches_kikuchipy(self):
+        kp = pytest.importorskip("kikuchipy")
+        pytest.importorskip("diffsims")
+        from diffpy.structure import Atom, Lattice, Structure
+        from diffsims.crystallography import ReciprocalLatticeVector
+        from orix.crystal_map import Phase
+        from orix.quaternion import Rotation
+
+        phase = Phase(
+            name="ni",
+            space_group=225,
+            structure=Structure(
+                atoms=[Atom("Ni", [0, 0, 0])], lattice=Lattice(3.52, 3.52, 3.52, 90, 90, 90)
+            ),
+        )
+        rlv = ReciprocalLatticeVector.from_min_dspacing(phase, 1.2)
+        rlv = rlv.unique(use_symmetry=True).symmetrise()
+        rlv.sanitise_phase()
+        rlv.calculate_structure_factor()
+        rlv.calculate_theta(20e3)
+        sim = kp.simulations.KikuchiPatternSimulator(rlv)
+        rot = Rotation.from_euler(np.deg2rad([EULER_DEG]))
+
+        for shape, pc, normals, kp_lines in [
+            (SQUARE_SHAPE, SQUARE_PC, SQUARE_NORMALS, SQUARE_KP_LINES),
+            (NONSQUARE_SHAPE, NONSQUARE_PC, NONSQUARE_NORMALS, NONSQUARE_KP_LINES),
+        ]:
+            # sample_tilt=90 + twist=90 makes sample_to_detector the identity,
+            # i.e. kikuchipy's detector frame IS spyde.ebsd.bands' frame.
+            det = kp.detectors.EBSDDetector(
+                shape=shape, pc=pc, sample_tilt=90.0, tilt=0.0, azimuthal=0.0, twist=90.0
+            )
+            assert np.allclose(det.sample_to_detector.to_matrix().squeeze(), np.eye(3)), (
+                "kikuchipy detector frame moved"
+            )
+            geo = sim.on_detector(det, rot)
+            n_live = np.asarray(geo._lines.vector_detector.data).reshape(-1, 3)
+            n_live = n_live / np.linalg.norm(n_live, axis=1, keepdims=True)
+            c_live = geo.lines_coordinates(coordinates="pixel", exclude_nan=False)
+
+            for n, kl in zip(normals, kp_lines, strict=True):
+                j = int(np.argmax(np.abs(n_live @ n)))
+                assert abs(abs(float(n_live[j] @ n)) - 1) < 1e-6, (
+                    "captured normal is no longer in kikuchipy's reflector set"
+                )
+                assert np.allclose(c_live[j], kl, atol=1e-4), (
+                    f"kikuchipy's own line for {np.round(n, 4)} on {shape} has "
+                    f"moved: {np.round(c_live[j], 4)} vs captured "
+                    f"{np.round(kl, 4)}"
+                )
+
+
+# ── a tilted detector ────────────────────────────────────────────────────────
+# Captured from kikuchipy with the same Ni reflectors, orientation, detector
+# and PC as above, but a real EBSD set-up: EBSDDetector with each case's
+# angles. The bands are given by their Miller indices (crystal frame), so these
+# lines go through the WHOLE chain — the Bunge rotation into the sample frame
+# and the sample-to-detector rotation — that the cases above skip.
+TILTED_HKL = np.array(
+    [
+        (1, 0, 0),
+        (0, 1, 0),
+        (1, 1, 0),
+        (-1, 1, 0),
+        (0, 1, 1),
+        (-1, 0, 1),
+        (0, -1, 1),
+        (2, 1, 0),
+        (-1, 2, 0),
+        (0, 2, 1),
+        (-2, 0, 1),
+        (0, -2, 1),
+    ],
+    float,
+)
+TILTED_KP_LINES_70 = np.array(
+    [
+        [-13.359519, 73.442773, 60.676624, -14.923225],
+        [77.038754, 76.616292, -19.189263, 9.894428],
+        [27.685250, 95.765764, 9.820883, -16.888747],
+        [-25.805576, 40.830960, 91.464072, 27.424485],
+        [65.704191, 86.307425, -13.544228, 73.206544],
+        [73.342655, -6.003443, 17.118374, 93.805662],
+        [12.743809, -18.050292, 82.045437, 70.271037],
+        [7.303198, 90.079654, 29.671484, -21.576877],
+        [91.095040, 48.895830, -25.200431, 28.014235],
+        [72.873871, 80.771220, -25.892224, 38.975359],
+        [68.319278, -10.148398, 2.822202, 87.663232],
+        [-3.902668, -8.654200, 79.903553, 73.207412],
+    ]
+)
+TILTED_KP_LINES_ALL_ANGLES = np.array(
+    [
+        [-10.718948, 76.571932, 49.815634, -19.301123],
+        [83.198249, 68.517158, -17.110230, 6.257348],
+        [38.739619, 95.759697, 6.555594, -15.370574],
+        [-25.918392, 36.730575, 88.675942, 16.932978],
+        [81.478633, 71.085894, -22.561121, 56.727448],
+        [73.139061, -6.190363, 11.977340, 92.103000],
+        [25.084745, -21.125972, 84.752234, 65.912019],
+        [16.026496, 93.487286, 21.947648, -20.608009],
+        [-24.167297, 22.943847, 92.255038, 38.881620],
+        [82.367186, 69.795082, -25.682510, 31.898983],
+        [64.570087, -12.693429, 2.049801, 87.194724],
+        [1.905423, -12.765349, 83.988711, 67.230199],
+    ]
+)
+TILTED_CASES = [
+    pytest.param(
+        {"sample_tilt": 70.0, "tilt": 0.0, "azimuthal": 0.0, "twist": 0.0},
+        TILTED_KP_LINES_70,
+        id="tilt70",
+    ),
+    pytest.param(
+        {"sample_tilt": 65.0, "tilt": 8.0, "azimuthal": 3.0, "twist": 2.0},
+        TILTED_KP_LINES_ALL_ANGLES,
+        id="all-angles",
+    ),
+]
+
+
+def _single_band(hkl, width=0.01):
+    normal = np.asarray(hkl, float) / np.linalg.norm(hkl)
+    return Reflectors(normal.reshape(1, 3), np.array([1.0]), np.array([width]))
+
+
+def _from_kikuchipy_pixels(points, shape):
+    """The inverse of :func:`_to_kikuchipy_pixels`."""
+    dy, dx = int(shape[0]), int(shape[1])
+    return (np.asarray(points, float) / np.array([(dx - 1) / dx, (dy - 1) / dy])) - 0.5
+
+
+def _tilted_misses(angles, kp_lines, frame):
+    """Each band's largest distance from kikuchipy's line, in pixels, when
+    drawn with *frame* as the geometry."""
+    euler = euler_rotation(EULER_DEG)
+    misses = []
+    for hkl, kp_line in zip(TILTED_HKL, kp_lines, strict=True):
+        segs, _w = band_lines(
+            euler, _single_band(hkl), detector(NONSQUARE_SHAPE, NONSQUARE_PC, **frame)
+        )
+        if len(segs):
+            misses.append(
+                _max_distance_to_kp_line(_to_kikuchipy_pixels(segs[0], NONSQUARE_SHAPE), kp_line)
+            )
+    return np.asarray(misses)
+
+
+class TestTiltedDetectorMatchesKikuchipy:
+    """At a real EBSD geometry the drawn lines AND the simulated bands are
+    kikuchipy's. Without the sample-to-detector rotation every band here is
+    tilted by the missing ~20°, tens of pixels off."""
+
+    @pytest.mark.parametrize("angles,kp_lines", TILTED_CASES)
+    def test_band_lines_match(self, angles, kp_lines):
+        misses = _tilted_misses(angles, kp_lines, angles)
+        assert len(misses) >= 8, "too few comparable bands to prove anything"
+        assert misses.max() < TOL_PX, (
+            f"band lines are up to {misses.max():.4f} px from kikuchipy's at {angles}"
+        )
+
+    @pytest.mark.parametrize("angles,kp_lines", TILTED_CASES)
+    def test_simulated_bands_are_centred_on_kikuchipy_lines(self, angles, kp_lines):
+        """The dictionary side: every pixel near a band's peak in
+        ``KinematicMaster.project`` lies on kikuchipy's line for that band."""
+        euler = euler_rotation(EULER_DEG)
+        worst, compared = 0.0, 0
+        for hkl, kp_line in zip(TILTED_HKL, kp_lines, strict=True):
+            pattern = (
+                KinematicMaster(_single_band(hkl), dtype=torch.float64)
+                .project(detector(NONSQUARE_SHAPE, NONSQUARE_PC, **angles), euler, rescale=False)[0]
+                .numpy()
+            )
+            rows, cols = np.nonzero(pattern > 0.9)
+            if len(rows) < 20:
+                continue
+            compared += 1
+            n, c = _line_through(*_from_kikuchipy_pixels(kp_line.reshape(2, 2), NONSQUARE_SHAPE))
+            worst = max(worst, float(np.abs(np.column_stack([cols, rows]) @ n + c).max()))
+        assert compared >= 8, "too few bands crossed the detector"
+        assert worst < 1.0, (
+            f"a simulated band peaks {worst:.2f} px off kikuchipy's line at {angles}"
+        )
+
+    @pytest.mark.parametrize("angles,kp_lines", TILTED_CASES)
+    def test_the_untilted_geometry_would_be_rejected(self, angles, kp_lines):
+        """The bug this class was written for: detector rays dotted with
+        sample-frame normals, which is the identity frame at every tilt."""
+        misses = _tilted_misses(angles, kp_lines, IDENTITY_FRAME)
+        assert np.median(misses) > 5.0, (
+            f"the untilted geometry is only {np.median(misses):.2f} px from "
+            f"kikuchipy's lines — this class cannot see the tilt"
+        )
+
+    @pytest.mark.parametrize("angles,kp_lines", TILTED_CASES)
+    def test_reference_still_matches_kikuchipy(self, angles, kp_lines):
+        kp = pytest.importorskip("kikuchipy")
+        pytest.importorskip("diffsims")
+        from diffpy.structure import Atom, Lattice, Structure
+        from diffsims.crystallography import ReciprocalLatticeVector
+        from orix.crystal_map import Phase
+        from orix.quaternion import Rotation
+
+        phase = Phase(
+            name="ni",
+            space_group=225,
+            structure=Structure(
+                atoms=[Atom("Ni", [0, 0, 0])], lattice=Lattice(3.52, 3.52, 3.52, 90, 90, 90)
+            ),
+        )
+        rlv = ReciprocalLatticeVector.from_min_dspacing(phase, 1.2)
+        rlv = rlv.unique(use_symmetry=True).symmetrise()
+        rlv.sanitise_phase()
+        rlv.calculate_structure_factor()
+        rlv.calculate_theta(20e3)
+        simulator = kp.simulations.KikuchiPatternSimulator(rlv)
+        detector = kp.detectors.EBSDDetector(
+            shape=NONSQUARE_SHAPE,
+            pc=NONSQUARE_PC,
+            sample_tilt=angles["sample_tilt"],
+            tilt=angles["tilt"],
+            azimuthal=angles["azimuthal"],
+            twist=angles["twist"],
+        )
+        assert np.allclose(
+            detector.sample_to_detector.to_matrix().squeeze(),
+            sample_to_detector_matrix(**angles),
+            atol=1e-12,
+        )
+        geometry = simulator.on_detector(detector, Rotation.from_euler(np.deg2rad([EULER_DEG])))
+        live_normals = np.asarray(geometry._lines.vector_detector.data).reshape(-1, 3)
+        live_normals /= np.linalg.norm(live_normals, axis=1, keepdims=True)
+        live_lines = geometry.lines_coordinates(coordinates="pixel", exclude_nan=False).reshape(
+            -1, 4
+        )
+        rotation = euler_rotation(EULER_DEG).to_matrix()[0]
+        to_detector = sample_to_detector_matrix(**angles)
+        for hkl, kp_line in zip(TILTED_HKL, kp_lines, strict=True):
+            ours = (hkl / np.linalg.norm(hkl)) @ rotation @ to_detector.T
+            j = int(np.argmax(np.abs(live_normals @ ours)))
+            assert abs(abs(float(live_normals[j] @ ours)) - 1) < 1e-9, (
+                f"kikuchipy puts the {hkl.astype(int)} normal elsewhere in the detector frame"
+            )
+            assert np.allclose(live_lines[j], kp_line, atol=1e-4)

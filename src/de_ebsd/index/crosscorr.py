@@ -59,7 +59,7 @@ import torch
 
 from de_ebsd.core.constants import DIVISION_FLOOR
 from de_ebsd.core.device import resolve_device
-from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
+from de_ebsd.core.geometry import detector_rays, pixels_from_rays, sample_to_detector_tensor
 
 __all__ = ["HREBSDResult", "hrebsd", "remap_reference", "roi_centers"]
 
@@ -67,22 +67,6 @@ __all__ = ["HREBSDResult", "hrebsd", "remap_reference", "roi_centers"]
 # ---------------------------------------------------------------------------
 # geometry
 # ---------------------------------------------------------------------------
-
-
-def _pixels_from_ray(detector, pattern_center: torch.Tensor, ray: torch.Tensor):
-    """The fractional ``(row, col)`` a ray lands on: the inverse of ``detector_rays``.
-
-    ``col + 0.5 = ncols * pcx + nrows * pcz * (r1 / r3)`` and
-    ``row + 0.5 = nrows * pcy - nrows * pcz * (r2 / r3)``. Both gnomonic axes scale
-    by ``nrows``, so a pattern-center change is a pure scale-and-shift of the pattern
-    in pixel coordinates -- the magnification-about-the-pattern-center that the
-    moving-screen method exploits.
-    """
-    pcx, pcy, pcz = pattern_center[..., 0:1], pattern_center[..., 1:2], pattern_center[..., 2:3]
-    inv_z = 1.0 / ray[..., 2]
-    col = detector.ncols * pcx + detector.nrows * pcz * (ray[..., 0] * inv_z) - 0.5
-    row = detector.nrows * pcy - detector.nrows * pcz * (ray[..., 1] * inv_z) - 0.5
-    return row, col
 
 
 def roi_centers(detector, grid: int = 8, roi_size: int = 128, margin: float = 0.05):
@@ -326,7 +310,7 @@ def _reference_grid(detector, f, pattern_center, reference_pattern_center, rows,
     """
     ray = detector_rays(detector, pattern_center, rows, cols)  # (N, K, 3)
     ray_ref = torch.einsum("nij,nkj->nki", torch.linalg.inv(f), ray)
-    row_ref, col_ref = _pixels_from_ray(detector, reference_pattern_center, ray_ref)
+    row_ref, col_ref = pixels_from_rays(detector, reference_pattern_center, ray_ref)
     gx = 2.0 * (col_ref + 0.5) / detector.ncols - 1.0
     gy = 2.0 * (row_ref + 0.5) / detector.nrows - 1.0
     return torch.stack([gx, gy], dim=-1)

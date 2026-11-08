@@ -32,6 +32,7 @@ from de_ebsd.diffraction import (
 from de_ebsd.sim import (
     DepthDistribution,
     EBSDDetector,
+    KinematicMaster,
     MasterPattern,
     MasterPatternSimulator,
     Microscope,
@@ -48,6 +49,7 @@ __all__ = [
     "CrystalExplorer",
     "DepthDistribution",
     "EBSDDetector",
+    "KinematicMaster",
     "MasterPattern",
     "MasterPatternBackend",
     "MasterPatternSimulator",

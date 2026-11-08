@@ -1,8 +1,11 @@
 """Brute-force dictionary (template) indexing.
 
-Projects a fundamental-zone orientation sample through the master pattern into
-simulated patterns and takes the best normalized cross-correlation against each
-experimental pattern. The conventional baseline that
+Projects a fundamental-zone orientation sample through a master pattern (the
+dynamical :class:`~de_ebsd.sim.MasterPattern` or the kinematic
+:class:`~de_ebsd.sim.KinematicMaster`) into simulated patterns, or takes a
+dictionary already simulated, and ranks each experimental pattern's normalized
+cross-correlation against every entry. Once both sides are zero-mean and unit-norm
+that is one matrix product and a top-k. The conventional baseline that
 :class:`~de_ebsd.index.spherical.indexer.SphericalIndexer` replaces.
 """
 
@@ -17,7 +20,9 @@ from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
 from de_ebsd.core.device import holds_lock, resolve_device, resolve_lock
-from de_ebsd.index.preprocess import normalize_rows
+from de_ebsd.index.preprocess import normalize_rows, remove_dynamic_background
+
+__all__ = ["DictionaryIndexer", "sample_orientations"]
 
 # orientations projected per chunk when building the dictionary, so a large
 # fundamental zone never materializes its whole (n_dict, P, 3) sampling tensor
@@ -27,25 +32,56 @@ _PROJ_CHUNK = 4096
 _MAX_SCORE_ELEMS = 64_000_000
 
 
+def sample_orientations(
+    resolution=3.0, point_group=None, phi1=(0.0, 360.0), Phi=(0.0, 90.0), phi2=(0.0, 90.0)
+) -> Rotation:
+    """Orientations to build a dictionary from, as an orix ``Rotation``.
+
+    With a *point_group* (an orix ``Symmetry``), orix's uniform sampling of its
+    fundamental zone at *resolution* degrees: every distinct orientation once. That
+    is what :class:`DictionaryIndexer` samples, and what to prefer.
+
+    Without one, a plain Bunge Euler grid with a *resolution* degree step over the
+    ranges *phi1*, *Phi* and *phi2* (degrees). It is neither equal-area (it bunches
+    toward ``Phi = 0``) nor free of symmetric duplicates, and its default ranges
+    cover the cubic fundamental region only: at 5 degrees it is ~26k orientations
+    against m-3m's ~6.6k. It is for a crystal whose symmetry is not known, such as
+    the generic :func:`~de_ebsd.sim.kinematic_bands.cubic_reflectors`.
+    """
+    if point_group is not None:
+        return get_sample_fundamental(resolution=float(resolution), point_group=point_group)
+    step = float(resolution)
+    axes = [
+        np.deg2rad(np.arange(phi1[0], phi1[1], step)),
+        np.deg2rad(np.arange(Phi[0], Phi[1] + 1e-9, step)),
+        np.deg2rad(np.arange(phi2[0], phi2[1] + 1e-9, step)),
+    ]
+    grid = np.meshgrid(*axes, indexing="ij")
+    return Rotation.from_euler(np.stack([g.ravel() for g in grid], -1))
+
+
 class DictionaryIndexer:
     """Index EBSD patterns against a fundamental-zone dictionary by matmul.
 
     The dictionary -- the master projected at every fundamental-zone orientation,
-    normalized -- is built once in :meth:`__init__`; :meth:`index` then scores a
-    whole stack with one matmul. The grid is coarse by design, so the intended
-    workflow is this fast coarse pass followed by :meth:`refine`.
+    normalized -- is built once in :meth:`__init__` and kept on the device;
+    :meth:`index` then scores one pattern or a whole stack with one matmul. The grid
+    is coarse by design, so the intended workflow is this fast coarse pass followed
+    by :meth:`refine`.
 
     Parameters
     ----------
     master
-        A :class:`de_ebsd.sim.MasterPattern`, projected onto the detector at every
-        dictionary orientation.
+        A :class:`de_ebsd.sim.MasterPattern` or :class:`de_ebsd.sim.KinematicMaster`,
+        projected onto the detector at every dictionary orientation. For a
+        dictionary already simulated, use :meth:`from_patterns`.
     detector
         :class:`~de_ebsd.sim.detector.EBSDDetector` geometry; indexed patterns must
         match its ``(nrows, ncols)``.
     point_group
         orix :class:`~orix.quaternion.Symmetry` whose fundamental zone is sampled.
-        Falls back to ``master.metadata["crystal"]``; one or the other is required.
+        Falls back to ``master.metadata["crystal"]``; one or the other is required
+        unless *rotations* is given.
     resolution
         Target average disorientation (degrees) of the sampling. Default ``3.0``,
         which refines to the same sub-degree accuracy as ``2.0`` at a ~3x cheaper
@@ -65,6 +101,16 @@ class DictionaryIndexer:
         while the match shrinks by ``match_binning**2``. Must divide both detector
         dimensions. Refinement still runs at full resolution, so this trades nothing
         away.
+    rotations
+        The dictionary's orientations, an orix ``Rotation``, in place of sampling the
+        fundamental zone (for instance :func:`sample_orientations` without a point
+        group); *point_group* and *resolution* are then not used to sample.
+    dynamic_background
+        Remove each simulated pattern's dynamic background with
+        :func:`~de_ebsd.index.preprocess.remove_dynamic_background` (its defaults: a
+        Gaussian of ``sigma = width / 8``, truncated at 4 sigma) before it is
+        normalized, so the dictionary goes through the filter the experimental
+        patterns did. Default ``False``.
     lock
         Held around every call that runs device work, building included, for an
         application that shares the device between threads; see
@@ -73,7 +119,7 @@ class DictionaryIndexer:
     Attributes
     ----------
     dictionary_rotations : orix.quaternion.Rotation
-        The fundamental-zone orientations, length ``n_dict``.
+        The dictionary orientations, length ``n_dict``.
     dictionary : torch.Tensor
         Normalized, stored transposed and contiguous as ``(n_px, n_dict)`` so the
         match runs at full matmul throughput (a transposed view runs at ~half).
@@ -92,6 +138,8 @@ class DictionaryIndexer:
         dtype=None,
         energy_kev=None,
         match_binning=1,
+        rotations=None,
+        dynamic_background=False,
         lock=None,
     ):
         self.lock = resolve_lock(lock)
@@ -100,6 +148,7 @@ class DictionaryIndexer:
         self.resolution = float(resolution)
         self.energy_kev = energy_kev
         self.match_binning = int(match_binning)
+        self.dynamic_background = bool(dynamic_background)
 
         # the pattern center is a fraction, so the binned match detector shares the
         # full one's geometry
@@ -111,23 +160,68 @@ class DictionaryIndexer:
             self._match_detector = replace(self.detector, shape=(h // b, w // b))
         else:
             self._match_detector = self.detector
+        self.pattern_shape = (self.detector.nrows, self.detector.ncols)
 
-        self.point_group = self._resolve_point_group(master, point_group)
+        if rotations is None:
+            self.point_group = self._resolve_point_group(master, point_group)
+            rotations = sample_orientations(self.resolution, self.point_group)
+        else:
+            self.point_group = point_group
+        self.dictionary_rotations = Rotation(np.asarray(rotations.data).reshape(-1, 4))
+        self.n_dict = int(self.dictionary_rotations.size)
 
         self.device = resolve_device(device, getattr(master, "device", "cpu"))
-
-        if dtype is None:
-            has_tensor_cores = (
-                self.device.type == "cuda" and torch.cuda.get_device_capability(self.device)[0] >= 7
-            )
-            dtype = torch.float16 if has_tensor_cores else torch.float32
-        self.dtype = dtype
-
-        self.dictionary_rotations = get_sample_fundamental(
-            resolution=self.resolution, point_group=self.point_group
-        )
-        self.n_dict = int(self.dictionary_rotations.size)
+        self.dtype = self._default_dtype(self.device) if dtype is None else dtype
         self.dictionary = self._build_dictionary()
+
+    @classmethod
+    def from_patterns(cls, patterns, rotations, device=None, dtype=None, lock=None):
+        """An indexer over a dictionary already simulated.
+
+        Parameters
+        ----------
+        patterns
+            The dictionary, ``(n_dict, H, W)`` or ``(n_dict, H * W)``, numpy or torch.
+            Indexed patterns must have its shape.
+        rotations
+            The orientation of each entry, an orix ``Rotation`` of size ``n_dict``.
+        device
+            Torch device; the patterns' device when ``None``.
+        dtype, lock
+            As in :class:`DictionaryIndexer`.
+
+        Returns
+        -------
+        DictionaryIndexer
+            One without a master or a detector: it indexes and matches, but does not
+            :meth:`refine`.
+        """
+        entries = torch.as_tensor(patterns)
+        rotations = Rotation(np.asarray(rotations.data).reshape(-1, 4))
+        if rotations.size != entries.shape[0]:
+            raise ValueError(
+                f"{entries.shape[0]} dictionary patterns but {rotations.size} rotations"
+            )
+        self = cls.__new__(cls)
+        self.lock = resolve_lock(lock)
+        self.master = self.detector = self.point_group = self.energy_kev = None
+        self.resolution = None
+        self.match_binning = 1
+        self.dynamic_background = False
+        self.pattern_shape = tuple(entries.shape[1:])
+        self.dictionary_rotations = rotations
+        self.n_dict = int(rotations.size)
+        self.device = resolve_device(device, entries.device)
+        self.dtype = self._default_dtype(self.device) if dtype is None else dtype
+        with self.lock:
+            flat = entries.reshape(self.n_dict, -1).to(device=self.device, dtype=torch.float32)
+            self.dictionary = normalize_rows(flat).to(self.dtype).T.contiguous()
+        return self
+
+    @staticmethod
+    def _default_dtype(device) -> torch.dtype:
+        tensor_cores = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 7
+        return torch.float16 if tensor_cores else torch.float32
 
     @staticmethod
     def _resolve_point_group(master, point_group) -> Symmetry:
@@ -148,15 +242,16 @@ class DictionaryIndexer:
             raise ValueError(
                 "no point_group given and master.metadata has no 'crystal' to derive "
                 "one from; dictionary indexing needs the crystal symmetry to sample the "
-                "fundamental zone -- pass point_group=<orix Symmetry> or a master whose "
-                "metadata['crystal'] is a de_ebsd Crystal"
+                "fundamental zone -- pass point_group=<orix Symmetry>, a master whose "
+                "metadata['crystal'] is a de_ebsd Crystal, or the orientations "
+                "themselves as rotations=sample_orientations(...)"
             )
         from de_ebsd.index.io import phase_from_crystal
 
         return phase_from_crystal(crystal).point_group
 
     def _build_dictionary(self) -> torch.Tensor:
-        # master.project runs on master.data.device, so move the master here once
+        # master.project runs on the master's device, so move the master here once
         master = self.master
         if master.device != self.device:
             master = master.to(self.device)
@@ -172,6 +267,8 @@ class DictionaryIndexer:
                 energy_kev=self.energy_kev,
                 rescale=False,
             )
+            if self.dynamic_background:
+                sim = remove_dynamic_background(sim, device=self.device)
             sim = sim.reshape(sim.shape[0], -1).to(torch.float32)  # normalize in fp32
             dictionary[i : i + _PROJ_CHUNK] = normalize_rows(sim).to(self.dtype)
         return dictionary.T.contiguous()
@@ -180,9 +277,93 @@ class DictionaryIndexer:
         chunk = max(1, _MAX_SCORE_ELEMS // max(1, self.n_dict))
         return min(chunk, n_patterns)
 
+    def _prepare(self, patterns) -> torch.Tensor:
+        """Patterns as ``(Np, n_px)``: binned to the match resolution and normalized.
+
+        Takes ``(H, W)`` or ``(Np, H, W)``; an indexer from :meth:`from_patterns` of
+        flat ``(n_dict, K)`` entries takes ``(K,)`` or ``(Np, K)``.
+        """
+        patt = torch.as_tensor(patterns)
+        shape = tuple(self.pattern_shape)
+        if patt.ndim == len(shape):
+            patt = patt[None]
+        if patt.ndim != len(shape) + 1:
+            raise ValueError(
+                f"patterns must be one pattern {shape} or a stack of them, "
+                f"got shape {tuple(patt.shape)}"
+            )
+        if tuple(patt.shape[1:]) != shape:
+            raise ValueError(
+                f"pattern shape {tuple(patt.shape[1:])} does not match the detector {shape}"
+            )
+        n_p = patt.shape[0]
+        patt = patt.to(device=self.device, dtype=torch.float32)
+        if self.match_binning > 1:
+            patt = F.avg_pool2d(patt[:, None], self.match_binning)[:, 0]
+        # patterns are low-bit-depth: keep fp32 precision until the match itself
+        return normalize_rows(patt.reshape(n_p, -1)).to(self.dtype)
+
+    def _match(self, patterns, keep, progress=None, return_scores=False):
+        """The one match: normalized patterns times the dictionary, chunked over the
+        patterns so the score block stays bounded, each row reduced to its *keep* best.
+
+        Returns ``(indices, scores, full)``: the ``(Np, keep)`` dictionary indices and
+        float32 scores, best first, and the full ``(Np, n_dict)`` float32 score
+        matrix when *return_scores* (``None`` otherwise).
+        """
+        exp_n = self._prepare(patterns)
+        n_p = exp_n.shape[0]
+        keep = max(1, min(int(keep), self.n_dict))
+        best_idx = torch.empty(n_p, keep, dtype=torch.long, device=self.device)
+        best_score = torch.empty(n_p, keep, dtype=torch.float32, device=self.device)
+        scores_out = [] if return_scores else None
+        chunk = self._match_chunk(n_p)
+        for i in range(0, n_p, chunk):
+            scores = exp_n[i : i + chunk] @ self.dictionary
+            # reducing in the raw dtype is bit-identical to casting first, and skips a
+            # large per-chunk fp32 allocation that otherwise dominates the fast matmul
+            if keep == 1:
+                bscore, bidx = scores.max(dim=1, keepdim=True)
+            else:
+                bscore, bidx = torch.topk(scores, keep, dim=1)
+            best_score[i : i + chunk] = bscore.float()
+            best_idx[i : i + chunk] = bidx
+            if return_scores:
+                scores_out.append(scores.float())
+            if progress is not None:
+                progress(min(i + chunk, n_p), n_p)
+        full = torch.cat(scores_out, dim=0) if return_scores else None
+        return best_idx, best_score, full
+
     @holds_lock
-    def index(self, patterns, return_scores=False):
-        """Index one pattern or a stack against the fundamental-zone dictionary.
+    def match(self, patterns, keep=1, progress=None):
+        """The *keep* best dictionary entries for one pattern or a stack.
+
+        Parameters
+        ----------
+        patterns
+            A detector image ``(H, W)`` or stack ``(Np, H, W)``, numpy or torch, at
+            full detector resolution.
+        keep
+            Matches kept per pattern, at most the dictionary size. More than one is
+            what :func:`~de_ebsd.index.io.orientation_similarity_map` reads.
+        progress
+            Called as ``progress(done, total)`` after each chunk of patterns; an
+            exception raised in it stops the match.
+
+        Returns
+        -------
+        indices : torch.Tensor
+            ``(Np, keep)`` indices into :attr:`dictionary_rotations`, best first.
+        scores : torch.Tensor
+            ``(Np, keep)`` float32 NCC in ``[-1, 1]``, best first.
+        """
+        indices, scores, _ = self._match(patterns, keep, progress)
+        return indices, scores
+
+    @holds_lock
+    def index(self, patterns, return_scores=False, progress=None):
+        """Index one pattern or a stack against the dictionary.
 
         Patterns are always given at full detector resolution; binning to the match
         resolution happens internally.
@@ -193,57 +374,25 @@ class DictionaryIndexer:
             A detector image ``(H, W)`` or stack ``(Np, H, W)``, numpy or torch.
         return_scores
             Also return the full ``(Np, n_dict)`` float32 score matrix.
+        progress
+            As in :meth:`match`.
 
         Returns
         -------
         rotations : orix.quaternion.Rotation
-            Best-matching fundamental-zone orientation per pattern.
+            Best-matching dictionary orientation per pattern.
         quality : torch.Tensor
             Peak NCC per pattern, roughly in ``[-1, 1]``; higher is better.
         scores : torch.Tensor
             Only when ``return_scores``: the ``(Np, n_dict)`` matrix whose per-row
             argmax gives ``rotations``.
         """
-        patt = torch.as_tensor(patterns)
-        single = patt.ndim == 2
-        if single:
-            patt = patt[None]
-        if patt.ndim != 3:
-            raise ValueError(
-                f"patterns must be (H, W) or (Np, H, W), got shape {tuple(patt.shape)}"
-            )
-        if tuple(patt.shape[-2:]) != (self.detector.nrows, self.detector.ncols):
-            raise ValueError(
-                f"pattern shape {tuple(patt.shape[-2:])} does not match the detector "
-                f"{(self.detector.nrows, self.detector.ncols)}"
-            )
-
-        n_p = patt.shape[0]
-        patt = patt.to(device=self.device, dtype=torch.float32)
-        if self.match_binning > 1:
-            patt = F.avg_pool2d(patt[:, None], self.match_binning)[:, 0]
-        # patterns are low-bit-depth: keep fp32 precision until the match itself
-        exp_n = normalize_rows(patt.reshape(n_p, -1)).to(self.dtype)
-
-        best_idx = torch.empty(n_p, dtype=torch.long, device=self.device)
-        best_score = torch.empty(n_p, dtype=torch.float32, device=self.device)
-        scores_out = [] if return_scores else None
-        chunk = self._match_chunk(n_p)
-        for i in range(0, n_p, chunk):
-            scores = exp_n[i : i + chunk] @ self.dictionary
-            # argmax on the raw dtype is bit-identical to casting first, and skips a
-            # large per-chunk fp32 allocation that otherwise dominates the fast matmul
-            bscore, bidx = scores.max(dim=1)
-            best_score[i : i + chunk] = bscore.float()
-            best_idx[i : i + chunk] = bidx
-            if return_scores:
-                scores_out.append(scores.float())
-
-        rot_data = np.asarray(self.dictionary_rotations.data)[best_idx.cpu().numpy()]
+        best_idx, best_score, full = self._match(patterns, 1, progress, return_scores)
+        rot_data = np.asarray(self.dictionary_rotations.data)[best_idx[:, 0].cpu().numpy()]
         rotations = Rotation(rot_data)
         if return_scores:
-            return rotations, best_score, torch.cat(scores_out, dim=0)
-        return rotations, best_score
+            return rotations, best_score[:, 0], full
+        return rotations, best_score[:, 0]
 
     @holds_lock
     def refine(self, patterns, rotations=None, **kw):
@@ -260,6 +409,8 @@ class DictionaryIndexer:
         """
         from de_ebsd.index.refine.orientation import refine_orientation
 
+        if self.master is None:
+            raise ValueError("an indexer made from_patterns has no master to refine against")
         if rotations is None:
             rotations, _ = self.index(patterns)
         kw.setdefault("method", "lm")
