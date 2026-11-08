@@ -1,0 +1,1 @@
+Add ``de_ebsd.pipeline``: the EBSD pipeline Autopilot runs (indexing, pattern-center calibration, refinement, crystal maps, the set-up, spots, unit cells, phases and the accelerator lock), moved here verbatim from Autopilot. It overlaps parts of the rest of de_ebsd; those are reconciled one behavior at a time.
