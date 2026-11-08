@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from de_ebsd.core.constants import DIVISION_FLOOR
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device
 from de_ebsd.core.geometry import detector_rays, sample_to_detector_tensor
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index.refine.levenberg import adapt_damping
@@ -287,6 +287,7 @@ def levenberg_marquardt_refine(
     return r_mat, pattern_center, cur_score
 
 
+@holds_lock
 def refine_hr(
     patterns,
     master,
@@ -303,6 +304,7 @@ def refine_hr(
     all_pixels=False,
     batch_size=None,
     sample_by="master",
+    lock=None,
 ):
     """High-precision joint orientation + pattern-center refinement.
 
@@ -353,6 +355,9 @@ def refine_hr(
         samples land on true band edges. ``"experimental"`` samples the raw pattern,
         which on real data is noise-dominated and adds substantial refinement
         scatter; it is retained for noise-free/synthetic use.
+    lock
+        Held around the device work, for an application that shares the device
+        between threads; see :func:`~de_ebsd.core.device.resolve_lock`.
 
     Returns
     -------

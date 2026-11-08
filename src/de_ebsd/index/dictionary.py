@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from orix.quaternion import Rotation, Symmetry
 from orix.sampling import get_sample_fundamental
 
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device, resolve_lock
 from de_ebsd.index.preprocess import normalize_rows
 
 # orientations projected per chunk when building the dictionary, so a large
@@ -65,6 +65,10 @@ class DictionaryIndexer:
         while the match shrinks by ``match_binning**2``. Must divide both detector
         dimensions. Refinement still runs at full resolution, so this trades nothing
         away.
+    lock
+        Held around every call that runs device work, building included, for an
+        application that shares the device between threads; see
+        :func:`~de_ebsd.core.device.resolve_lock`.
 
     Attributes
     ----------
@@ -77,6 +81,7 @@ class DictionaryIndexer:
         Number of orientations in the dictionary.
     """
 
+    @holds_lock
     def __init__(
         self,
         master,
@@ -87,7 +92,9 @@ class DictionaryIndexer:
         dtype=None,
         energy_kev=None,
         match_binning=1,
+        lock=None,
     ):
+        self.lock = resolve_lock(lock)
         self.master = master
         self.detector = detector  # full resolution; refinement uses this one
         self.resolution = float(resolution)
@@ -173,6 +180,7 @@ class DictionaryIndexer:
         chunk = max(1, _MAX_SCORE_ELEMS // max(1, self.n_dict))
         return min(chunk, n_patterns)
 
+    @holds_lock
     def index(self, patterns, return_scores=False):
         """Index one pattern or a stack against the fundamental-zone dictionary.
 
@@ -237,6 +245,7 @@ class DictionaryIndexer:
             return rotations, best_score, torch.cat(scores_out, dim=0)
         return rotations, best_score
 
+    @holds_lock
     def refine(self, patterns, rotations=None, **kw):
         """Gradient-refine the coarse dictionary orientations to sub-grid accuracy.
 
@@ -257,6 +266,7 @@ class DictionaryIndexer:
         kw.setdefault("device", self.device)
         return refine_orientation(patterns, self.master, self.detector, rotations, **kw)
 
+    @holds_lock
     def index_scan(
         self,
         patterns,

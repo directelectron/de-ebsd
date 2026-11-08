@@ -38,7 +38,7 @@ import numpy as np
 import torch
 
 from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
-from de_ebsd.core.device import resolve_device
+from de_ebsd.core.device import holds_lock, resolve_device, resolve_lock
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
@@ -131,8 +131,13 @@ class LiveIndexer:
         float16 at 1/64 of its float32 rate, and a CPU has no float16 product. Half
         precision halves the dictionary, which is what grows with low symmetry; the
         search only picks seeds, so the refine sets the accuracy either way.
+    lock
+        Held around every call that runs device work, building included, for an
+        application that shares the device between threads; see
+        :func:`~de_ebsd.core.device.resolve_lock`.
     """
 
+    @holds_lock
     def __init__(
         self,
         masters,
@@ -146,7 +151,9 @@ class LiveIndexer:
         search_blur_deg: float = SEARCH_BLUR_DEG,
         device=None,
         dtype=None,
+        lock=None,
     ) -> None:
+        self.lock = resolve_lock(lock)
         from orix.sampling import get_sample_fundamental
 
         if len(masters) != len(point_groups):
@@ -203,12 +210,14 @@ class LiveIndexer:
                 device=self.device,
             )
 
+    @holds_lock
     def directions_at(self, pattern_center, shape) -> torch.Tensor:
         detector = replace(
             self.detector, pattern_center=tuple(float(v) for v in pattern_center), shape=shape
         )
         return detector.direction_cosines(device=self.device)
 
+    @holds_lock
     def set_pattern_center(self, pattern_center) -> None:
         """Index at pattern center *pattern_center* from now on: the dictionary is projected
         again, which takes milliseconds with the fused kernels.
@@ -238,6 +247,7 @@ class LiveIndexer:
             )
             self.dictionary[:, lo : lo + len(entries)] = entries.T
 
+    @holds_lock
     def project(
         self,
         texture: torch.Tensor,
@@ -252,6 +262,7 @@ class LiveIndexer:
         v = torch.einsum("mij,pj->mpi", rotations, directions)
         return sample_texture(texture, v, phases[:, None])
 
+    @holds_lock
     def score_candidates(
         self, candidates: torch.Tensor, phases: torch.Tensor, rows: torch.Tensor, directions
     ) -> torch.Tensor:
@@ -278,6 +289,7 @@ class LiveIndexer:
         :attr:`ScanBackground.ghost`."""
         return self.background.ghost
 
+    @holds_lock
     def pooled(self, frames) -> torch.Tensor:
         """*frames* on the device as float ``(N, H, W)`` averaged to the refine shape:
         *frames* themselves where they already are, such as a stack from
@@ -286,6 +298,7 @@ class LiveIndexer:
         t = t[None] if t.ndim == 2 else t
         return average_to(t.to(torch.float32), self.refine_shape)
 
+    @holds_lock
     def restart_static(self, frames=None, *, blur: float | None = None) -> None:
         """Forget the scan, for a new one: its static background and its ghost.
 
@@ -301,6 +314,7 @@ class LiveIndexer:
         if frames is not None:
             self.observe(frames)
 
+    @holds_lock
     def observe(self, frames) -> None:
         """Add *frames* to the scan's static background. Frames already at the refine
         shape (:func:`~de_ebsd.index.live.common.pool_into`) are summed as they are."""
@@ -317,6 +331,7 @@ class LiveIndexer:
             t = pool_into(t, workspace.refine_rows[: len(t)].view(len(t), *self.refine_shape))
         self.background.observe(self.pooled(t))
 
+    @holds_lock
     def add_fits(self, phase, g, center_maps=None) -> None:
         """Add the simulations of fitted orientations *g* ``(N, 3, 3)`` to the
         scan's :attr:`ghost`."""
@@ -326,6 +341,7 @@ class LiveIndexer:
             g = g @ center_maps
         self.background.add_fits(self.project(self.texture, g, phase, self.refine_directions))
 
+    @holds_lock
     def corrected(self, frames) -> torch.Tensor:
         """*frames* ``(N, H, W)`` with the backgrounds removed as :meth:`prepare` removes
         them, at their own resolution: what the indexer matches, to be looked at."""
@@ -333,6 +349,7 @@ class LiveIndexer:
         t = t[None] if t.ndim == 2 else t
         return self.background.remove(t.to(torch.float32))
 
+    @holds_lock
     def prepare(self, frames) -> tuple[torch.Tensor, torch.Tensor]:
         """*frames* ``(N, H, W)`` corrected and normalized, as ``(search, refine)``
         rows ``(N, pixels)`` at the two shapes."""
@@ -369,6 +386,7 @@ class LiveIndexer:
             out=out,
         )
 
+    @holds_lock
     def search(self, search_rows: torch.Tensor):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
         *entry* indexing :attr:`rotations` (every phase's entries, in phase order).
@@ -385,6 +403,7 @@ class LiveIndexer:
             entry = torch.where(better, chunk_entry + lo, entry)
         return self.phase_of[entry], self.rotations[entry], score, entry
 
+    @holds_lock
     def refine(
         self,
         refine_rows: torch.Tensor,
@@ -438,28 +457,33 @@ class LiveIndexer:
 
     # --- the pattern center and the strain --------------------------------------
 
+    @holds_lock
     def refine_pattern_center(self, frames, **kwargs) -> tuple[float, float, float]:
         """The pattern center that best fits the best-scored patterns of *frames*
         ``(N, H, W)``, which the indexer then uses; see
         :func:`~de_ebsd.index.live.calibration.refine_pattern_center`."""
         return calibration.refine_pattern_center(self, frames, **kwargs)
 
+    @holds_lock
     def center_maps(self, pattern_centers) -> torch.Tensor:
         """One ``(3, 3)`` map per pattern center; see
         :func:`~de_ebsd.index.live.deformation.center_maps`."""
         detector = replace(self.detector, shape=self.refine_shape)
         return deformation.center_maps(detector, pattern_centers, self.device)
 
+    @holds_lock
     def refine_deformation(self, refine_rows, phase, g, **kwargs):
         """Each orientation refined together with its pattern's strain; see
         :func:`~de_ebsd.index.live.deformation.refine_deformation`."""
         return deformation.refine_deformation(self, refine_rows, phase, g, **kwargs)
 
+    @holds_lock
     def strain_from_reference(self, frames, reference, **kwargs):
         """The strain of *frames* relative to one real *reference* frame; see
         :func:`~de_ebsd.index.live.deformation.strain_from_reference`."""
         return deformation.strain_from_reference(self, frames, reference, **kwargs)
 
+    @holds_lock
     def index_with_strain(self, frames, pattern_centers=None):
         """:meth:`index`, then each orientation refined together with its pattern's
         strain (:meth:`refine_deformation`): ``(phase, g, strain, score, entry)``.
@@ -482,6 +506,7 @@ class LiveIndexer:
             out.append((phase, g, strain, score, entry))
         return tuple(torch.cat(column) for column in zip(*out, strict=True))
 
+    @holds_lock
     def index(self, frames, *, fit: bool = False, out=None):
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
         *entry* is the dictionary entry the search seeded the refine from (see

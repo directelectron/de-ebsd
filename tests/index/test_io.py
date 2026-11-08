@@ -95,9 +95,9 @@ def test_phase_from_crystal_carries_symmetry(crystal):
     assert phase.point_group is not None
     assert phase.point_group.name == "m-3m"
     assert phase.point_group.size > 1
-    # lattice passed through (nm), atoms added from the asymmetric unit
+    # lattice in Angstrom (orix's unit; the crystal's is nm), atoms from the asymmetric unit
     lat = phase.structure.lattice
-    assert (lat.a, lat.b, lat.c) == pytest.approx((0.5431, 0.5431, 0.5431))
+    assert (lat.a, lat.b, lat.c) == pytest.approx((5.431, 5.431, 5.431))
     assert (lat.alpha, lat.beta, lat.gamma) == pytest.approx((90.0, 90.0, 90.0))
     assert len(phase.structure) == 1  # one asymmetric-unit site (Si)
 
