@@ -33,4 +33,5 @@ The names most workflows need are re-exported at the top level:
     diffraction
     sim
     index
+    io
     viz

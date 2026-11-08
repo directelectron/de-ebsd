@@ -485,3 +485,20 @@ def test_device_defaults_to_master_device(master, detector):
     """With ``device=None`` the indexer follows the master's device."""
     idx = DictionaryIndexer(master, detector, resolution=RESOLUTION, dtype=torch.float32)
     assert idx.device == torch.device(master.device)
+
+
+def test_scores_without_keeping_the_dictionary_are_the_indexers(master, detector):
+    """``dictionary_scores`` projects the entries a chunk at a time and keeps only the
+    scores; they are the full score matrix of an indexer over the same orientations."""
+    from de_ebsd.index import dictionary_scores
+
+    indexer = DictionaryIndexer(
+        master, detector, rotations=Rotation.random(50), dtype=torch.float32
+    )
+    patterns = master.project(detector, Rotation.random(4))
+    _, _, full = indexer.index(patterns, return_scores=True)
+    streamed = dictionary_scores(patterns, master, detector, indexer.dictionary_rotations)
+    assert streamed.shape == (4, 50)
+    torch.testing.assert_close(streamed, full, atol=1e-5, rtol=0)
+    with pytest.raises(ValueError, match="patterns must be"):
+        dictionary_scores(patterns[:, :-1], master, detector, indexer.dictionary_rotations)

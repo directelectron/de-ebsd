@@ -7,6 +7,7 @@ scan's neighbors.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -15,6 +16,7 @@ from de_ebsd.core.device import holds_lock
 
 __all__ = [
     "average_dot_product_map",
+    "bin_pattern",
     "remove_static_background",
     "remove_dynamic_background",
     "remove_background",
@@ -40,6 +42,28 @@ def _as_stack(patterns, device, dtype):
         return processed.reshape(*lead, h, w)
 
     return stack, restore
+
+
+def bin_pattern(frame, max_side: int) -> np.ndarray:
+    """*frame* ``(..., H, W)`` averaged in square blocks until neither side exceeds
+    *max_side*, as float.
+
+    The block is the smallest whole factor that brings the longer side within
+    *max_side*; rows and columns that do not fill a block are dropped. A pattern
+    center is a fraction of the screen, so binning leaves it where it was.
+    """
+    frame = np.asarray(frame)
+    if not np.issubdtype(frame.dtype, np.floating):
+        frame = frame.astype(np.float32)
+    rows, cols = frame.shape[-2:]
+    factor = int(np.ceil(max(rows, cols) / int(max_side)))
+    if factor <= 1:
+        return frame
+    rows, cols = (rows // factor) * factor, (cols // factor) * factor
+    blocks = frame[..., :rows, :cols].reshape(
+        *frame.shape[:-2], rows // factor, factor, cols // factor, factor
+    )
+    return blocks.mean((-3, -1))
 
 
 def _rescale01(p):

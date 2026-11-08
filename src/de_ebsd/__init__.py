@@ -36,6 +36,8 @@ from de_ebsd.sim import (
     MasterPattern,
     MasterPatternSimulator,
     Microscope,
+    Setup,
+    TEMDetector,
 )
 
 __version__ = "0.3.0"
@@ -56,6 +58,8 @@ __all__ = [
     "Microscope",
     "MicroscopeWidget",
     "PhaseOverview",
+    "Setup",
+    "TEMDetector",
     "__version__",
 ]
 

@@ -1,7 +1,10 @@
-"""EBSD detector geometry and per-pixel direction cosines.
+"""Detector geometry and per-pixel direction cosines.
 
-Torch port of kikuchipy's ``EBSDDetector`` (Bruker pattern-center convention),
-so patterns projected here match kikuchipy pixel for pixel.
+:class:`EBSDDetector` is a torch port of kikuchipy's ``EBSDDetector`` (Bruker
+pattern-center convention), so patterns projected here match kikuchipy pixel for
+pixel. :class:`TEMDetector` is a transmission screen normal to the beam, for
+diffraction spots. Both turn their own frame (x right, y up the screen, z from the
+sample towards it) into the sample frame with :meth:`detector_to_sample`.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import torch
 
 from de_ebsd.core.geometry import sample_to_detector_matrix
 
-__all__ = ["EBSDDetector"]
+__all__ = ["EBSDDetector", "TEMDetector"]
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,11 @@ class EBSDDetector:
             * sample_to_detector_matrix(self.sample_tilt, self.tilt, self.azimuthal, self.twist)[2]
         )
 
+    def detector_to_sample(self) -> np.ndarray:
+        """The rotation taking detector-frame directions into the sample frame: the
+        transpose of :func:`~de_ebsd.core.geometry.sample_to_detector_matrix`."""
+        return sample_to_detector_matrix(self.sample_tilt, self.tilt, self.azimuthal, self.twist).T
+
     def direction_cosines(
         self,
         device: torch.device | str | None = None,
@@ -143,3 +151,95 @@ class EBSDDetector:
         from de_ebsd.viz.widgets import MicroscopeWidget
 
         return MicroscopeWidget.from_setup(microscope=microscope, detector=self, crystal=crystal)
+
+
+def _rotation_about(axis, degrees: float) -> np.ndarray:
+    """Right-handed rotation by *degrees* about unit *axis* (Rodrigues)."""
+    u = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
+    k = np.array([[0.0, -u[2], u[1]], [u[2], 0.0, -u[0]], [-u[1], u[0], 0.0]])
+    a = np.deg2rad(degrees)
+    return np.eye(3) + np.sin(a) * k + (1.0 - np.cos(a)) * (k @ k)
+
+
+@dataclass(frozen=True)
+class TEMDetector:
+    """A transmission diffraction screen, normal to the beam and centered on it.
+
+    The detector frame is :class:`EBSDDetector`'s -- x right, y up the screen, z
+    along the beam from the sample to the screen -- so a direction ``(x, y, 1)`` has
+    gnomonic coordinates ``(x, y)``. Only the stage tilts turn the sample relative
+    to it.
+
+    Parameters
+    ----------
+    shape
+        (n_rows, n_cols) in pixels.
+    camera_length
+        Camera length, in mm.
+    size
+        Width of the screen (its columns), in mm; the rows span the same pixel
+        pitch. Only its ratio to *camera_length* matters.
+    sample_tilt
+        Stage tilt alpha, in degrees, about the detector x axis.
+    tilt_beta
+        Stage tilt beta, in degrees, about the detector y axis, applied first.
+    """
+
+    shape: tuple[int, int] = (256, 256)
+    camera_length: float = 300.0
+    size: float = 20.0
+    sample_tilt: float = 0.0
+    tilt_beta: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not (self.camera_length > 0 and self.size > 0):
+            raise ValueError("camera_length and size must be positive (mm)")
+
+    @property
+    def nrows(self) -> int:
+        return int(self.shape[0])
+
+    @property
+    def ncols(self) -> int:
+        return int(self.shape[1])
+
+    @property
+    def gnomonic_bounds(self) -> np.ndarray:
+        """Screen edges [x_min, x_max, y_min, y_max] in gnomonic coordinates."""
+        half = self.size / 2.0 / self.camera_length
+        tall = half * self.nrows / self.ncols
+        return np.array([-half, half, -tall, tall])
+
+    def detector_to_sample(self) -> np.ndarray:
+        """The rotation taking detector-frame directions into the sample frame:
+        alpha about x, then beta about y."""
+        return _rotation_about((1.0, 0.0, 0.0), self.sample_tilt) @ _rotation_about(
+            (0.0, 1.0, 0.0), self.tilt_beta
+        )
+
+    def pixels(self, gnomonic) -> np.ndarray:
+        """Fractional ``(row, col)`` of gnomonic points ``(..., 2)``, pixel centers on
+        integers, as :meth:`direction_cosines` samples them."""
+        gnomonic = np.asarray(gnomonic, dtype=np.float64)
+        x_min, x_max, y_min, y_max = self.gnomonic_bounds
+        col = (gnomonic[..., 0] - x_min) / (x_max - x_min) * self.ncols - 0.5
+        row = (y_max - gnomonic[..., 1]) / (y_max - y_min) * self.nrows - 0.5
+        return np.stack([row, col], axis=-1)
+
+    def direction_cosines(
+        self,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Unit direction vectors (n_rows * n_cols, 3) to every pixel center, in the
+        sample frame, row-major (row 0 = top)."""
+        x_min, x_max, y_min, y_max = self.gnomonic_bounds
+        x = x_min + (np.arange(self.ncols) + 0.5) * (x_max - x_min) / self.ncols
+        y = y_max - (np.arange(self.nrows) + 0.5) * (y_max - y_min) / self.nrows
+        det = np.empty((self.nrows, self.ncols, 3))
+        det[..., 0] = x[None, :]
+        det[..., 1] = y[:, None]
+        det[..., 2] = 1.0
+        rays = det.reshape(-1, 3) @ self.detector_to_sample().T
+        rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
+        return torch.as_tensor(rays, device=device, dtype=dtype)

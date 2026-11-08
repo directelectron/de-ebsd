@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from de_ebsd.crystal import Crystal
-from de_ebsd.crystal.lattice import _element_symbol
+from de_ebsd.crystal.lattice import element_symbol
 
 SI_CIF = """data_Si
 _cell_length_a                         5.4310
@@ -118,13 +118,13 @@ def test_has_two_origins(tmp_path):
     ("raw", "expected"),
     [("Si", "Si"), ("Si4+", "Si"), ("O2-", "O"), ("Ti1", "Ti"), ("FE", "Fe"), ("fe", "Fe")],
 )
-def test_element_symbol(raw, expected):
-    assert _element_symbol(raw) == expected
+def testelement_symbol(raw, expected):
+    assert element_symbol(raw) == expected
 
 
-def test_element_symbol_rejects_nonsense():
+def testelement_symbol_rejects_nonsense():
     with pytest.raises(ValueError):
-        _element_symbol("Xx9")
+        element_symbol("Xx9")
 
 
 # Barium titanate, rhombohedral R3m on rhombohedral axes (COD 9014074).
