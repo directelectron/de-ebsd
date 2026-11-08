@@ -9,6 +9,34 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.4.0 (2026-11-08)
+==================
+
+API and Behaviour Changes
+-------------------------
+
+- :func:`~de_ebsd.index.phase_from_crystal` gave its orix phase a lattice in Angstrom, the unit orix and diffsims compute d-spacings in, where it used to pass the crystal's nanometres through, and kept a hexagonal or trigonal crystal's atoms at their own fractional coordinates, where orix had moved them off their sites.
+- Atoms were drawn in Jmol's element colors, from one table (:data:`~de_ebsd.viz.ELEMENT_COLORS`, 37 elements), so the 14 elements de-ebsd colored before changed color, and :func:`~de_ebsd.viz.patterns.crystal_structure_figure` drew a cell's atoms on its faces, edges and corners as well as the ones inside it.
+
+
+New Features
+------------
+
+- :class:`de_ebsd.crystal.Phase` is a phase as an application lists it -- a name, its CIF and the orix structure read through :func:`~de_ebsd.index.io.phase_from_cif` -- and :mod:`de_ebsd.crystal.cod` searches the Crystallography Open Database by elements (one row per structure, the most-studied first) and fetches an entry's CIF, with the standard library only. :data:`de_ebsd.viz.PHASE_COLORS` and :func:`~de_ebsd.viz.phase_color` are the phase palette SpyDE and Autopilot share.
+- :class:`~de_ebsd.Setup` described a microscope set-up once -- a :class:`~de_ebsd.Microscope` with an :class:`~de_ebsd.EBSDDetector` or the new :class:`~de_ebsd.TEMDetector` (camera length, screen width, stage tilts) -- with :data:`~de_ebsd.sim.microscope.FIELDS` giving its editable numbers' labels, units and ranges for a user interface, ``detector_to_sample`` on both detectors, and :mod:`de_ebsd.io.hyperspy` reading and writing it in a HyperSpy signal's metadata; :meth:`~de_ebsd.diffraction.kinematic.KinematicPatternModel.spots_on` placed kinematic spots on a TEM screen in pixels, and :func:`~de_ebsd.viz.unit_cell` gave a crystal's cell with its face, edge and corner atoms.
+- :class:`~de_ebsd.index.live.LiveIndexer` is the one multi-phase indexer for either physics: a phase's master may now be a :class:`~de_ebsd.sim.KinematicMaster`, sampled onto the Lambert grid by the new :meth:`~de_ebsd.sim.KinematicMaster.to_master_pattern`; frames may be CuPy (any DLPack) arrays, read in place, or one ``(H, W)`` frame; ``search_shape`` and ``refine_shape`` may be one number, the long side in the detector's aspect; :meth:`~de_ebsd.index.live.LiveIndexer.phase_entries` and :meth:`~de_ebsd.index.live.LiveIndexer.phase_rotations` count dictionary entries within a phase. :func:`~de_ebsd.index.live.fused_fit_available`, :func:`~de_ebsd.index.live.fitted_refine_steps_deg` and :func:`~de_ebsd.index.live.dynamical_indexing_available` say what the device can do, without reaching into private modules.
+- :func:`~de_ebsd.index.search_pattern_center` found a scan's pattern center from its own patterns when it was not known to within the reach of :func:`~de_ebsd.index.determine_pattern_center`: a coarse-to-fine grid of candidate centers, each scored by how far each pattern's best dictionary match stands above the rest, then fitted from dictionary seeds by :func:`~de_ebsd.index.solve_pattern_center`, searched first around a given ``start=``, and against a blurred static background as well when the patterns may be one crystal's; :func:`~de_ebsd.index.looks_like_kikuchi` tells Kikuchi patterns from other frames before a search is spent on them, :func:`~de_ebsd.index.dictionary_scores` scores patterns against a dictionary too large to keep, and :func:`~de_ebsd.index.bin_pattern` bins patterns to a size.
+- Add ``de_ebsd.pipeline``: the EBSD pipeline Autopilot runs (indexing, pattern-center calibration, refinement, crystal maps, the set-up, spots, unit cells, phases and the accelerator lock), moved here verbatim from Autopilot. It overlaps parts of the rest of de_ebsd; those are reconciled one behavior at a time.
+- Kinematic Kikuchi bands are a second master beside the dynamical one: :class:`~de_ebsd.sim.KinematicMaster` draws :class:`~de_ebsd.sim.kinematic_bands.Reflectors` (:func:`~de_ebsd.sim.kinematic_bands.cubic_reflectors`, or :func:`~de_ebsd.sim.kinematic_bands.reflectors_from_phase` from a Crystal or an orix phase) and projects, builds a :class:`~de_ebsd.index.DictionaryIndexer` and is refined by :func:`~de_ebsd.index.refine_orientation` through the same geometry as a :class:`~de_ebsd.sim.MasterPattern`, with no Bloch-wave simulation; :func:`~de_ebsd.sim.kinematic_bands.band_lines` and :func:`~de_ebsd.sim.kinematic_bands.zone_axis_points` give its band overlay in detector pixels. :class:`~de_ebsd.index.DictionaryIndexer` gains :meth:`~de_ebsd.index.DictionaryIndexer.match` (the ``keep`` best entries per pattern), :meth:`~de_ebsd.index.DictionaryIndexer.from_patterns` (a dictionary already simulated), ``rotations=`` (any orientation set, such as :func:`~de_ebsd.index.sample_orientations`), ``dynamic_background=`` and ``progress=``; :func:`~de_ebsd.index.refine_orientation` takes ``progress=``; and :func:`~de_ebsd.index.orientation_similarity_map`, :func:`~de_ebsd.index.merge_phases` and :func:`~de_ebsd.index.average_dot_product_map` read an indexed scan. :func:`~de_ebsd.index.to_crystal_map` takes Bunge Euler angles, and its quality is optional.
+- de-ebsd took over what SpyDE and Autopilot each carried: Bunge Euler conversions and a point-group-aware :func:`~de_ebsd.core.rotation.misorientation_deg`, the explicit turn into a scan's frame (:mod:`de_ebsd.core.frames`), :func:`~de_ebsd.core.device.default_device`, a ``lock=`` on every indexer and refinement for an application sharing one accelerator between threads, :func:`~de_ebsd.index.phase_from_cif`, and a public :func:`~de_ebsd.viz.ipf_colors`.
+
+
+Bug Fixes
+---------
+
+- :meth:`MasterPattern.project <de_ebsd.sim.MasterPattern.project>` given a quaternion tensor that requires a gradient detached it, so a projection was not differentiable in the orientation; it is now.
+
+
 0.3.0 (2026-11-05)
 ==================
 
