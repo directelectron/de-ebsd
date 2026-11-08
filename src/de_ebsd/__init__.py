@@ -40,7 +40,7 @@ from de_ebsd.sim import (
     TEMDetector,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AtomSite",

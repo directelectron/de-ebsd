@@ -1,1 +1,0 @@
-Atoms were drawn in Jmol's element colors, from one table (:data:`~de_ebsd.viz.ELEMENT_COLORS`, 37 elements), so the 14 elements de-ebsd colored before changed color, and :func:`~de_ebsd.viz.patterns.crystal_structure_figure` drew a cell's atoms on its faces, edges and corners as well as the ones inside it.
