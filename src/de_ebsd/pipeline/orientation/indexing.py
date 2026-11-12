@@ -510,7 +510,14 @@ class DynamicalIndexer:
         *,
         step_deg: float = STEP_DEG,
         device="cuda",
+        lock=None,
     ) -> None:
+        """*lock* is held by every call into the live indexer (see
+        :func:`de_ebsd.core.device.resolve_lock`); by default the indexer has its
+        own. Its calls share one device workspace, so two threads indexing at
+        once without a lock overwrite each other's rows and score garbage."""
+        import threading
+
         from de_ebsd.index.live import LiveIndexer
 
         if not phases:
@@ -534,6 +541,7 @@ class DynamicalIndexer:
                 search_shape=comparison_shape(SEARCH_SIDE, geometry.shape),
                 refine_shape=comparison_shape(REFINE_SIDE, geometry.shape),
                 device=device,
+                lock=threading.RLock() if lock is None else lock,
                 **steps,
             )
         #: Where each phase's entries start in the live indexer's dictionary.

@@ -1,0 +1,1 @@
+DynamicalIndexer now holds a lock of its own around every call into the live indexer, or the one passed as *lock*. Two threads indexing with one indexer at once, such as a live display and a scan, overwrote each other's rows in the shared device workspace and scored far outside a correlation (up to 1e12, or -inf), corrupting the orientations and scores they returned.
