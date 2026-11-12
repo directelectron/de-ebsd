@@ -83,6 +83,29 @@ def test_compute_reports_its_progress_over_every_energy(monkeypatch):
     assert calls == [(done, total, done) for done in range(1, total + 1)]
 
 
+def test_compute_hands_out_the_master_as_it_fills_in():
+    """After each batch, the master so far: directions filling in over the
+    first energy, the energies summing after it, the last call the master."""
+    crystal = de.Crystal.from_parameters(
+        a=0.5431, space_group=227, atoms=[("Si", (0.125, 0.125, 0.125))], debye_waller=0.004668
+    )
+    sim = de.MasterPatternSimulator(
+        crystal, de.Microscope(energy=20e3, sample_tilt=70.0), npx=8, dmin=0.1, backend="bloch"
+    )
+    shown = []
+    master = sim.compute(
+        energy_resolved=True,
+        mc_electrons=20_000,
+        chunk_size=7,
+        dtype=torch.float64,
+        partial=lambda so_far: shown.append(so_far.clone()),
+    )
+    missing = [int(torch.isnan(s).sum()) for s in shown]
+    assert missing[0] > 0 and missing[-1] == 0
+    assert missing == sorted(missing, reverse=True)  # only ever fills in
+    assert torch.allclose(shown[-1], master.data.sum(0), atol=1e-9)
+
+
 def test_stage_objects(sim):
     structure_factors = sim.structure_factors()
     assert structure_factors is sim.structure_factors()  # cached
