@@ -123,6 +123,7 @@ class MasterPatternSimulator:
         symmetry: bool = True,
         energy_resolved: bool = False,
         progress: Callable[[int, int], None] | None = None,
+        partial: Callable[[torch.Tensor], None] | None = None,
     ) -> MasterPattern:
         """Compute the master pattern on the Lambert grid.
 
@@ -156,6 +157,14 @@ class MasterPatternSimulator:
             the first energy all run before the first call. It is called on the
             calling thread, inside the loop, so it should be quick and never
             block; an exception raised in it stops the simulation.
+        partial
+            Called after each batch, beside *progress*, with the master as far
+            as it has got: a ``(2, n, n)`` Lambert map on *device*, the energies
+            done summed and the current one's directions added where they are
+            computed, NaN where no energy has reached yet. A caller can draw a
+            long simulation filling in; a smaller *chunk_size* fills it in finer
+            steps. Built only when given, and like *progress* called on the
+            calling thread.
         """
         device = resolve_device(device)
         backend = resolve_backend(self.backend)
@@ -193,6 +202,7 @@ class MasterPatternSimulator:
         starts = range(0, reps.shape[0], chunk_size)
         total, done = len(energies) * len(starts), 0
         maps = []
+        done_sum = None  # the energies finished, summed, for *partial*
         for energy in energies:
             structure_factors = (
                 self.structure_factors()
@@ -208,15 +218,19 @@ class MasterPatternSimulator:
                     dtype=dtype,
                 )
             )
-            rep_values = torch.empty(reps.shape[0], device=device, dtype=dtype)
+            rep_values = torch.full((reps.shape[0],), torch.nan, device=device, dtype=dtype)
             for start in starts:
                 stop = min(start + chunk_size, reps.shape[0])
                 rep_values[start:stop] = backend.intensities(reps[start:stop])
                 done += 1
                 if progress is not None:
                     progress(done, total)
+                if partial is not None:
+                    partial(_so_far(rep_values, inverse, n, done_sum))
             values = rep_values if inverse is None else rep_values[inverse]
             maps.append(values.reshape(2, n, n))
+            if partial is not None:
+                done_sum = maps[-1] if done_sum is None else done_sum + maps[-1]
 
         return MasterPattern(
             data=torch.stack(maps, dim=0),
@@ -281,6 +295,16 @@ class MasterPatternSimulator:
             f"MasterPatternSimulator({self.crystal!r}, {self.microscope!r}, "
             f"npx={self.npx}, dmin={self.dmin} nm, backend={backend!r})"
         )
+
+
+def _so_far(rep_values, inverse, n, done_sum) -> torch.Tensor:
+    """The master so far, for ``compute``'s *partial*: this energy's values
+    (NaN where not computed yet) on the grid, added to the energies done."""
+    values = rep_values if inverse is None else rep_values[inverse]
+    current = values.reshape(2, n, n)
+    if done_sum is None:
+        return current.clone()
+    return done_sum + torch.nan_to_num(current, nan=0.0)
 
 
 def _unit(k) -> np.ndarray:
