@@ -1,1 +1,0 @@
-The live-indexing guide has a figure of the indexer end to end (prepare, search, the 2 and 1 degree levels, the Gauss-Newton fit, the strain and its split, the scan's maps), and cites the work its strain fit and reference strain follow: Vermeij and Hoefnagels' integrated DIC, Tanaka and Wilkinson's pattern matching, and Wilkinson, Meaden and Dingley's HR-EBSD.
