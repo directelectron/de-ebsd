@@ -554,6 +554,14 @@ class LiveIndexer:
         return calibration.refine_pattern_center(self, _stack(frames), **kwargs)
 
     @holds_lock
+    def strain_per_center(self, **kwargs) -> np.ndarray:
+        """``(3, 3, 3)``: the strain a pattern fitted at a center one unit off along
+        x, y or z shows; see :func:`~de_ebsd.index.live.calibration.strain_per_center`
+        and, to read a scan's centers back from its strain,
+        :func:`~de_ebsd.index.live.calibration.centers_from_strain`."""
+        return calibration.strain_per_center(self, **kwargs)
+
+    @holds_lock
     def center_maps(self, pattern_centers) -> torch.Tensor:
         """One ``(3, 3)`` map per pattern center; see
         :func:`~de_ebsd.index.live.deformation.center_maps`."""

@@ -141,6 +141,12 @@ def refine_deformation(
     Fitting the rotations alongside the strains is what sharpens the
     orientations: a strain left out of the model is partly fitted as a turn.
 
+    The fit is Vermeij and Hoefnagels' integrated DIC (a Gauss-Newton fit of a
+    deformation to the whole pattern; Ultramicroscopy, 2018) taken against
+    simulated patterns, as Tanaka and Wilkinson's pattern matching does for the
+    pattern center, orientation and absolute strain (Ultramicroscopy, 2019,
+    doi:10.1016/j.ultramic.2019.04.006); see ``docs/dev/indexing.rst``.
+
     *g* should already be within a few tenths of a degree (:meth:`LiveIndexer.refine`).
     *center_maps* (:meth:`center_maps`) give each pattern its own center.
     *ghost* (:attr:`ghost`) is taken out of the patterns and the simulations
