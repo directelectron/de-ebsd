@@ -99,6 +99,25 @@ step below is a batched operation over the whole buffer, and nothing loops over
 patterns or phases. Only each pattern's phase, orientation and score -- and its
 strain, when asked for -- leave the device.
 
+.. figure:: images/live_indexing_end_to_end.png
+   :alt: One pattern through the live indexer, from the frame to its orientation
+         and strain, then the scan's maps.
+   :width: 100%
+
+   The live indexer end to end, on de-twin's duplex steel (20 kV, 10 degree
+   detector tilt). (1) The frame, divided by the static background and its own
+   background removed. (2) One product against every dictionary entry; the best
+   is the seed. (3) The 2 degree level, then the 1 degree level: the start and
+   one step either way about x, y and z, each scored, and a parabola an axis
+   moving to its peak. (4) One Gauss-Newton step on the three rotations: the
+   residual against the simulation, the derivative of the simulation about each
+   axis, and the step they solve for; every simulation is projected from the
+   master. (5) The same fit with the five deviatoric strains, on a pattern
+   simulated with a known strain and noise (the twin's steel has none): the
+   eight numbers fitted against those put in, and the polar decomposition into
+   the lattice rotation and the Biot strain. (6) Every pattern of the scan the
+   same way: the fitted bands, and the IPF, phase and score maps.
+
 Preparing the patterns
 ----------------------
 
@@ -220,6 +239,22 @@ On CUDA with CuPy the fit instead runs a fixed schedule of passes in one launch,
 one block per pattern, keeping the best-scored point it visits: about 9 ms per
 256 patterns on a Titan X, against about 42 ms for the torch fit.
 
+**Related work.** Fitting a deformation to the whole pattern by Gauss-Newton is
+the integrated digital image correlation of Vermeij and Hoefnagels [VH2018]_,
+there against a reference pattern; fitting the pattern center, the orientation
+and the absolute strain against dynamically simulated patterns is Tanaka and
+Wilkinson's pattern matching [TW2019]_. This fit is the first against the
+second: a Gauss-Newton fit of the orientation and the deviatoric strain against
+the master, batched over every pattern on the GPU, with a bounded step and a
+line search.
+
+.. [VH2018] T. Vermeij and J. P. M. Hoefnagels, "A consistent full-field
+   integrated DIC framework for HR-EBSD", Ultramicroscopy (2018).
+.. [TW2019] T. Tanaka and A. J. Wilkinson, "Pattern matching analysis of electron
+   backscatter diffraction patterns for pattern centre, crystal orientation and
+   absolute elastic strain determination: accuracy and precision assessment",
+   Ultramicroscopy (2019), doi:10.1016/j.ultramic.2019.04.006.
+
 **The pattern center must come from the geometry.** On a flat screen, moving the
 center is exactly a linear map of the ray directions, so within one pattern a
 center error is indistinguishable from a strain. Each pattern may be given its
@@ -231,8 +266,8 @@ measured.
 Against a reference pattern
 ---------------------------
 
-:meth:`~de_ebsd.index.LiveIndexer.strain_from_reference` is HR-EBSD: it
-cross-correlates regions of each pattern against one real reference frame
+:meth:`~de_ebsd.index.LiveIndexer.strain_from_reference` is HR-EBSD [WMD2006]_:
+it cross-correlates regions of each pattern against one real reference frame
 (``hrebsd``) and solves for the strain and lattice rotation relative to it. No
 master enters, so how well the simulation matches the camera does not limit it.
 In exchange it measures only differences from the reference, which should
@@ -244,3 +279,7 @@ relative to a reference in each grain was 1.7e-3, against 7.3e-4 absolute from
 the fit against the master; correlating regions against simulations instead was
 6e-3. The fit against the master measures absolute strain everywhere it indexes;
 a reference is the independent check where a strain-free region is known.
+
+.. [WMD2006] A. J. Wilkinson, G. Meaden and D. J. Dingley, "High-resolution
+   elastic strain measurement from electron backscatter diffraction patterns:
+   new levels of sensitivity", Ultramicroscopy (2006).
