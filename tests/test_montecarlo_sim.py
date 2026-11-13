@@ -401,7 +401,7 @@ def test_backend_depth_profile_flags():
     from de_ebsd.diffraction.backends import resolve_backend
 
     assert resolve_backend("bloch").uses_depth_profile is True
-    assert resolve_backend("bloch_prism").uses_depth_profile is True
+    assert resolve_backend("bloch_smatrix").uses_depth_profile is True
 
 
 def test_simulator_defaults_to_native_mc(si_crystal, microscope):

@@ -43,7 +43,7 @@ The master pattern is computed as in EMsoft's ``EMEBSDmaster``
    positive), and ``L_gh = conj(C) I C^T``. ``lambda_E(z)`` is the Monte Carlo
    exit-depth fraction times ``exp(+2 pi z / x_gp)``, which cancels the normal
    absorption already in the eigenvalues; the depth limit is the 99 % histogram
-   depth. ``bloch_prism`` evaluates the same integral through the scattering
+   depth. ``bloch_smatrix`` evaluates the same integral through the scattering
    matrix instead of an eigendecomposition.
 
 7. **S_gh weighting.** Per asymmetric-unit site,

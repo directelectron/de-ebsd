@@ -95,7 +95,7 @@ simulator = de.MasterPatternSimulator(
     dmin=dmin,
     bethe=bethe,
     monte_carlo=depth,
-    backend="bloch_prism",
+    backend="bloch_smatrix",
 )
 started = perf_counter()
 simulated = simulator.compute(device=device, dtype=torch.float64, chunk_size=512).to("cpu")

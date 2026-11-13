@@ -23,7 +23,7 @@ not done when it runs -- it is done when it still reproduces the oracle:
 
 .. code-block:: shell
 
-    uv run python scripts/validate_master_pattern.py --material ni --backend bloch_prism
+    uv run python scripts/validate_master_pattern.py --material ni --backend bloch_smatrix
 
 Nickel uses kikuchipy's bundled master pattern and needs no external files.
 Silicon needs a local EMsoft ``Si_MC.h5`` run, which is not redistributed here;

@@ -67,7 +67,7 @@ function render({model,el}) {
     const cum=p.slice(0,selected+1).reduce((a,b)=>a+b,0);
     host.querySelector('.detail').textContent=`Slice ${selected+1}: ${selected*dz}–${(selected+1)*dz} nm · `+
       `yield ${p[selected].toPrecision(4)} · cumulative ${total?(100*cum/total).toFixed(2):'0.00'}% of this energy's yield. `+
-      `${selected<count?'Used':'Outside integration window'}. PRISM propagation point: ${(selected+1)*dz} nm.`;
+      `${selected<count?'Used':'Outside integration window'}. Scattering-matrix propagation point: ${(selected+1)*dz} nm.`;
   }
   const names=['energy_index','slice_index'];for(const name of names)model.on(`change:${name}`,draw);
   const observer=new ResizeObserver(draw);observer.observe(host.querySelector('section'));draw();

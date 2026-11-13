@@ -245,7 +245,7 @@ def differentiable_ucg_lut(
 
     When ``debye_waller`` is None the amplitudes are evaluated in numpy and held
     constant (positions/occupancy gradients only). Feed the result to a torch
-    backend (``bloch_prism``) as its ``u_lut`` for end-to-end
+    backend (``bloch_smatrix``) as its ``u_lut`` for end-to-end
     ``d(intensity)/d(crystal parameter)``. Lattice gradients (through ``g``)
     remain a further step.
     """

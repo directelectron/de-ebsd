@@ -129,7 +129,7 @@ def test_depth_widget_uses_real_profile_and_cutoff():
     assert np.asarray(widget.profiles).sum() == pytest.approx(1)
     widget.slice_index = 4
     assert depth.n_depths == 20  # inspecting never truncates the source
-    assert "PRISM propagation point" in widget.to_html()
+    assert "Scattering-matrix propagation point" in widget.to_html()
     assert "application/vnd.jupyter.widget-view+json" in widget._repr_mimebundle_()[0]
 
 
