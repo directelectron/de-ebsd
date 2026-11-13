@@ -675,3 +675,61 @@ def test_strain_from_a_reference_pattern(master, point_group, detector):
     assert torch.allclose(found, strain, atol=8e-4), (found - strain).abs().max()
     assert 0.9 < float((found * strain).sum() / (strain * strain).sum()) < 1.1
     assert rotation.abs().max() < 6e-4
+
+
+def test_a_center_error_shows_as_the_strain_strain_per_center_predicts(
+    master, point_group, detector
+):
+    """Patterns projected at a center a few thousandths off and fitted at the
+    indexer's: their strain is what the geometry alone predicts."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
+    phase = torch.zeros(len(g), dtype=torch.int64)
+    error = np.array([0.003, -0.002, 0.003])  # the indexer's center minus the true one
+    true_center = np.asarray(detector.pattern_center) - error
+    directions = indexer.directions_at(torch.as_tensor(true_center), indexer.refine_shape)
+    rows = normalize_rows(indexer.project(indexer.texture, g, phase, directions))
+    _, found, _ = indexer.refine_deformation(rows, phase, g, iterations=5)
+    predicted = np.tensordot(error, indexer.strain_per_center(), 1)
+    assert np.abs(predicted).max() > 2e-3  # the test means something
+    assert np.allclose(found.numpy(), predicted, atol=2e-4), np.abs(found.numpy() - predicted).max()
+
+
+def test_a_scans_center_plane_is_read_back_from_its_strain(master, point_group, detector):
+    """A scan fitted at one wrong center, its center drifting with the beam, a
+    real strain over one corner and noise: the robust plane finds the center and
+    its drift; a plain least-squares plane is pulled toward the corner."""
+    from de_ebsd.index.live.calibration import centers_from_strain
+
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    response = indexer.strain_per_center()
+    side = np.arange(12) * 30.0 - 165.0
+    positions = np.stack(np.meshgrid(side, side), axis=-1).reshape(-1, 2)  # um
+    middle = np.array([0.5, 0.4, 0.55])
+    drift = np.array([[6.5e-5, 0.0, 0.0], [0.0, -5.6e-5, 3.3e-5]])  # per um
+    true = middle + positions @ drift
+    fitted_at = middle + np.array([0.010, -0.008, 0.006])
+    strain = np.einsum("nk,kij->nij", fitted_at - true, response)
+    rng = np.random.default_rng(0)
+    corner = (positions[:, 0] < -40) & (positions[:, 1] < -40)
+    local = np.array([[3e-3, 1e-3, 0.0], [1e-3, -1e-3, 2e-3], [0.0, 2e-3, -2e-3]])
+    strain[corner] += local
+    noise = rng.normal(0.0, 3e-4, strain.shape)
+    strain += 0.5 * (noise + np.swapaxes(noise, -1, -2))
+    strain[[5, 77]] = np.nan  # refused fits
+
+    plane = centers_from_strain(strain, positions, fitted_at, response)
+    robust_error = np.abs(np.subtract(plane.center, middle)).max()
+    assert robust_error < 1.5e-4, plane.center
+    assert np.abs(plane.drift - drift).max() < 3e-6, plane.drift
+    assert (plane.weights[corner] < 0.1).mean() > 0.9  # the corner was left out
+    assert np.allclose(plane.at(positions), true, atol=5e-4)
+
+    plain = centers_from_strain(strain, positions, fitted_at, response, robust=False)
+    assert np.abs(np.subtract(plain.center, middle)).max() > 2 * robust_error
+    known = centers_from_strain(strain, positions, fitted_at, response, use=~corner, robust=False)
+    assert np.abs(np.subtract(known.center, middle)).max() < 3e-4
+    fixed = centers_from_strain(strain, positions, fitted_at, response, drift=drift)
+    assert np.abs(np.subtract(fixed.center, middle)).max() < 3e-4

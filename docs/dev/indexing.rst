@@ -263,6 +263,39 @@ to come from where the beam was on the specimen and the detector geometry -- a
 center fitted to each pattern on its own would absorb the very strain being
 measured.
 
+The pattern center from the strain
+----------------------------------
+
+The same equivalence makes the strain the most sensitive measure of the center
+there is. A pattern fitted at a center ``d`` too far shows the strain ``J d``,
+where ``J`` (:meth:`~de_ebsd.index.live.LiveIndexer.strain_per_center`) is the
+symmetric, trace-free part of the derivative of
+:meth:`~de_ebsd.index.live.LiveIndexer.center_maps`: worked out from the
+geometry, with no pattern fitted. ``J`` has full rank, so each point's own center
+can be read straight back from its strain.
+
+Within one pattern that center also absorbs any real strain. Over a scan the two
+part: the beam moving over the specimen moves the center linearly, and of the
+five deviatoric strains a center error shows only three combinations, so
+:func:`~de_ebsd.index.live.calibration.centers_from_strain` fits a plane to the
+points' centers, robustly (Tukey's biweight from a least-median start), and a
+local real strain such as an indent's is left out. Fitting the center, by
+contrast, holds the strain at zero and lets the orientation take up the rotation
+half of the error, leaving the score flat over thousandths of the detector.
+
+On a twin scan (480 µm, 16 x 16 points, duplex steel with an indent) indexed at
+a center (0.010, -0.008, 0.006) off, the robust plane found the center at the
+middle of the field to within 3e-4 and to within 7e-4 at its corners; indexed
+again there, the strain was within 6e-4 rms of the strain at every point's true
+center, against 74e-4 at the wrong center. A plane subtracted from the strain
+maps instead took out the indent's strain with the error.
+
+The plane cannot separate a strain that is the same over the whole field (it
+reads as an offset of the center) or one varying linearly across it (as a
+drift); given the drift from the geometry, only the offset is fitted.
+Anything else that makes the master disagree with the camera -- the beam
+energy, a lens distortion -- shows as strain too, and moves the center found.
+
 Against a reference pattern
 ---------------------------
 
