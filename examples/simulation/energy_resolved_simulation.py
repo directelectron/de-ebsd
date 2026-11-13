@@ -78,7 +78,7 @@ sim = de.MasterPatternSimulator(
     npx=100,
     dmin=0.05,
     monte_carlo=depth,
-    backend="bloch_prism",
+    backend="bloch_smatrix",
 )
 master = sim.compute(device=device, dtype=torch.float64, energy_resolved=True, chunk_size=512)
 assert master.data.shape == (3, 2, 2 * sim.npx + 1, 2 * sim.npx + 1)

@@ -24,8 +24,8 @@ that removes this last runtime dependency is on the roadmap.
 
 Usage::
 
-    uv run python scripts/validate_master_pattern.py --material ni --backend bloch_prism
-    uv run python scripts/validate_master_pattern.py --material si --backend bloch_prism \\
+    uv run python scripts/validate_master_pattern.py --material ni --backend bloch_smatrix
+    uv run python scripts/validate_master_pattern.py --material si --backend bloch_smatrix \\
         --mc /path/to/Si_MC.h5 --device cuda
 """
 
@@ -126,7 +126,7 @@ def main() -> None:
         "--dmin", type=float, default=None, help="dmin in nm (default: the reference run's value)"
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--backend", default="bloch_prism")
+    parser.add_argument("--backend", default="bloch_smatrix")
     parser.add_argument(
         "--mc",
         default=None,

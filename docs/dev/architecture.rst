@@ -61,7 +61,7 @@ Every intensity model sits behind one seam,
 then ``intensities(directions)`` in chunks. The simulator owns gridding,
 chunking and assembly; backends own the physics.
 
-``bloch_prism`` (the default)
+``bloch_smatrix`` (the default)
     Replaces the eigendecomposition with the physically equivalent scattering
     matrix ``exp(2 pi i A z / (2 k_n))`` (batched ``torch.linalg.matrix_exp``,
     pure matrix products) followed by a depth recurrence. Everything is batched:
@@ -70,11 +70,19 @@ chunking and assembly; backends own the physics.
     bucketed by strong-beam count so each batch is a uniform ``[B, S, S]``. It
     reproduces ``bloch`` to about 1e-13 in float64 and 1e-4 in float32.
 
+    The scattering-matrix form of dynamical diffraction is Sturkey's (Proc.
+    Phys. Soc. 80, 321, 1962); with Bethe potentials it is Wang and De Graef's
+    (Ultramicroscopy 160, 35, 2016) and on GPUs Singh and De Graef's (Microsc.
+    Microanal. 24 S1, 222, 2018). Before 0.6 it was called ``bloch_prism``, but
+    it is not Ophus's PRISM (Adv. Struct. Chem. Imaging 3, 13, 2017), which
+    interpolates a STEM scattering matrix in Fourier space: nothing here is
+    interpolated, and the result equals ``bloch``.
+
 ``bloch``
     The float64 reference, one direction at a time. A non-Hermitian
     eigendecomposition neither batches nor accelerates on a GPU (cuSOLVER has no
     batched general-eigenvalue kernel), so this backend is CPU-bound and exists
-    to validate ``bloch_prism``, not for production.
+    to validate ``bloch_smatrix``, not for production.
 
 Symmetry reduction is independent of the backend: only the point group's
 fundamental sector is sampled and the result is replicated, which is exact (the
@@ -101,7 +109,7 @@ Differentiability
 =================
 
 Gradients flow end to end from crystal parameters to intensity. The
-``bloch_prism`` path is torch-native (``matrix_exp``, a depth recurrence and
+``bloch_smatrix`` path is torch-native (``matrix_exp``, a depth recurrence and
 ``S_gh``), so gradients pass through the non-Hermitian complex solve back to
 ``U_g``. ``differentiable_ucg_lut`` assembles ``U_g`` in torch, and
 ``scattering_torch.wk_scattering_factor_torch`` ports the full

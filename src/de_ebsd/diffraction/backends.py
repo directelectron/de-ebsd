@@ -2,9 +2,10 @@
 
 :class:`BlochWaveBackend` is the dynamical solver (Bethe-perturbed dynamical
 matrix, eigen-decomposition, depth integration) in float64, one direction at a
-time; :class:`~de_ebsd.diffraction.prism.BlochPrismBackend` is its batched GPU
-equivalent. The dynamical matrix, depth integration and ``S_gh`` weighting port
-EMsoft's ``GetDynMat``, ``CalcLgh`` and ``preCalcSgh``.
+time; :class:`~de_ebsd.diffraction.smatrix.BlochScatteringMatrixBackend` is its
+batched GPU equivalent, by the scattering matrix. The dynamical matrix, depth
+integration and ``S_gh`` weighting port EMsoft's ``GetDynMat``, ``CalcLgh`` and
+``preCalcSgh``.
 """
 
 from __future__ import annotations
@@ -303,12 +304,22 @@ def resolve_backend(backend: str | MasterPatternBackend) -> MasterPatternBackend
     """Map a backend name to an instance; pass instances through."""
     if isinstance(backend, MasterPatternBackend):
         return backend
-    from de_ebsd.diffraction.prism import BlochPrismBackend  # deferred: prism imports this module
+    # deferred: smatrix imports this module
+    from de_ebsd.diffraction.smatrix import BlochScatteringMatrixBackend
 
     named = {
         "bloch": BlochWaveBackend,
-        "bloch_prism": BlochPrismBackend,
+        "bloch_smatrix": BlochScatteringMatrixBackend,
     }
+    if backend == "bloch_prism":  # the old name, kept a release with a warning
+        import warnings
+
+        warnings.warn(
+            'backend "bloch_prism" is now "bloch_smatrix"; the old name goes in a later release',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        backend = "bloch_smatrix"
     try:
         return named[backend]()
     except KeyError:

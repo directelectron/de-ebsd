@@ -86,7 +86,7 @@ sim = de.MasterPatternSimulator(
     npx=100,
     dmin=0.05,
     monte_carlo=depth,
-    backend="bloch_prism",
+    backend="bloch_smatrix",
 )
 sim.structure_factors().show(n=12)
 

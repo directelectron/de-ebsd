@@ -1,6 +1,6 @@
-"""The PRISM scattering-matrix backend reproduces the eig reference exactly.
+"""The scattering-matrix backend reproduces the eig reference exactly.
 
-PRISM computes the same depth-integrated Lgh by matrix exponential instead of
+It computes the same depth-integrated Lgh by matrix exponential instead of
 eigendecomposition, so its intensities must equal BlochWaveBackend to machine
 precision in float64. This is the gate that lets the fast backend inherit the
 reference's validated correlation against EMsoft.
@@ -11,7 +11,7 @@ import torch
 
 from de_ebsd import BetheParameters
 from de_ebsd.diffraction.backends import SimulationInputs, resolve_backend
-from de_ebsd.diffraction.prism import BlochPrismBackend
+from de_ebsd.diffraction.smatrix import BlochScatteringMatrixBackend
 
 
 def _dirs(n, seed=0):
@@ -20,12 +20,26 @@ def _dirs(n, seed=0):
     return torch.as_tensor(v / np.linalg.norm(v, axis=1, keepdims=True))
 
 
-def test_bloch_prism_registered():
-    assert resolve_backend("bloch_prism").name == "bloch_prism"
+def test_bloch_smatrix_registered():
+    assert resolve_backend("bloch_smatrix").name == "bloch_smatrix"
 
 
-def test_prism_matches_bloch_reference(si_sf):
-    """PRISM (matrix_exp) equals the eig backend to machine precision (fp64)."""
+def test_the_old_prism_names_still_resolve_with_a_warning():
+    import pytest
+
+    import de_ebsd
+    from de_ebsd.diffraction import prism
+
+    with pytest.warns(DeprecationWarning):
+        assert resolve_backend("bloch_prism").name == "bloch_smatrix"
+    with pytest.warns(DeprecationWarning):
+        assert de_ebsd.BlochPrismBackend is BlochScatteringMatrixBackend
+    with pytest.warns(DeprecationWarning):
+        assert prism.BlochPrismBackend is BlochScatteringMatrixBackend
+
+
+def test_smatrix_matches_bloch_reference(si_sf):
+    """The scattering matrix (matrix_exp) equals the eig backend to machine precision (fp64)."""
     inp = SimulationInputs(
         structure_factors=si_sf,
         bethe=BetheParameters(),
@@ -35,12 +49,12 @@ def test_prism_matches_bloch_reference(si_sf):
     )
     oracle = resolve_backend("bloch")
     oracle.prepare(inp)
-    prism = resolve_backend("bloch_prism")
-    prism.prepare(inp)
+    smatrix = resolve_backend("bloch_smatrix")
+    smatrix.prepare(inp)
 
     d = _dirs(24, seed=1)
     io = oracle.intensities(d)
-    ip = prism.intensities(d)
+    ip = smatrix.intensities(d)
     assert ip.shape == io.shape
     assert torch.all(torch.isfinite(ip))
     assert ip.std() > 0  # real dynamical contrast
@@ -48,7 +62,7 @@ def test_prism_matches_bloch_reference(si_sf):
     assert ((ip - io).abs().max() / denom).item() < 1e-9
 
 
-def test_prism_batches_across_strong_counts(si_sf):
+def test_smatrix_batches_across_strong_counts(si_sf):
     """Directions spanning many strong-beam counts (multiple buckets) all match."""
     inp = SimulationInputs(
         structure_factors=si_sf,
@@ -59,17 +73,17 @@ def test_prism_batches_across_strong_counts(si_sf):
     )
     oracle = resolve_backend("bloch")
     oracle.prepare(inp)
-    prism = resolve_backend("bloch_prism")
-    prism.prepare(inp)
+    smatrix = resolve_backend("bloch_smatrix")
+    smatrix.prepare(inp)
 
     d = _dirs(64, seed=2)
     io = oracle.intensities(d)
-    ip = prism.intensities(d)
+    ip = smatrix.intensities(d)
     denom = io.abs().max().clamp_min(1e-30)
     assert ((ip - io).abs().max() / denom).item() < 1e-9
 
 
-def test_prism_complex64_matches_reference(si_sf):
+def test_smatrix_complex64_matches_reference(si_sf):
     """The complex64 (production-fast) path tracks the fp64 reference to ~1e-4.
 
     complex128 is exact against the eig reference; complex64 trades a little
@@ -86,7 +100,7 @@ def test_prism_complex64_matches_reference(si_sf):
     oracle = resolve_backend("bloch")
     oracle.prepare(inp64)
 
-    prism = BlochPrismBackend(cdtype=torch.complex64)
+    smatrix = BlochScatteringMatrixBackend(cdtype=torch.complex64)
     inp32 = SimulationInputs(
         structure_factors=si_sf,
         bethe=BetheParameters(),
@@ -94,26 +108,26 @@ def test_prism_complex64_matches_reference(si_sf):
         device=torch.device("cpu"),
         dtype=torch.float32,
     )
-    prism.prepare(inp32)
+    smatrix.prepare(inp32)
 
     d = _dirs(24, seed=1)
     io = oracle.intensities(d)
-    ip = prism.intensities(d)
+    ip = smatrix.intensities(d)
     assert ip.dtype == torch.float32
     denom = io.abs().max().clamp_min(1e-30)
     assert ((ip.double() - io).abs().max() / denom).item() < 1e-3
 
 
 def test_bloch_solve_is_differentiable(si_sf):
-    """Autograd flows through the prism Bloch solve to the structure factors.
+    """Autograd flows through the scattering-matrix Bloch solve to the structure factors.
 
     The production backend is torch-native (matrix_exp + a depth recurrence), so
     gradients propagate through the non-Hermitian complex Bloch solve, the
     weak-beam folding, and the Sgh reduction back to U_g -- the differentiability
     the project is built for. Validated against complex finite differences.
     """
-    prism = resolve_backend("bloch_prism")
-    prism.prepare(
+    smatrix = resolve_backend("bloch_smatrix")
+    smatrix.prepare(
         SimulationInputs(
             structure_factors=si_sf,
             bethe=BetheParameters(),
@@ -122,23 +136,23 @@ def test_bloch_solve_is_differentiable(si_sf):
             dtype=torch.float64,
         )
     )
-    u0 = prism.u_lut.detach().clone()
-    prism.u_lut = u0.clone().requires_grad_(True)
+    u0 = smatrix.u_lut.detach().clone()
+    smatrix.u_lut = u0.clone().requires_grad_(True)
 
     d = _dirs(4, seed=0)
-    intensity = prism.intensities(d)
+    intensity = smatrix.intensities(d)
     assert intensity.requires_grad
     intensity.sum().backward()
-    grad = prism.u_lut.grad
+    grad = smatrix.u_lut.grad
     assert grad is not None and torch.isfinite(grad).all() and bool((grad.abs() > 0).any())
 
     # complex finite-difference check on the most influential U_g entry
     idx = np.unravel_index(int(grad.abs().flatten().argmax()), grad.shape)
 
     def total(pert):
-        prism.u_lut = u0.clone()
-        prism.u_lut[idx] = prism.u_lut[idx] + pert
-        return float(prism.intensities(d).sum())
+        smatrix.u_lut = u0.clone()
+        smatrix.u_lut[idx] = smatrix.u_lut[idx] + pert
+        return float(smatrix.intensities(d).sum())
 
     eps = 1e-4
     g_re_fd = (total(eps) - total(-eps)) / (2 * eps)
@@ -149,7 +163,7 @@ def test_bloch_solve_is_differentiable(si_sf):
 
 
 def test_intensity_differentiable_wrt_positions(si_sf):
-    """End-to-end: atom positions -> torch structure factors -> prism Bloch solve
+    """End-to-end: atom positions -> torch structure factors -> scattering-matrix Bloch solve
     -> intensity, with the gradient matching finite differences.
 
     This closes the differentiable chain from a crystal parameter to the master-
@@ -158,8 +172,8 @@ def test_intensity_differentiable_wrt_positions(si_sf):
     from de_ebsd.crystal.structure_factors import differentiable_ucg_lut
 
     crystal = si_sf.crystal
-    prism = resolve_backend("bloch_prism")
-    prism.prepare(
+    smatrix = resolve_backend("bloch_smatrix")
+    smatrix.prepare(
         SimulationInputs(
             structure_factors=si_sf,
             bethe=BetheParameters(),
@@ -175,10 +189,10 @@ def test_intensity_differentiable_wrt_positions(si_sf):
         pos = [b.clone() for b in base]
         pos[0] = pos[0].clone()
         pos[0][0, 0] = pos[0][0, 0] + shift
-        prism.u_lut = differentiable_ucg_lut(
+        smatrix.u_lut = differentiable_ucg_lut(
             crystal, si_sf.energy_kev, si_sf.dmin, positions=pos
         ).to(torch.complex128)
-        return prism.intensities(d).sum()
+        return smatrix.intensities(d).sum()
 
     s = torch.zeros((), dtype=torch.float64, requires_grad=True)
     total(s).backward()
@@ -190,12 +204,12 @@ def test_intensity_differentiable_wrt_positions(si_sf):
 
 def test_intensity_differentiable_wrt_debye_waller(si_sf):
     """End-to-end d(intensity)/d(Debye-Waller) through the torch WK amplitude,
-    the structure factors, and the prism Bloch solve, matching finite diffs."""
+    the structure factors, and the scattering-matrix Bloch solve, matching finite diffs."""
     from de_ebsd.crystal.structure_factors import differentiable_ucg_lut
 
     crystal = si_sf.crystal
-    prism = resolve_backend("bloch_prism")
-    prism.prepare(
+    smatrix = resolve_backend("bloch_smatrix")
+    smatrix.prepare(
         SimulationInputs(
             structure_factors=si_sf,
             bethe=BetheParameters(),
@@ -208,10 +222,10 @@ def test_intensity_differentiable_wrt_debye_waller(si_sf):
     b0 = float(crystal.sites[0].debye_waller)
 
     def total(bval):
-        prism.u_lut = differentiable_ucg_lut(
+        smatrix.u_lut = differentiable_ucg_lut(
             crystal, si_sf.energy_kev, si_sf.dmin, debye_waller=[bval]
         ).to(torch.complex128)
-        return prism.intensities(d).sum()
+        return smatrix.intensities(d).sum()
 
     b = torch.tensor(b0, dtype=torch.float64, requires_grad=True)
     total(b).backward()

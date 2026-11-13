@@ -25,7 +25,7 @@ import importlib
 from de_ebsd.crystal import AtomSite, Crystal
 from de_ebsd.diffraction import (
     BetheParameters,
-    BlochPrismBackend,
+    BlochScatteringMatrixBackend,
     BlochWaveBackend,
     MasterPatternBackend,
 )
@@ -45,7 +45,7 @@ __version__ = "0.5.0"
 __all__ = [
     "AtomSite",
     "BetheParameters",
-    "BlochPrismBackend",
+    "BlochScatteringMatrixBackend",
     "BlochWaveBackend",
     "Crystal",
     "CrystalExplorer",
@@ -72,6 +72,16 @@ _LAZY = {
 
 
 def __getattr__(name: str):
+    if name == "BlochPrismBackend":  # the scattering-matrix backend's old name
+        import warnings
+
+        warnings.warn(
+            "BlochPrismBackend is now BlochScatteringMatrixBackend; "
+            "the old name goes in a later release",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return BlochScatteringMatrixBackend
     module = _LAZY.get(name)
     if module is None:
         raise AttributeError(f"module 'de_ebsd' has no attribute {name!r}")

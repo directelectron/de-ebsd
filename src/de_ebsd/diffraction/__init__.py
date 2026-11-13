@@ -15,7 +15,6 @@ from de_ebsd.diffraction.kvectors import (
     reduce_to_fundamental_sector,
     sample_incident_directions,
 )
-from de_ebsd.diffraction.prism import BlochPrismBackend
 from de_ebsd.diffraction.reflections import (
     ReflectionList,
     candidate_reflections,
@@ -23,10 +22,11 @@ from de_ebsd.diffraction.reflections import (
     master_reflection_list,
     partition_strong_weak,
 )
+from de_ebsd.diffraction.smatrix import BlochScatteringMatrixBackend
 
 __all__ = [
     "BetheParameters",
-    "BlochPrismBackend",
+    "BlochScatteringMatrixBackend",
     "BlochWaveBackend",
     "DynamicalMatrix",
     "KVectorGrid",
@@ -43,3 +43,18 @@ __all__ = [
     "resolve_backend",
     "sample_incident_directions",
 ]
+
+
+def __getattr__(name: str):
+    # The scattering-matrix backend's old name, kept a release with a warning.
+    if name == "BlochPrismBackend":
+        import warnings
+
+        warnings.warn(
+            "BlochPrismBackend is now BlochScatteringMatrixBackend; "
+            "the old name goes in a later release",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return BlochScatteringMatrixBackend
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

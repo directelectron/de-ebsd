@@ -99,7 +99,7 @@ setup
 #
 # These are normal-depth integration slices, not crystal layers or a simulated
 # electron trajectory. The stored exponential is sampled at z = j * dz;
-# PRISM evaluates the propagated wave at (j + 1) * dz. Both solvers use the
+# The scattering matrix evaluates the propagated wave at (j + 1) * dz. Both solvers use the
 # absorption-corrected weights internally; this viewer shows uncorrected exit
 # statistics, so it does not mistake an increasing correction for deeper yield.
 
@@ -115,7 +115,7 @@ coarse_sim = de.MasterPatternSimulator(
     npx=100,
     dmin=0.05,
     monte_carlo=depth,
-    backend="bloch_prism",
+    backend="bloch_smatrix",
 )
 coarse_sim.structure_factors()
 fine_sim = coarse_sim.refine(npx=200)
@@ -180,7 +180,7 @@ reference = reference_sim.compute(device=device, dtype=torch.float64, chunk_size
 scale = reference.data.abs().max().clamp_min(1e-30)
 relative_max = (coarse.data - reference.data).abs().max() / scale
 assert torch.isfinite(relative_max) and relative_max < 1e-7
-print(f"PRISM versus Bloch maximum relative difference: {relative_max.item():.3e}")
+print(f"Scattering matrix versus eigendecomposition maximum relative difference: {relative_max.item():.3e}")
 
 # %%
 # Continue a convergence study

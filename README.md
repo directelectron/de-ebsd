@@ -45,7 +45,7 @@ sim = de.MasterPatternSimulator(
     npx=500,
     dmin=0.05,
     bethe=de.BetheParameters(),
-    # backend="bloch_prism" is the default: the batched dynamical solve.
+    # backend="bloch_smatrix" is the default: the batched dynamical solve.
     # "bloch" is the one-direction-at-a-time float64 reference it reproduces.
 )
 

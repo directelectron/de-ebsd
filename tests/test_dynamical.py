@@ -99,7 +99,7 @@ def test_bloch_backend_intensities(si_sf):
 
 
 def test_resolve_backend():
-    assert resolve_backend("bloch_prism").name == "bloch_prism"
+    assert resolve_backend("bloch_smatrix").name == "bloch_smatrix"
     assert resolve_backend("bloch").name == "bloch"
     instance = BlochWaveBackend()
     assert resolve_backend(instance) is instance
