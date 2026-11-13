@@ -129,3 +129,26 @@ def test_two_threads_indexing_at_once_keep_every_score_a_correlation():
     assert not errors
     found = np.concatenate(scores)
     assert np.isfinite(found).all() and (np.abs(found) <= 1.0 + 1e-5).all()
+
+
+def test_the_refine_reads_the_patterns_at_the_side_asked_for():
+    """refine_side sets the refine's and the fits' resolution, on the frame's
+    long side and in its aspect; the search's is its own."""
+    import torch
+
+    import de_ebsd
+    from de_ebsd.pipeline.orientation.indexing import DynamicalIndexer, Geometry
+    from de_ebsd.pipeline.orientation.phases import Phase
+
+    phase = Phase.from_cif(0, str(DATA / "Si.cif"))
+    master = de_ebsd.MasterPattern(
+        torch.rand(1, 2, 31, 31, generator=torch.Generator().manual_seed(0)), np.array([20.0]), {}
+    )
+    shapes = {}
+    for side in (20, 40):
+        built = DynamicalIndexer(
+            [phase], [master], Geometry((240, 300)), step_deg=15.0, device="cpu", refine_side=side
+        )
+        shapes[side] = (built.live.refine_shape, built.live.search_shape)
+    assert shapes[20][0] == (16, 20) and shapes[40][0] == (32, 40)
+    assert shapes[20][1] == shapes[40][1]

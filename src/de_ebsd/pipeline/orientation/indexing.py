@@ -511,11 +511,18 @@ class DynamicalIndexer:
         step_deg: float = STEP_DEG,
         device="cuda",
         lock=None,
+        refine_side: int = REFINE_SIDE,
     ) -> None:
         """*lock* is held by every call into the live indexer (see
         :func:`de_ebsd.core.device.resolve_lock`); by default the indexer has its
         own. Its calls share one device workspace, so two threads indexing at
-        once without a lock overwrite each other's rows and score garbage."""
+        once without a lock overwrite each other's rows and score garbage.
+
+        *refine_side* is the long side, in pixels, the refine and the fits read
+        the patterns at. More pixels cost time as they grow (on a twin pattern,
+        about 22, 49 and 155 ms per 256 patterns at 128, 256 and 512, indexing
+        and fitting the strain); a scan whose points are summed from several
+        frames each has that many times longer per pattern, and can afford them."""
         import threading
 
         from de_ebsd.index.live import LiveIndexer
@@ -539,7 +546,7 @@ class DynamicalIndexer:
                 _detector(geometry, geometry.shape),
                 resolution=step_deg,
                 search_shape=comparison_shape(SEARCH_SIDE, geometry.shape),
-                refine_shape=comparison_shape(REFINE_SIDE, geometry.shape),
+                refine_shape=comparison_shape(refine_side, geometry.shape),
                 device=device,
                 lock=threading.RLock() if lock is None else lock,
                 **steps,
