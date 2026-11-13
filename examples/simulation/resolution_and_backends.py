@@ -180,7 +180,7 @@ reference = reference_sim.compute(device=device, dtype=torch.float64, chunk_size
 scale = reference.data.abs().max().clamp_min(1e-30)
 relative_max = (coarse.data - reference.data).abs().max() / scale
 assert torch.isfinite(relative_max) and relative_max < 1e-7
-print(f"Scattering matrix versus eigendecomposition maximum relative difference: {relative_max.item():.3e}")
+print(f"Scattering matrix vs eigendecomposition, max relative diff: {relative_max.item():.3e}")
 
 # %%
 # Continue a convergence study
