@@ -9,6 +9,27 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.6.0 (2026-11-13)
+==================
+
+New Features
+------------
+
+- :class:`~de_ebsd.pipeline.orientation.indexing.DynamicalIndexer` takes ``refine_side``, the long side in pixels its refine and fits read the patterns at (128 by default, as before), so a scan with several frames a point can fit at a finer resolution.
+
+
+Deprecations
+------------
+
+- The scattering-matrix backend is now ``backend="bloch_smatrix"`` and :class:`~de_ebsd.diffraction.BlochScatteringMatrixBackend` (module :mod:`de_ebsd.diffraction.smatrix`): it is Sturkey's scattering-matrix form of the Bloch-wave solve, not Ophus's PRISM, whose name it carried. ``"bloch_prism"``, ``BlochPrismBackend`` and ``de_ebsd.diffraction.prism`` still work, with a DeprecationWarning, and go in a later release. Results are unchanged.
+
+
+Documentation
+-------------
+
+- The live-indexing guide has a figure of the indexer end to end (prepare, search, the 2 and 1 degree levels, the Gauss-Newton fit, the strain and its split, the scan's maps), and cites the work its strain fit and reference strain follow: Vermeij and Hoefnagels' integrated DIC, Tanaka and Wilkinson's pattern matching, and Wilkinson, Meaden and Dingley's HR-EBSD.
+
+
 0.5.0 (2026-11-12)
 ==================
 

@@ -1,1 +1,0 @@
-:class:`~de_ebsd.pipeline.orientation.indexing.DynamicalIndexer` takes ``refine_side``, the long side in pixels its refine and fits read the patterns at (128 by default, as before), so a scan with several frames a point can fit at a finer resolution.
