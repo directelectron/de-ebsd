@@ -361,7 +361,7 @@ class LiveIndexer:
 
     def phase_rotations(self, number: int) -> torch.Tensor:
         """Phase *number*'s dictionary orientations ``(entries, 3, 3)``, in
-        kikuchipy's sample frame, on the device."""
+        OIM's sample frame, on the device."""
         first = int(self.offsets[number])
         return self.rotations[first : first + self.sizes[number]]
 
@@ -590,8 +590,8 @@ class LiveIndexer:
 
         Each buffer's orientations join the scan's :attr:`ghost` before its
         strains are fitted, as its frames joined the static background. The strain
-        is deviatoric, ``(N, 3, 3)``, in kikuchipy's sample frame as the orientations
-        are; :func:`~de_ebsd.core.frames.scan_tensor` turns it into a scan's."""
+        is deviatoric, ``(N, 3, 3)``, in OIM's (EDAX TSL) sample frame as the
+        orientations are (:mod:`de_ebsd.core.frames`)."""
         frames = _stack(frames)
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
         out = []
@@ -630,8 +630,8 @@ class LiveIndexer:
         *frames* may be one ``(H, W)`` frame, and a NumPy, torch or CuPy (any
         DLPack) array: a GPU array is read where it is, without a copy
         (:func:`~de_ebsd.index.live.common.as_frames`). The orientations are in
-        kikuchipy's sample frame, which :mod:`de_ebsd.core.frames` turns into a
-        scan's; :meth:`phase_entries` gives each entry within its own phase."""
+        OIM's (EDAX TSL) sample frame (:mod:`de_ebsd.core.frames`);
+        :meth:`phase_entries` gives each entry within its own phase."""
         frames = _stack(frames)
         count = len(frames)
         if out is None:

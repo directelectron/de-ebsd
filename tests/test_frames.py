@@ -1,37 +1,53 @@
-"""The scan's frame is kikuchipy's sample frame turned 90 degrees about the normal."""
+"""de-ebsd's sample frame is OIM's (EDAX TSL): its orientations go out unturned."""
+
+import warnings
 
 import numpy as np
+import pytest
 from orix.quaternion import Rotation
-from orix.vector import Vector3d
 
-from de_ebsd.core.frames import SCAN_TURN, scan_euler, scan_tensor, to_scan_frame
+from de_ebsd.core import frames
+from de_ebsd.core.rotation import euler_to_matrix, matrix_to_euler
 
 EULER = np.radians([[35.0, 48.0, 112.0]])
 
 
-def test_orientations_turn_ninety_degrees_about_the_surface_normal():
-    """An IPF-Z color cannot show the turn, so it is checked on the x axis."""
-    simulated = Rotation.from_euler(EULER)
-    scan = Rotation.from_euler(to_scan_frame(EULER))
-    assert np.isclose(np.degrees(simulated.angle_with(scan)[0]), 90.0)
-    # the scan's x is kikuchipy's -y
-    assert np.allclose((simulated * -Vector3d.yvector()).data, (scan * Vector3d.xvector()).data)
-    # the surface normal stays where it was, and with it every IPF-Z color
-    assert np.allclose((simulated * Vector3d.zvector()).data, (scan * Vector3d.zvector()).data)
+def test_an_orientation_is_written_as_the_indexer_returns_it():
+    """OIM's Euler angles are the matrix's own, with nothing turned between."""
+    g = euler_to_matrix(EULER)
+    assert np.allclose(matrix_to_euler(g), EULER, atol=1e-12)
+    assert np.allclose(Rotation.from_euler(matrix_to_euler(g)).to_matrix(), g, atol=1e-12)
 
 
-def test_the_turn_is_orix_s():
-    turn = Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)
-    by_orix = (Rotation.from_euler(EULER) * turn).to_euler()
-    assert np.allclose(to_scan_frame(EULER), by_orix, atol=1e-12)
-
-
-def test_strain_turns_into_the_scans_frame_as_the_orientations_do():
+def test_the_turn_is_gone():
+    """The old 90 degree turn about the surface normal is not applied anywhere."""
+    assert not hasattr(frames, "SCAN_TURN")
     np.random.seed(3)
     g = Rotation.random(4).to_matrix()
-    scan = Rotation.from_euler(scan_euler(g)).to_matrix()
-    # v_crystal = g v_simulation = g_scan v_scan, with v_scan = SCAN_TURN v_simulation
-    assert np.allclose(scan, g @ SCAN_TURN.T, atol=1e-9)
-    stretch = np.diag([1e-3, -1e-3, 0.0])  # along kikuchipy's x
-    assert np.allclose(scan_tensor(stretch), np.diag([-1e-3, 1e-3, 0.0]))
-    assert scan_tensor(np.stack([stretch] * 5)).shape == (5, 3, 3)
+    stretch = np.diag([1e-3, -1e-3, 0.0])
+    with pytest.warns(DeprecationWarning, match="OIM's"):
+        assert np.allclose(euler_to_matrix(frames.scan_euler(g)), g, atol=1e-9)
+    with pytest.warns(DeprecationWarning, match="OIM's"):
+        assert np.allclose(frames.to_scan_frame(EULER), EULER)
+    with pytest.warns(DeprecationWarning, match="OIM's"):
+        assert np.allclose(frames.scan_tensor(stretch), stretch)
+
+
+def test_the_deprecated_names_still_import_from_the_pipeline():
+    from de_ebsd.pipeline.orientation import indexing
+
+    assert indexing.scan_euler is frames.scan_euler
+    assert indexing.to_scan_frame is frames.to_scan_frame
+    assert indexing.scan_tensor is frames.scan_tensor
+    assert not hasattr(indexing, "SCAN_TURN")
+
+
+def test_a_match_s_orientation_is_its_euler_angles():
+    from de_ebsd.pipeline.orientation.indexing import Match
+
+    match = Match(0, EULER[0], 0.5)
+    with pytest.warns(DeprecationWarning, match="Match.euler"):
+        assert match.orientation is match.euler
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert np.allclose(match.euler, EULER[0])

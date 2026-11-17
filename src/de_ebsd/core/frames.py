@@ -1,48 +1,56 @@
-"""The scan's sample frame, and the turn that takes de-ebsd's orientations into it.
+"""de-ebsd's sample frame, which is OIM's (EDAX TSL).
 
-de-ebsd reports every orientation in **kikuchipy's sample frame**, the one
-:meth:`~de_ebsd.sim.MasterPattern.project` simulates patterns in. A scan's
-frame -- x along a row of the scan, y down its columns, z into the sample -- is
-turned 90 degrees about the surface normal from it. An IPF-Z color cannot show
-the difference (a turn about z leaves z where it was), so a map drawn without the
-turn looks right while every orientation is 90 degrees off: measured against a
-duplex-steel scan's ground truth, no pattern was within 5 degrees of the truth
-until it was turned.
+Every orientation de-ebsd reports -- an indexer's, a refine's, a dictionary
+entry's -- and every tensor beside it, such as a strain, is in **OIM's (EDAX
+TSL) sample frame**: the frame :meth:`~de_ebsd.sim.MasterPattern.project`
+simulates patterns in, which is also kikuchipy's. OIM is the reference: a real
+nickel scan indexed by de-ebsd and re-indexed by OIM at the same pattern center
+agrees point by point to a fraction of a degree, with no conversion between the
+two. So an orientation goes into an ``.ang``, an orix ``CrystalMap``, OIM, MTEX
+or kikuchipy exactly as de-ebsd returns it. See :doc:`/user/conventions`.
 
-The turn is applied by the caller, at the edge, rather than inside an indexer:
-an orientation in kikuchipy's frame is what kikuchipy, orix and EMsoft read, and
-a conversion buried in one path is one the other paths silently lack. See
-:doc:`/user/conventions`.
+The functions here used to turn orientations 90 degrees about the surface
+normal, into what was called "the scan's frame". That turn was fitted to a
+simulator's ground truth, not to an instrument, and put every orientation 90
+degrees from OIM's. It is gone; the functions are kept only so that code calling
+them keeps running, and they return their input unturned, with a warning.
 """
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
-from de_ebsd.core.rotation import euler_to_matrix, matrix_to_euler
+from de_ebsd.core.rotation import matrix_to_euler
 
-__all__ = ["SCAN_TURN", "scan_euler", "scan_tensor", "to_scan_frame"]
+__all__ = ["scan_euler", "scan_tensor", "to_scan_frame"]
 
-#: The turn acting on vectors: a direction ``v`` in kikuchipy's sample frame is
-#: ``SCAN_TURN @ v`` in the scan's. An orientation ``g`` (sample to crystal)
-#: becomes ``g @ SCAN_TURN.T``, since ``g v = (g SCAN_TURN^T)(SCAN_TURN v)``.
-SCAN_TURN = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+_UNTURNED = (
+    "{name} is deprecated: de-ebsd's orientations and tensors are already in OIM's "
+    "(EDAX TSL) sample frame, so it no longer turns anything{instead}"
+)
+
+
+def _deprecated(name: str, instead: str = ".") -> None:
+    warnings.warn(_UNTURNED.format(name=name, instead=instead), DeprecationWarning, stacklevel=3)
 
 
 def scan_euler(rotations) -> np.ndarray:
-    """Orientation matrices ``(..., 3, 3)`` in kikuchipy's sample frame, such as an
-    indexer's, as Bunge Euler angles ``(..., 3)`` in radians in the scan's."""
-    return matrix_to_euler(np.asarray(rotations, dtype=np.float64) @ SCAN_TURN.T)
+    """Deprecated: orientation matrices ``(..., 3, 3)`` as Bunge Euler angles
+    ``(..., 3)`` in radians, unturned. Use
+    :func:`~de_ebsd.core.rotation.matrix_to_euler`."""
+    _deprecated("scan_euler", "; use de_ebsd.core.rotation.matrix_to_euler.")
+    return matrix_to_euler(np.asarray(rotations, dtype=np.float64))
 
 
 def to_scan_frame(euler) -> np.ndarray:
-    """Bunge Euler angles ``(..., 3)`` in radians, from kikuchipy's sample frame to
-    the scan's: :func:`scan_euler` for orientations held as angles."""
-    return scan_euler(euler_to_matrix(euler))
+    """Deprecated: Bunge Euler angles ``(..., 3)``, returned as they are."""
+    _deprecated("to_scan_frame")
+    return np.array(euler, dtype=np.float64)
 
 
 def scan_tensor(tensors) -> np.ndarray:
-    """Tensors ``(..., 3, 3)`` in kikuchipy's sample frame, such as a strain, in the
-    scan's: turned as the orientations are, so a strain map and the orientation map
-    beside it share axes."""
-    return np.einsum("ij,...jk,lk->...il", SCAN_TURN, np.asarray(tensors), SCAN_TURN)
+    """Deprecated: tensors ``(..., 3, 3)``, returned as they are."""
+    _deprecated("scan_tensor")
+    return np.array(tensors)
