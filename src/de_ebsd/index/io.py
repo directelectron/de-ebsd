@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from de_ebsd.index.neighbors import neighbor_slices
+
 #: nm to Angstrom, for a Crystal's lattice handed to orix.
 ANGSTROM_PER_NM = 10.0
 
@@ -272,9 +274,7 @@ def orientation_similarity_map(indices, shape) -> np.ndarray:
     grid = idx.reshape(rows, cols, k)
     total = np.zeros((rows, cols))
     count = np.zeros((rows, cols))
-    for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-        here = (slice(max(0, dr), rows + min(0, dr)), slice(max(0, dc), cols + min(0, dc)))
-        there = (slice(max(0, -dr), rows + min(0, -dr)), slice(max(0, -dc), cols + min(0, -dc)))
+    for _, here, there in neighbor_slices((rows, cols)):
         shared = (grid[here][..., :, None] == grid[there][..., None, :]).any(-1)
         total[here] += shared.sum(-1) / float(k)
         count[here] += 1.0
