@@ -264,13 +264,33 @@ def test_select_patterns_spreads_over_grains(point_group):
     g = np.repeat(centers, 20, axis=0)
     g = _perturbed(g, 0.5)
     score = rng.uniform(0.2, 0.9, len(g))
-    train, held = select_patterns(g, score, point_group, count=60, per_grain=4, min_score=0.0)
+    train, held = select_patterns(
+        g, score, point_group, count=60, per_grain=4, minimum=0, min_score=0.0
+    )
     chosen = np.concatenate([train, held])
     grain = chosen // 20
     assert len(chosen) == 12 * 4  # every grain capped at four
     assert np.bincount(grain).max() <= 4
     assert not set(train // 20) & set(held // 20)  # whole grains held out
     assert 0.1 < len(held) / len(chosen) < 0.35
+
+
+def test_select_patterns_takes_more_from_few_grains(point_group):
+    """Two grains of 150 patterns each: the cap rises evenly until the minimum is
+    reached, and with positions a grain's patterns spread over its area."""
+    centers = random_orientations(2, seed=4)
+    g = _perturbed(np.repeat(centers, 150, axis=0), 0.3)
+    score = np.linspace(0.9, 0.6, 300)  # each grain's best patterns all in one corner
+    positions = np.stack([np.arange(300) % 150, np.zeros(300)], 1).astype(float)
+    train, held = select_patterns(
+        g, score, point_group, per_grain=8, minimum=100, positions=positions, min_score=0.0
+    )
+    chosen = np.concatenate([train, held])
+    assert len(chosen) == 100
+    assert np.bincount(chosen // 150).tolist() == [50, 50]
+    first = np.sort(chosen[chosen < 150])
+    assert first.min() < 10 and first.max() > 140  # spread over the grain, not its best
+    assert len(held) == 20  # two grains: the patterns are split instead
 
 
 def test_appearance_saves_and_loads(resolved, truth, tmp_path):
@@ -359,3 +379,42 @@ def test_fit_runs_on_cuda(resolved, truth):
     )
     np.testing.assert_allclose(fit.appearance.energy_weights, truth.energy_weights, atol=0.02)
     assert fit.summary()["held_out_after"] > fit.summary()["held_out_before"]
+
+
+def test_model_prepares_its_simulations_as_the_indexer_prepares_patterns(resolved, point_group):
+    """A simulated pattern through the model's processing (the dynamic background
+    removed) is the same pattern through ``LiveIndexer.prepare``, edges included; and
+    one rendered at twice the resolution and averaged down, as a camera's frames are,
+    differs from the model's no more at the detector's edges than inside it."""
+    det = detector((40, 40))
+    default = DetectorAppearance.default(resolved)
+    master = default.master(resolved)
+    g = random_orientations(24, seed=11)
+    model = _Model(
+        resolved,
+        det,
+        "cpu",
+        energy_order=0,
+        halo=False,
+        background_order=0,
+        dynamic_background=True,
+    )
+    flags = dict.fromkeys(
+        ("energy", "psf", "halo", "gamma", "high_pass", "background", "center", "distortion"),
+        False,
+    )
+    params = model.initial(flags, None)
+    simulated = model.simulate(params, torch.as_tensor(g, dtype=torch.float32), torch.zeros(24, 3))
+    indexer = LiveIndexer(
+        [master], [point_group], det, resolution=10.0, refine_shape=(40, 40), device="cpu"
+    )
+    frames = master.project(det, Rotation.from_matrix(g), rescale=False)
+    _, prepared = indexer.prepare(frames)
+    assert torch.allclose(prepared, simulated, atol=1e-5)
+
+    fine = master.project(replace(det, shape=(80, 80)), Rotation.from_matrix(g), rescale=False)
+    _, pooled = indexer.prepare(fine)
+    residual = (pooled - simulated).view(24, 40, 40).abs()
+    edge = torch.cat([residual[:, :, :2], residual[:, :, -2:]], 2).mean()
+    inside = residual[:, 4:-4, 4:-4].mean()
+    assert edge < 1.5 * inside

@@ -170,6 +170,21 @@ def resolved_master(cif: str, kv: float, tilt: float, npx: int, cache: Path):
     return master
 
 
+def orientations_in(g, point_group, degrees=5.0) -> int:
+    """How many orientations *g* ``(N, 3, 3)`` hold, those within *degrees* of one
+    another (symmetry reduced) counted once."""
+    operators = point_group.to_matrix()
+    threshold = np.cos(np.radians(degrees))
+    seeds = []
+    for m in np.asarray(g, dtype=np.float64):
+        if seeds:
+            traces = np.einsum("kij,sij->sk", operators, np.asarray(seeds) @ m.T).max(-1)
+            if np.any((traces - 1) / 2 >= threshold):
+                continue
+        seeds.append(m)
+    return len(seeds)
+
+
 # --- the figure ---------------------------------------------------------------------
 
 
@@ -260,6 +275,11 @@ def main():
     )
     parser.add_argument("--count", type=int, default=300, help="patterns fitted (with held out)")
     parser.add_argument("--per-grain", type=int, default=8, help="most patterns from one grain")
+    parser.add_argument(
+        "--minimum", type=int, default=200, help="patterns at least, the cap raised for few grains"
+    )
+    parser.add_argument("--no-energy", action="store_true", help="keep the Monte Carlo's weights")
+    parser.add_argument("--no-psf", action="store_true", help="fit no point spread")
     parser.add_argument("--restarts", type=int, default=1, help="fits from random starts")
     parser.add_argument("--halo", action="store_true", help="fit a wide second PSF Gaussian")
     parser.add_argument(
@@ -374,7 +394,13 @@ def main():
             print(f"{name}: {len(mine)} patterns indexed; too few to fit")
             continue
         train, held = select_patterns(
-            g[mine], score[mine], group, count=args.count, per_grain=args.per_grain
+            g[mine],
+            score[mine],
+            group,
+            count=args.count,
+            per_grain=args.per_grain,
+            minimum=args.minimum,
+            positions=np.stack(np.divmod(points[mine], shape[1]), 1),
         )
         chosen = mine[np.concatenate([train, held])]
         rows = []
@@ -382,7 +408,10 @@ def main():
             batch = np.asarray(frames[points[chosen[lo : lo + 512]]]).astype(np.float32)
             rows.append(indexer.prepare(torch.as_tensor(batch, device=device))[1])
         rows = torch.cat(rows).view(len(chosen), *indexer.refine_shape)
-        print(f"\n{name}: fitting on {len(train)} patterns, {len(held)} held out ...")
+        print(
+            f"\n{name}: fitting on {len(train)} patterns, {len(held)} held out, from "
+            f"{orientations_in(g[chosen], group)} orientations 5 degrees apart ..."
+        )
         fit = fit_appearance(
             master.to(device),
             rows,
@@ -393,6 +422,8 @@ def main():
             point_group=group,
             margin_resolution_deg=step,
             halo=args.halo,
+            fit_energy=not args.no_energy,
+            fit_psf=not args.no_psf,
             fit_pattern_center=args.pattern_center,
             restarts=args.restarts,
             progress=None,

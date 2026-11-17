@@ -443,6 +443,8 @@ def select_patterns(
     *,
     count: int = 300,
     per_grain: int = 8,
+    minimum: int = 200,
+    positions=None,
     grain_deg: float = 5.0,
     min_score: float | None = None,
     held_out: float = 0.2,
@@ -451,12 +453,18 @@ def select_patterns(
     """Which indexed patterns to fit on and which to hold out: ``(train, held_out)``,
     indices into *orientations*.
 
-    The best-scored patterns, spread over many orientations: patterns are taken in
-    order of score, grouped into grains (orientations within *grain_deg* of a
-    grain's first, symmetry reduced), at most *per_grain* from each, *count* in
-    all. Whole grains are held out (a share *held_out* of them), so the held-out
-    patterns test the fit on orientations it has not seen; with fewer than five
-    grains the patterns are split instead.
+    The well-scored patterns, spread over many orientations: those scored at least
+    *min_score* are grouped into grains (orientations within *grain_deg* of a grain's
+    best-scored pattern, symmetry reduced), and at most *per_grain* are taken from
+    each, *count* in all. A scan of few grains would give few patterns that way, so
+    the cap is raised, evenly over the grains, until *minimum* patterns are taken or
+    the grains have none left. Within a grain the patterns are the best-scored, or,
+    given *positions*, spread over the grain's area: the best-scored first, then
+    each the farthest from those already taken.
+
+    Whole grains are held out (a share *held_out* of them), so the held-out patterns
+    test the fit on orientations it has not seen; with fewer than five grains the
+    patterns are split instead.
 
     Parameters
     ----------
@@ -466,6 +474,9 @@ def select_patterns(
         ``(N,)`` the indexer's scores.
     point_group
         The phase's orix point group, or its operators ``(K, 3, 3)``.
+    positions
+        ``(N, 2)`` each pattern's place in the scan (any units), to spread the
+        patterns taken from one grain over its area.
     min_score
         Patterns scored below this are left out; default the median score.
     """
@@ -476,9 +487,11 @@ def select_patterns(
     operators = point_group.to_matrix() if hasattr(point_group, "to_matrix") else point_group
     operators = np.asarray(operators, dtype=np.float64)
     threshold = math.cos(math.radians(grain_deg))
-    seeds, counts, chosen, grain_of = [], [], [], []
+
+    # every candidate into a grain, in order of score
+    seeds, members = [], []
     for i in np.argsort(-scores, kind="stable"):
-        if scores[i] < min_score or len(chosen) >= count:
+        if scores[i] < min_score:
             break
         grain = -1
         if seeds:
@@ -489,13 +502,26 @@ def select_patterns(
                 grain = int(close[0])
         if grain < 0:
             seeds.append(g[i])
-            counts.append(0)
+            members.append([])
             grain = len(seeds) - 1
-        if counts[grain] >= per_grain:
-            continue
-        counts[grain] += 1
-        chosen.append(int(i))
-        grain_of.append(grain)
+        members[grain].append(int(i))
+    if not members:
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+
+    # the cap, raised evenly while too few patterns would be taken
+    sizes = np.array([len(m) for m in members])
+    total = max(int(count), int(minimum))
+    cap = int(per_grain)
+    while np.minimum(sizes, cap).sum() < min(minimum, sizes.sum()):
+        cap += 1
+    picks = [_spread(m, cap, positions) for m in members]
+    # round-robin over the grains, the first of each first, up to the total
+    chosen, grain_of = [], []
+    for rank in range(cap):
+        for grain, pick in enumerate(picks):
+            if rank < len(pick) and len(chosen) < total:
+                chosen.append(pick[rank])
+                grain_of.append(grain)
     chosen, grain_of = np.asarray(chosen, dtype=np.int64), np.asarray(grain_of)
     rng = np.random.default_rng(seed)
     grains = np.unique(grain_of)
@@ -506,6 +532,22 @@ def select_patterns(
         mask = np.zeros(len(chosen), dtype=bool)
         mask[rng.choice(len(chosen), round(held_out * len(chosen)), replace=False)] = True
     return chosen[~mask], chosen[mask]
+
+
+def _spread(members, cap, positions) -> list:
+    """Up to *cap* of a grain's *members* (indices, best-scored first): the first
+    ones, or, given *positions*, the best-scored then each the farthest from those
+    taken."""
+    if positions is None or len(members) <= cap:
+        return members[:cap]
+    where = np.asarray(positions, dtype=np.float64)[members]
+    taken = [0]
+    distance = np.linalg.norm(where - where[0], axis=1)
+    while len(taken) < cap:
+        far = int(np.argmax(distance))
+        taken.append(far)
+        distance = np.minimum(distance, np.linalg.norm(where - where[far], axis=1))
+    return [members[k] for k in taken]
 
 
 # --- the fit -----------------------------------------------------------------------------
