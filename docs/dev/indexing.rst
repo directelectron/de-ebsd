@@ -316,3 +316,50 @@ a reference is the independent check where a strain-free region is known.
 .. [WMD2006] A. J. Wilkinson, G. Meaden and D. J. Dingley, "High-resolution
    elastic strain measurement from electron backscatter diffraction patterns:
    new levels of sensitivity", Ultramicroscopy (2006).
+
+How the detector sees the master
+================================
+
+A simulated master is a model of the electrons a pattern is made of; a real
+detector weighs their energies by its own response, spreads them by its point
+spread, maps their intensity through its contrast, and its patterns keep a smooth
+background that correction did not take. Each mismatch lowers the correct
+orientation's correlation and pulls a strain fit off.
+:func:`~de_ebsd.index.appearance.fit_appearance` fits that appearance on a scan's
+own indexed patterns:
+
+.. math::
+
+    S(g) = c\big(\mathrm{PSF} * \textstyle\sum_e w_e\, M_e\big)(g\,d) + B(d)
+
+``M_e`` is the master of one electron at energy ``e``: an energy-resolved master
+keeps the Monte Carlo's weight each map carries
+(:attr:`~de_ebsd.sim.MasterPattern.energy_weights`), so
+:meth:`~de_ebsd.sim.MasterPattern.collapse` can weigh the energies again. The
+weights ``w_e`` are a low-order Legendre curve times the Monte Carlo's, so a few
+bins cannot be fitted one by one; the PSF is a Gaussian (optionally a core and a
+halo) on the sphere; ``c`` a gamma; ``B`` a few Legendre terms on the detector.
+The shared parameters and a small rotation of every pattern's orientation are
+fitted together by L-BFGS on the mean normalized cross-correlation.
+
+The indexer removes each real pattern's dynamic background (a wide blur of it)
+and not its simulations', so the fit puts the same removal on the model's
+simulations, and the parameters it finds are the detector's, not ones bent to
+make up for the removal. The indexer's master
+(:meth:`~de_ebsd.index.appearance.DetectorAppearance.master`) then bakes the
+weights, the PSF and the contrast in on the sphere, at no cost per pattern, with a
+high pass on the sphere fitted to stand in for the removal the simulations lack.
+The background is fixed on the detector rather than the sphere, so the indexer
+removes it from the real patterns instead
+(:class:`~de_ebsd.index.live.background.ResidualBackground`): about one more pass
+over each pattern's refine rows.
+
+The patterns fitted on are the best-scored, spread over the grains
+(:func:`~de_ebsd.index.appearance.select_patterns`), with a fifth of the grains
+held out. On a synthetic nickel scan rendered through a known appearance
+(``scripts/validate_appearance.py``, 2400 patterns at 128 x 128, 16 counts a
+pixel), the held-out NCC rose from 0.724 to 0.762, within 0.002 of the true
+appearance's model; the PSF and gamma came back to within 0.1 degree and 0.01,
+the energy weights only loosely, because a dynamical master's low energies are
+much like its high ones blurred. On a scan with no mismatch the fit stayed at the
+Monte Carlo's weights, a PSF under a Lambert pixel and a gamma of 0.97.
