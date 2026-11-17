@@ -30,6 +30,7 @@ they are indicative only.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -276,24 +277,25 @@ def speed(args, master, point_group, detector, device, write):
                     template_mb=template_bytes(indexer) / 2**20,
                     resident_mb=resident / 2**20,
                 )
+                if indexer.inplane is not None:
+                    row["chunk"] = indexer.inplane.chunk
+                    row["search_memory_mb"] = indexer.inplane.memory / 2**20
                 try:
                     indexer.restart_static(frames[::8])
                     indexer.index(frames[: 2 * batch], fit=True)
-
-                    def fitted(f, indexer=indexer):
-                        return indexer.index(f, fit=True)
-
-                    def strained(f, indexer=indexer):
-                        return indexer.index_with_strain(f)
-
+                    # nothing named may hold the indexer past this row: the next one's
+                    # in-plane memory budget is read from the device's free memory
+                    fitted = functools.partial(indexer.index, fit=True)
                     row["fit_rate"] = rate(fitted, frames, args.repeats)
-                    row["strain_rate"] = rate(strained, frames[: len(frames) // 2], 1)
+                    half = frames[: len(frames) // 2]
+                    row["strain_rate"] = rate(indexer.index_with_strain, half, 1)
                     stages = Stages(indexer)
                     indexer.index(frames, fit=True)
                     row["fit_stages_us"] = stages.microseconds(len(frames))
-                    indexer.index_with_strain(frames[: len(frames) // 2])
-                    row["strain_stages_us"] = stages.microseconds(len(frames) // 2)
+                    indexer.index_with_strain(half)
+                    row["strain_stages_us"] = stages.microseconds(len(half))
                     stages.remove()
+                    del stages, half, fitted
                 except torch.cuda.OutOfMemoryError:
                     print(f"{search:8s} {step:g}° batch {batch}: out of memory indexing")
                     del indexer
