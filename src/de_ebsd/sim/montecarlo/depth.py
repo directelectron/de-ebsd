@@ -133,6 +133,15 @@ class DepthDistribution:
             izz[i_e] = running_max
         return izz
 
+    def energy_shares(self, energies_kev=None) -> np.ndarray:
+        """The share of the incident electrons that leave at each energy bin
+        ``(nE,)``, or at the bins nearest *energies_kev*: the weight
+        :meth:`depth_weights` gives that energy's master pattern, summed over depth."""
+        shares = self.accum_z.sum(axis=(1, 2, 3)) / self.n_total
+        if energies_kev is None:
+            return shares
+        return np.array([shares[self.energy_index(e)] for e in np.atleast_1d(energies_kev)])
+
     def depth_weights(self, energy_kev: float, normal_absorption_length: float) -> np.ndarray:
         """The weighting lambda_E(z) for one energy bin (EMsoft ``lambdaE``).
 

@@ -147,7 +147,10 @@ class MasterPatternSimulator:
             Compute one Lambert map per Monte Carlo energy bin (structure factors
             and depth profile per energy), giving an ``(nE, 2, n, n)`` master.
             Requires a depth-integrating backend; ignored otherwise. Default is a
-            single map at the beam energy.
+            single map at the beam energy. Each map carries its energy's share of
+            the electrons, which the master keeps as
+            :attr:`~de_ebsd.sim.MasterPattern.energy_weights`, so
+            :meth:`~de_ebsd.sim.MasterPattern.collapse` can weigh the energies again.
         progress
             Called as ``progress(done, total)`` after each batch of beam
             directions, counting batches over all energies, so a caller can show
@@ -232,9 +235,15 @@ class MasterPatternSimulator:
             if partial is not None:
                 done_sum = maps[-1] if done_sum is None else done_sum + maps[-1]
 
+        # the weight each map carries, so a caller can weigh the energies again
+        # (MasterPattern.collapse); only a depth profile gives one
+        energy_weights = None
+        if backend.uses_depth_profile and monte_carlo is not None:
+            energy_weights = monte_carlo.energy_shares(energies)
         return MasterPattern(
             data=torch.stack(maps, dim=0),
             energies_kev=energies,
+            energy_weights=energy_weights,
             metadata={
                 # the object, not its repr: the indexers derive the phase and
                 # point group from it (save() stringifies metadata on write)

@@ -48,6 +48,35 @@ def test_energy_resolved_master():
     # the top energy bin reproduces the single-energy compute exactly
     se = sim.compute(mc_electrons=20_000, dtype=torch.float64)
     assert torch.allclose(er.data[-1], se.data[0], atol=1e-9)
+    # each map's Monte Carlo share is kept, so the energies can be weighed again
+    assert er.energy_weights.shape == er.energies_kev.shape
+    assert np.all(er.energy_weights >= 0) and 0 < er.energy_weights.sum() <= 1
+    assert se.energy_weights[0] == pytest.approx(er.energy_weights[-1])
+    assert torch.allclose(er.collapse().data[0], er.data.sum(0))
+
+
+def test_collapse_weighs_the_energies_again(tmp_path):
+    """``collapse`` sums the maps as they are by default, and with given weights
+    weighs each energy's map of one electron; the weights survive a save."""
+    data = torch.rand(3, 2, 9, 9, dtype=torch.float64)
+    shares = np.array([0.1, 0.0, 0.3])
+    master = de.MasterPattern(data, np.array([18.0, 19.0, 20.0]), {}, energy_weights=shares)
+    assert torch.allclose(master.collapse().data[0], data.sum(0))
+    per_electron = master.per_electron()
+    assert torch.allclose(per_electron[0], data[0] / 0.1)
+    assert torch.all(per_electron[1] == 0)  # no electron leaves at 19 keV
+    collapsed = master.collapse([2.0, 5.0, 1.0])
+    assert torch.allclose(collapsed.data[0], 2.0 * data[0] / 0.1 + data[2] / 0.3)
+    assert collapsed.energies_kev.tolist() == [20.0]
+    assert collapsed.metadata["collapse_weights"] == [2.0, 5.0, 1.0]
+    with pytest.raises(ValueError):
+        master.collapse([1.0, 1.0])
+    with pytest.raises(ValueError):
+        de.MasterPattern(data, np.array([18.0, 19.0, 20.0]), {}, energy_weights=[1.0, -1.0, 0.0])
+    path = str(tmp_path / "resolved.h5")
+    master.save(path)
+    np.testing.assert_allclose(de.MasterPattern.load(path).energy_weights, shares)
+    assert de.MasterPattern(data, np.array([18.0, 19.0, 20.0])).energy_weights is None
 
 
 def test_compute_reports_its_progress_over_every_energy(monkeypatch):

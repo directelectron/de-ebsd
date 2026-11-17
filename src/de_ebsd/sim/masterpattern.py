@@ -124,11 +124,18 @@ class MasterPattern(SphereProjection):
         Energy bin centers in keV, shape ``(n_energies,)``.
     metadata
         Free-form provenance (crystal, dmin, backend name, ...).
+    energy_weights
+        The weight each energy bin's map already carries, shape ``(n_energies,)``,
+        or ``None`` where it is not known. An energy-resolved simulation weights
+        each map by the share of the electrons that leave the sample at its energy
+        (the Monte Carlo's), so ``data[e] / energy_weights[e]`` is the map of one
+        electron at that energy, and :meth:`collapse` can weigh the energies again.
     """
 
     data: torch.Tensor
     energies_kev: np.ndarray
     metadata: dict = field(default_factory=dict)
+    energy_weights: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         shape_ok = (
@@ -141,6 +148,13 @@ class MasterPattern(SphereProjection):
         self.energies_kev = np.atleast_1d(np.asarray(self.energies_kev, dtype=np.float64))
         if len(self.energies_kev) != self.data.shape[0]:
             raise ValueError("energies_kev length must match data.shape[0]")
+        if self.energy_weights is not None:
+            weights = np.atleast_1d(np.asarray(self.energy_weights, dtype=np.float64))
+            if weights.shape != self.energies_kev.shape:
+                raise ValueError("energy_weights must have one weight per energy bin")
+            if not (np.all(np.isfinite(weights)) and np.all(weights >= 0)):
+                raise ValueError("energy_weights must be finite and non-negative")
+            self.energy_weights = weights
 
     @property
     def npx(self) -> int:
@@ -157,12 +171,59 @@ class MasterPattern(SphereProjection):
 
     def to(self, device: torch.device | str) -> MasterPattern:
         """Copy to another device."""
-        return MasterPattern(self.data.to(device), self.energies_kev, dict(self.metadata))
+        return MasterPattern(
+            self.data.to(device), self.energies_kev, dict(self.metadata), self.energy_weights
+        )
 
     def energy_index(self, energy_kev: float | None) -> int:
         if energy_kev is None:
             return len(self.energies_kev) - 1  # highest energy bin
         return int(np.argmin(np.abs(self.energies_kev - energy_kev)))
+
+    def per_electron(self) -> torch.Tensor:
+        """Each energy bin's map of one electron, ``(n_energies, 2, n, n)``: :attr:`data`
+        divided by the weight it carries (:attr:`energy_weights`), or :attr:`data`
+        itself where no weights are known. A bin no electron leaves at is zero."""
+        if self.energy_weights is None:
+            return self.data
+        weights = torch.as_tensor(self.energy_weights, device=self.device, dtype=self.dtype)
+        carried = weights[:, None, None, None]
+        safe = torch.where(carried > 0, carried, torch.ones_like(carried))
+        return torch.where(carried > 0, self.data / safe, torch.zeros_like(self.data))
+
+    def collapse(self, weights=None) -> MasterPattern:
+        """The energy bins summed into one map, the master the indexers use.
+
+        Parameters
+        ----------
+        weights
+            Each energy bin's weight ``(n_energies,)``, applied to its map of one
+            electron (:meth:`per_electron`). Default: the weights the maps already
+            carry (:attr:`energy_weights`, the Monte Carlo's), so the default is the
+            plain sum of :attr:`data`. A tensor that requires a gradient keeps it.
+
+        Returns
+        -------
+        MasterPattern
+            One map, labelled with the highest energy, carrying the total weight; its
+            metadata records the energy range and any weights given.
+        """
+        top = np.array([float(self.energies_kev.max())])
+        meta = dict(self.metadata, energy_resolved=False)
+        if len(self.energies_kev) > 1:
+            meta["energy_range_kev"] = (float(self.energies_kev.min()), float(top[0]))
+        if weights is None:
+            total = None if self.energy_weights is None else np.array([self.energy_weights.sum()])
+            return MasterPattern(self.data.sum(0, keepdim=True), top, meta, total)
+        w = torch.as_tensor(weights, device=self.device, dtype=self.dtype).reshape(-1)
+        if w.shape[0] != self.data.shape[0]:
+            raise ValueError("collapse needs one weight per energy bin")
+        values = w.detach().cpu().double().numpy()
+        if not (np.all(np.isfinite(values)) and np.all(values >= 0)):
+            raise ValueError("energy weights must be finite and non-negative")
+        meta["collapse_weights"] = [float(v) for v in values]
+        data = torch.einsum("e,ehij->hij", w, self.per_electron())[None]
+        return MasterPattern(data, top, meta, np.array([values.sum()]))
 
     def sample(self, directions: torch.Tensor, energy_kev: float | None = None) -> torch.Tensor:
         """Interpolate the master pattern at unit vectors (..., 3).
@@ -226,6 +287,8 @@ class MasterPattern(SphereProjection):
         with h5py.File(path, "w") as f:
             f.create_dataset("master_pattern", data=self.data.detach().cpu().numpy())
             f.create_dataset("energies_kev", data=self.energies_kev)
+            if self.energy_weights is not None:
+                f.create_dataset("energy_weights", data=self.energy_weights)
             meta = f.create_group("metadata")
             for key, value in self.metadata.items():
                 meta.attrs[key] = str(value)
@@ -236,8 +299,9 @@ class MasterPattern(SphereProjection):
         with h5py.File(path, "r") as f:
             data = torch.as_tensor(np.asarray(f["master_pattern"]), device=device)
             energies = np.asarray(f["energies_kev"])
+            weights = np.asarray(f["energy_weights"]) if "energy_weights" in f else None
             metadata = dict(f["metadata"].attrs) if "metadata" in f else {}
-        return cls(data=data, energies_kev=energies, metadata=metadata)
+        return cls(data=data, energies_kev=energies, metadata=metadata, energy_weights=weights)
 
     def __repr__(self) -> str:
         e = self.energies_kev
