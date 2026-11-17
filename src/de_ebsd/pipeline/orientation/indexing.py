@@ -504,6 +504,7 @@ class DynamicalIndexer:
         device="cuda",
         lock=None,
         refine_side: int = REFINE_SIDE,
+        search: str = "flat",
     ) -> None:
         """*lock* is held by every call into the live indexer (see
         :func:`de_ebsd.core.device.resolve_lock`); by default the indexer has its
@@ -514,7 +515,13 @@ class DynamicalIndexer:
         the patterns at. More pixels cost time as they grow (on a twin pattern,
         about 22, 49 and 155 ms per 256 patterns at 128, 256 and 512, indexing
         and fitting the strain); a scan whose points are summed from several
-        frames each has that many times longer per pattern, and can afford them."""
+        frames each has that many times longer per pattern, and can afford them.
+
+        *search* is de_ebsd's ``LiveIndexer`` search: ``"flat"``, the dictionary
+        of every orientation at *step_deg*, or ``"inplane"``, one template per
+        crystal direction along the screen normal turned through every in-plane
+        angle at once, more accurate at the same step and faster at fine ones. Its
+        entries number a template and an in-plane angle (`entry_orientations`)."""
         import threading
 
         from de_ebsd.index.live import LiveIndexer
@@ -541,6 +548,7 @@ class DynamicalIndexer:
                 refine_shape=comparison_shape(refine_side, geometry.shape),
                 device=device,
                 lock=threading.RLock() if lock is None else lock,
+                search=search,
                 **steps,
             )
         #: Where each phase's entries start in the live indexer's dictionary.
@@ -641,8 +649,8 @@ class DynamicalIndexer:
         return Match(int(found.phase[0]), euler[0], float(found.score[0]))
 
     def entry_orientations(self, number: int) -> np.ndarray:
-        first = int(self._first[number])
-        rotations = self.live.rotations[first : first + self.live.sizes[number]]
+        with accelerator_lock(self.device):
+            rotations = self.live.phase_rotations(number)
         return matrix_to_euler(rotations.cpu().numpy())
 
 
