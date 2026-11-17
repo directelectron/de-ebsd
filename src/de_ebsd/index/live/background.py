@@ -2,10 +2,14 @@
 
 The static background is the running mean of the scan's frames; a pattern is
 divided by it, then its own slowly varying (dynamic) background is removed. The
-ghost is what the static background keeps of the scan's grains.
+ghost is what the static background keeps of the scan's grains. A residual
+background, fitted (:func:`~de_ebsd.index.appearance.fit_appearance`), is what the
+corrected patterns still carry that no simulation has.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -17,6 +21,66 @@ from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
 #: Frames the static background is averaged over before it is used: fewer still
 #: carry the bands of the few grains they came from.
 MIN_FRAMES_FOR_STATIC = 32
+
+
+def legendre_terms(shape, order: int, device=None, dtype=torch.float32) -> torch.Tensor:
+    """The smooth detector backgrounds ``(terms, rows * cols)``: products of Legendre
+    polynomials ``P_i(x) P_j(y)`` with ``1 <= i + j <= order`` over the detector,
+    ``x`` and ``y`` running from -1 to 1 across its pixel centers, row-major. The
+    constant is left out: a normalized cross-correlation cannot see it."""
+    rows, cols = int(shape[0]), int(shape[1])
+    y = (torch.arange(rows, device=device, dtype=dtype) + 0.5) / rows * 2.0 - 1.0
+    x = (torch.arange(cols, device=device, dtype=dtype) + 0.5) / cols * 2.0 - 1.0
+
+    def legendre(t, n):
+        previous, current = torch.ones_like(t), t  # Bonnet's recursion from P0, P1
+        if n == 0:
+            return previous
+        for k in range(1, n):
+            previous, current = current, ((2 * k + 1) * t * current - k * previous) / (k + 1)
+        return current
+
+    terms = [
+        (legendre(y, j)[:, None] * legendre(x, total - j)[None, :]).reshape(-1)
+        for total in range(1, int(order) + 1)
+        for j in range(total + 1)
+    ]
+    if not terms:
+        return torch.zeros(0, rows * cols, device=device, dtype=dtype)
+    return torch.stack(terms)
+
+
+@dataclass(frozen=True)
+class ResidualBackground:
+    """A smooth background a scan's corrected patterns still carry, fixed on the
+    detector, as an appearance fit finds it
+    (:func:`~de_ebsd.index.appearance.fit_appearance`).
+
+    The fit's model of a corrected pattern is ``t + B``: the simulation ``t`` plus
+    ``B``, the :func:`legendre_terms` of *order* weighted by *coefficients*. A
+    normalized pattern is ``(t + B) / |t + B|`` (each less its mean), so removing
+    ``share * B / |B|`` from it leaves the simulation alone, normalized again.
+    *share*, ``|B| / |t + B|``, is the mean over the fit's patterns, and about the
+    same at any detector resolution; a pattern whose own ``|t|`` is off the mean
+    keeps a small part of the background. With *high_pass*, the patterns had their
+    dynamic background removed (:meth:`ScanBackground.remove`), and ``B`` is taken
+    through the same.
+    """
+
+    coefficients: tuple[float, ...]
+    order: int
+    share: float
+    high_pass: bool = False
+
+    def direction(self, shape, device=None) -> torch.Tensor:
+        """``B`` at detector *shape*, less its mean and of unit length, ``(pixels,)``."""
+        terms = legendre_terms(shape, self.order, device, torch.float32)
+        background = torch.as_tensor(self.coefficients, device=device, dtype=torch.float32)
+        background = background @ terms
+        if self.high_pass:
+            grid = background.view(1, *(int(v) for v in shape))
+            background = ScanBackground(tuple(grid.shape[-2:]), grid.device).remove(grid)
+        return normalize_rows(background.reshape(1, -1))[0]
 
 
 class ScanBackground:

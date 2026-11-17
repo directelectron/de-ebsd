@@ -43,7 +43,7 @@ from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.live import calibration, deformation
-from de_ebsd.index.live.background import ScanBackground
+from de_ebsd.index.live.background import ResidualBackground, ScanBackground
 from de_ebsd.index.live.common import (
     BATCH,
     FUSED_BATCH,
@@ -169,7 +169,10 @@ class LiveIndexer:
         same ``npx``), used at its highest energy bin, or a
         :class:`~de_ebsd.sim.KinematicMaster`, sampled onto the same Lambert grid
         (:func:`lambert_masters`). Either physics, or a mix: every phase is
-        searched in one product, and the best score gives the phase.
+        searched in one product, and the best score gives the phase. Collapse an
+        energy-resolved master first (:meth:`~de_ebsd.sim.MasterPattern.collapse`), or
+        build it from a fitted appearance
+        (:meth:`~de_ebsd.index.appearance.DetectorAppearance.master`).
     point_groups
         Each phase's orix point group, whose fundamental zone its dictionary samples.
     detector
@@ -200,6 +203,11 @@ class LiveIndexer:
         Held around every call that runs device work, building included, for an
         application that shares the device between threads; see
         :func:`~de_ebsd.core.device.resolve_lock`.
+    residual_background
+        A :class:`~de_ebsd.index.live.background.ResidualBackground` the corrected
+        patterns still carry, from an appearance fit
+        (:meth:`~de_ebsd.index.appearance.DetectorAppearance.residual_background`),
+        removed from every prepared pattern; see :meth:`set_residual_background`.
     """
 
     @holds_lock
@@ -217,6 +225,7 @@ class LiveIndexer:
         device=None,
         dtype=None,
         lock=None,
+        residual_background: ResidualBackground | None = None,
     ) -> None:
         self.lock = resolve_lock(lock)
         from orix.sampling import get_sample_fundamental
@@ -262,6 +271,7 @@ class LiveIndexer:
         self.offsets = np.cumsum([0, *self.sizes[:-1]])
         self.set_pattern_center(detector.pattern_center)
         self.background = ScanBackground(self.refine_shape, self.device)
+        self.set_residual_background(residual_background)
         #: The dynamic background's Gaussian for the fused :meth:`prepare`.
         self._prepare_weights, _ = _gaussian_kernel_1d(
             (self.refine_shape[1] // 4) / 8.0, 4.0, self.device, torch.float32
@@ -279,6 +289,36 @@ class LiveIndexer:
                 dtype=self.dtype,
                 device=self.device,
             )
+
+    @holds_lock
+    def set_residual_background(self, residual: ResidualBackground | None) -> None:
+        """Remove *residual* (or nothing, for None) from every pattern :meth:`prepare`
+        corrects from now on.
+
+        The refine rows lose ``share`` times the background's unit direction and are
+        normalized again; the search rows are then those rows averaged to the search
+        shape, as :meth:`prepare` makes them without the fused kernel. About one more
+        pass over each pattern's refine rows, next to the refine's seven projections a
+        level."""
+        self.residual = residual
+        self._residual_rows = None
+        if residual is not None and residual.share:
+            direction = residual.direction(self.refine_shape, self.device)
+            self._residual_rows = direction.mul_(float(residual.share))
+
+    def _remove_residual(self, refine_rows, out=None, scratch=None):
+        """*refine_rows* ``(N, pixels)`` less the residual background, normalized again,
+        and the search rows made from them: ``(search, refine)``. In place, into the
+        search buffer *out*, where *scratch* is given (the workspace's)."""
+        n = len(refine_rows)
+        if scratch is None:
+            refine_rows = normalize_rows(refine_rows - self._residual_rows)
+            grid = refine_rows.view(n, *self.refine_shape)
+            search = normalize_rows(average_to(grid, self.search_shape).flatten(1))
+            return search, refine_rows
+        refine_rows = normalize_rows_into(refine_rows.sub_(self._residual_rows), scratch)
+        pool_into(refine_rows.view(n, *self.refine_shape), out.view(n, *self.search_shape))
+        return normalize_rows_into(out, scratch), refine_rows
 
     @holds_lock
     def directions_at(self, pattern_center, shape) -> torch.Tensor:
@@ -443,11 +483,13 @@ class LiveIndexer:
         """*frames* ``(N, H, W)`` corrected and normalized, as ``(search, refine)``
         rows ``(N, pixels)`` at the two shapes."""
         fused = self._fused_prepare(frames)
-        if fused is not None:
-            return fused
-        t = self.background.remove(self.pooled(frames))
-        search = average_to(t, self.search_shape)
-        return normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
+        if fused is None:
+            t = self.background.remove(self.pooled(frames))
+            search = average_to(t, self.search_shape)
+            fused = normalize_rows(search.flatten(1)), normalize_rows(t.flatten(1))
+        if self._residual_rows is not None:
+            return self._remove_residual(fused[1])
+        return fused
 
     def _fused_prepare(self, frames, out=None):
         """:meth:`prepare` in one launch (:func:`~de_ebsd.index._kernels.prepare`)
@@ -689,7 +731,11 @@ class LiveIndexer:
         prepared = self._fused_prepare(
             frames, out=(workspace.search_rows[:n], workspace.refine_rows[:n])
         )
-        return self.prepare(frames) if prepared is None else prepared
+        if prepared is None:
+            return self.prepare(frames)
+        if self._residual_rows is not None:
+            return self._remove_residual(prepared[1], prepared[0], workspace.scratch)
+        return prepared
 
     def _search_in_workspace(self, search_rows):
         n = len(search_rows)
