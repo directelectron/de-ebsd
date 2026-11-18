@@ -79,6 +79,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "de_ebsd.viz" = ["*.js"]
+"de_ebsd.sim.montecarlo" = ["data/*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
