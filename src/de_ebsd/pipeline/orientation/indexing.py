@@ -16,16 +16,14 @@ pattern's phase). The steps are SpyDE's functions (the copies in
 * :meth:`Indexer.match` — its live match (one pattern), for every phase;
 * :meth:`Indexer.index` — its whole-field index, for a stack of frames.
 
-Two things differ from the wizard, both measured against de-twin's ground
-truth (a duplex steel scan of its camera frames, 1024 patterns, 33 grains):
+Every orientation is reported in the frame the patterns are simulated in
+(kikuchipy's, ``bands.sample_to_detector``), which is OIM's (EDAX TSL) sample
+frame: a real scan re-indexed by OIM agrees with no conversion
+(:mod:`de_ebsd.core.frames`).
 
-* **Orientations are reported in the scan's frame** — x along a row, y down
-  the columns, z into the sample — not in the frame the patterns are
-  simulated in, which is kikuchipy's (``bands.sample_to_detector``). The two
-  differ by 90° about the surface normal: without the turn no pattern was
-  within 5° of the truth. An IPF-Z color cannot show this (a turn about z
-  leaves the z direction where it was), so the map looked right while every
-  orientation was 90° off.
+One thing differs from the wizard, measured against de-twin's ground truth (a
+duplex steel scan of its camera frames, 1024 patterns, 33 grains):
+
 * **The detector's static background** is the mean of the scan's own frames
   (:meth:`Indexer.observe`), kept as the scan runs. The per-pattern blur
   alone leaves the static profile in, and the phases then confuse: 22% of
@@ -48,10 +46,14 @@ return NumPy, so the correction here is theirs re-run on device tensors
 from __future__ import annotations
 
 import inspect
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 
+# Deprecated, and importable from here only for the code that imported them here.
+from ...core.frames import scan_euler, scan_tensor, to_scan_frame  # noqa: F401
+from ...core.rotation import matrix_to_euler
 from ..device_lock import accelerator_lock
 from ..ebsd.bands import cubic_reflectors, reflectors_from_phase
 from ..ebsd.indexing import (
@@ -79,16 +81,6 @@ CHUNK = 256
 #: Frames a static background is averaged over before it is used: fewer
 #: still carry the bands of the few grains they came from.
 MIN_FRAMES_FOR_STATIC = 32
-
-
-def to_scan_frame(euler) -> np.ndarray:
-    """Bunge Euler angles ``(N, 3)`` in radians, from the frame patterns are
-    simulated in (kikuchipy's) to the scan's: turned 90° about the surface
-    normal (see the module docstring)."""
-    from orix.quaternion import Rotation
-
-    turn = Rotation.from_axes_angles([0, 0, 1], -90, degrees=True)
-    return (Rotation.from_euler(np.asarray(euler, float)) * turn).to_euler()
 
 
 @dataclass(frozen=True)
@@ -151,10 +143,9 @@ class PhaseDictionary:
         self.geometry = geometry
         self.step_deg = float(step_deg)
         self.reflectors = _reflectors(phase, geometry)
-        #: The orientations simulated, in the simulation's frame (the one
-        #: bands are drawn in), and the same in the scan's frame.
+        #: The orientations simulated, in OIM's sample frame (the one bands
+        #: are drawn in).
         self.euler = sample_orientations(step_deg, point_group=phase.point_group)
-        self.orientations = to_scan_frame(self.euler)
         patterns = simulate_dictionary(
             self.euler,
             geometry.shape,
@@ -169,17 +160,28 @@ class PhaseDictionary:
     def __len__(self) -> int:
         return len(self.euler)
 
+    @property
+    def orientations(self) -> np.ndarray:
+        """Deprecated: :attr:`euler`, which is already in OIM's sample frame."""
+        _deprecated_alias("PhaseDictionary.orientations", "PhaseDictionary.euler")
+        return self.euler
+
 
 @dataclass(frozen=True)
 class Match:
-    """The best fit of one pattern: its phase, its orientation (in the
-    simulation's frame, to draw its bands with, and in the scan's) and
-    score."""
+    """The best fit of one pattern: its phase, its orientation as Bunge Euler
+    angles in OIM's sample frame (the frame its bands are drawn in, too) and
+    its score."""
 
     phase: int
     euler: np.ndarray
-    orientation: np.ndarray
     score: float
+
+    @property
+    def orientation(self) -> np.ndarray:
+        """Deprecated: :attr:`euler`, which is already in OIM's sample frame."""
+        _deprecated_alias("Match.orientation", "Match.euler")
+        return self.euler
 
 
 @dataclass(frozen=True)
@@ -187,40 +189,29 @@ class Indexed:
     """A stack of frames indexed, a row per frame: the phase, the dictionary
     entry (of that phase) the orientation came from — anything worked out
     once per entry, such as its IPF color, stands for the orientation — the
-    score, and the orientation as a matrix ``(N, 3, 3)`` in the simulation's
-    frame (:func:`scan_euler` turns it into the scan's)."""
+    score, and the orientation as a matrix ``(N, 3, 3)`` in OIM's sample
+    frame."""
 
     phase: np.ndarray
     entry: np.ndarray
     score: np.ndarray
     rotation: np.ndarray
-    #: The deviatoric strain ``(N, 3, 3)`` in the simulation's frame
-    #: (:func:`scan_tensor` turns it into the scan's), when it was measured.
+    #: The deviatoric strain ``(N, 3, 3)`` in OIM's sample frame, as the
+    #: orientations are, when it was measured.
     strain: np.ndarray | None = None
 
 
-#: The turn :func:`to_scan_frame` makes, acting on vectors: a direction ``v`` in
-#: the simulation's frame is ``SCAN_TURN @ v`` in the scan's.
-SCAN_TURN = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-
-
-def scan_euler(rotations) -> np.ndarray:
-    """Orientation matrices ``(N, 3, 3)`` (:attr:`Indexed.rotation`) as Bunge
-    Euler angles in the scan's frame."""
-    from orix.quaternion import Rotation
-
-    return to_scan_frame(Rotation.from_matrix(np.asarray(rotations, float)).to_euler())
-
-
-def scan_tensor(tensors) -> np.ndarray:
-    """Tensors ``(..., 3, 3)`` in the simulation's frame, such as
-    :attr:`Indexed.strain`, in the scan's."""
-    return np.einsum("ij,...jk,lk->...il", SCAN_TURN, np.asarray(tensors), SCAN_TURN)
+def _deprecated_alias(old: str, new: str) -> None:
+    warnings.warn(
+        f"{old} is deprecated: use {new}, which is already in OIM's (EDAX TSL) sample frame",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def misorientation_deg(rotations, reference, symmetry) -> np.ndarray:
     """The angle ``(N,)`` from each of *rotations* ``(N, 3, 3)`` to *reference*
-    ``(3, 3)``, both in the simulation's frame, over the point group's
+    ``(3, 3)``, both in the same sample frame, over the point group's
     *symmetry* matrices ``(K, 3, 3)``."""
     turn = np.asarray(rotations) @ np.asarray(reference).T
     # trace(S M) for every operator S at once; the group holds each S's transpose
@@ -340,7 +331,7 @@ class Indexer:
         phase, index, score = self.best(frame)
         number, at = int(phase[0]), int(index[0])
         dictionary = self.dictionaries[number]
-        return Match(number, dictionary.euler[at], dictionary.orientations[at], float(score[0]))
+        return Match(number, dictionary.euler[at], float(score[0]))
 
     def index(self, frames) -> Indexed:
         """The best fit of every frame of a stack."""
@@ -352,8 +343,9 @@ class Indexer:
         return Indexed(phase, index, score, rotation)
 
     def entry_orientations(self, number: int) -> np.ndarray:
-        """Phase *number*'s dictionary orientations, in the scan's frame."""
-        return self.dictionaries[number].orientations
+        """Phase *number*'s dictionary orientations as Bunge Euler angles, in
+        OIM's sample frame."""
+        return self.dictionaries[number].euler
 
     def _matrices(self, number: int) -> np.ndarray:
         if self._matrix_cache is None:
@@ -366,12 +358,12 @@ class Indexer:
         return self._matrix_cache[number]
 
     def orientations(self, phase, index) -> np.ndarray:
-        """The orientations, in the scan's frame, of dictionary entries
+        """The orientations, in OIM's sample frame, of dictionary entries
         *index* of phases *phase* (as :meth:`best` returns them)."""
         euler = np.zeros((len(phase), 3))
         for number, dictionary in enumerate(self.dictionaries):
             rows = phase == number
-            euler[rows] = dictionary.orientations[index[rows]]
+            euler[rows] = dictionary.euler[index[rows]]
         return euler
 
     def best(self, frames):
@@ -624,7 +616,7 @@ class DynamicalIndexer:
             )
 
     def strain_from_reference(self, frames, reference) -> np.ndarray:
-        """The deviatoric strain ``(N, 3, 3)`` of *frames*, in the simulation's
+        """The deviatoric strain ``(N, 3, 3)`` of *frames*, in OIM's sample
         frame, relative to one real *reference* frame: correlated against it
         rather than against the master, so it holds only within the
         reference's grain (de_ebsd's ``strain_from_reference``)."""
@@ -646,12 +638,12 @@ class DynamicalIndexer:
 
         found = self.index(frame)
         euler = Rotation.from_matrix(found.rotation[:1].astype(float)).to_euler()
-        return Match(int(found.phase[0]), euler[0], to_scan_frame(euler)[0], float(found.score[0]))
+        return Match(int(found.phase[0]), euler[0], float(found.score[0]))
 
     def entry_orientations(self, number: int) -> np.ndarray:
         first = int(self._first[number])
         rotations = self.live.rotations[first : first + self.live.sizes[number]]
-        return scan_euler(rotations.cpu().numpy())
+        return matrix_to_euler(rotations.cpu().numpy())
 
 
 def refine_pattern_center(

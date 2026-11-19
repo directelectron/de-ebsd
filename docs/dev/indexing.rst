@@ -91,8 +91,8 @@ a dynamical :class:`~de_ebsd.sim.MasterPattern` or a kinematic
 minutes a dynamical master takes indexes several phases the same way a GPU does
 (:func:`~de_ebsd.index.live.dynamical_indexing_available` says which to use).
 Frames may be NumPy, torch or CuPy arrays; a GPU array is read in place through
-DLPack. Orientations and strains come back in kikuchipy's sample frame; turning
-them into a scan's is the caller's, with :mod:`de_ebsd.core.frames`.
+DLPack. Orientations and strains come back in OIM's (EDAX TSL) sample frame,
+ready for an ``.ang`` as they are (:doc:`/user/conventions`).
 
 The design goal is a cost per buffer that is fixed and known in advance: every
 step below is a batched operation over the whole buffer, and nothing loops over

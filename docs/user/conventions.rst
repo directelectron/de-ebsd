@@ -58,46 +58,43 @@ crystal frame, ``v_crystal = g @ v_sample``
 (:func:`~de_ebsd.core.rotation.euler_to_matrix`,
 :func:`~de_ebsd.core.rotation.matrix_to_euler`).
 
-The sample frame and the scan's frame
-=====================================
+The sample frame: OIM's
+=======================
 
-Every orientation de-ebsd reports is in **kikuchipy's sample frame**, the frame
-patterns are simulated in. That is the frame orix, kikuchipy and EMsoft read, so
-an indexer's answer goes to them unchanged.
+**OIM (EDAX TSL) is the reference.** Every orientation de-ebsd reports -- an
+indexer's, a refine's, a dictionary entry's -- and every tensor beside it, such
+as a strain, is in **OIM's sample frame**. It is the frame patterns are
+simulated in (kikuchipy's, :meth:`~de_ebsd.sim.MasterPattern.project`), so an
+orientation goes into an ``.ang``, an orix ``CrystalMap``, OIM, MTEX or
+kikuchipy exactly as de-ebsd returns it: there is nothing to convert.
 
-A scan has a frame of its own: **x along a row of the scan, y down its columns,
-z into the sample**. It is kikuchipy's sample frame turned **90 degrees about
-the surface normal**: a direction ``v`` in kikuchipy's frame is
-``SCAN_TURN @ v`` in the scan's, with
+The evidence is a real scan. A 200 x 200 nickel map recorded on a Direct
+Electron camera was indexed by de-ebsd's dynamical indexer and re-indexed by
+OIM from the same patterns, at the same pattern center. Written to an ``.ang``
+unturned, de-ebsd's Euler angles agree with OIM's to a median of 0.24 degrees,
+95.7% of points within 2 degrees, and the IPF-X, IPF-Y and IPF-Z colors of the two
+maps agree at as many points. Turned 90 degrees about the surface normal, no point
+was within 5 degrees.
 
-.. math::
+OIM refers its Euler angles to sample axes of its own, not to the axes an
+``.ang`` writes the scan's positions along (x along a row, y down the columns):
+the two are a quarter-turn apart about the surface normal. So an orientation is
+**not** turned to match the positions -- the positions stay as scanned, and the
+orientations stay in OIM's frame.
 
-    \mathrm{SCAN\_TURN} = \begin{pmatrix} 0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & 1 \end{pmatrix},
-
-so the scan's x is kikuchipy's -y. An orientation becomes
-``g @ SCAN_TURN.T`` and a tensor such as a strain
-``SCAN_TURN @ e @ SCAN_TURN.T``. :mod:`de_ebsd.core.frames` does each:
-
-* :func:`~de_ebsd.core.frames.scan_euler` -- orientation matrices to Euler
-  angles in the scan's frame;
-* :func:`~de_ebsd.core.frames.to_scan_frame` -- Euler angles to Euler angles;
-* :func:`~de_ebsd.core.frames.scan_tensor` -- a tensor field, turned as the
-  orientations are, so a strain map shares the axes of the orientation map
-  beside it.
-
-The conversion is **explicit, and the caller applies it at the edge** -- when a
-map is drawn against the scan's axes or saved for a program that reads them.
-Nothing in de-ebsd applies it for you, because a turn buried inside one path is
-one the other paths silently lack. It is easy to miss: an IPF-Z map cannot show
-it (a turn about z leaves z where it was), so a map drawn without the turn looks
-right while every orientation in it is 90 degrees off. Measured against a
-duplex-steel scan's ground truth, no pattern was within 5 degrees until it was
-turned. IPF-X and IPF-Y maps, a misorientation to a reference given in the
-scan's frame, and saved ``.ang`` files are where it shows.
+A turn about the normal is easy to get wrong unseen: an **IPF-Z map cannot show
+it** (a turn about z leaves z where it was), so a map turned 90 degrees looks
+right in IPF-Z while every orientation in it is wrong. IPF-X and IPF-Y maps, a
+misorientation to a reference given in another frame, and an ``.ang`` opened in
+OIM are where it shows. de-ebsd once applied such a turn, fitted to a
+simulator's ground truth rather than to an instrument;
+:func:`~de_ebsd.core.frames.scan_euler`,
+:func:`~de_ebsd.core.frames.to_scan_frame` and
+:func:`~de_ebsd.core.frames.scan_tensor` remain only as deprecated no-ops.
 
 A misorientation between two orientations does not depend on the frame, as long
-as both are in the same one: the turn cancels in ``g @ reference.T``
-(:func:`~de_ebsd.core.rotation.misorientation_deg`).
+as both are in the same one: a turn of the sample frame cancels in
+``g @ reference.T`` (:func:`~de_ebsd.core.rotation.misorientation_deg`).
 
 Space groups and origin choice
 ==============================
