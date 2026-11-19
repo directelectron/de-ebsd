@@ -1,1 +1,0 @@
-:class:`~de_ebsd.index.LiveIndexer` took ``candidates=K`` to refine each pattern from up to K distinct search entries and keep the one that matches it best, which on a simulated Ni scan cut the points indexed more than 5 degrees off from 1.4 % to 0.3 % at four candidates, for about a quarter of the throughput; the default is still one.
