@@ -9,12 +9,15 @@ from de_ebsd.index.live.indexer import (
     fused_fit_available,
     lambert_masters,
 )
+from de_ebsd.index.live.retry import RetriedMap, retry_speckle
 
 __all__ = [
     "FITTED_REFINE_STEPS_DEG",
     "LiveIndexer",
+    "RetriedMap",
     "dynamical_indexing_available",
     "fitted_refine_steps_deg",
     "fused_fit_available",
     "lambert_masters",
+    "retry_speckle",
 ]

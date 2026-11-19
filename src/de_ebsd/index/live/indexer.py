@@ -55,7 +55,7 @@ from de_ebsd.index.live.common import (
     pool_into,
     shape_in_aspect,
 )
-from de_ebsd.index.live.workspace import Workspace
+from de_ebsd.index.live.workspace import CandidateBuffers, Workspace
 from de_ebsd.index.preprocess import _gaussian_kernel_1d, gaussian_blur, normalize_rows
 
 __all__ = [
@@ -102,6 +102,39 @@ SEARCH_CHUNK = 65_536
 #: apart at the 90th percentile; no orientation moved more than 5 degrees. See
 #: :func:`fitted_refine_steps_deg`.
 FITTED_REFINE_STEPS_DEG = (2.0, 1.0)
+
+
+#: How many of the search's best entries a candidate search pools per pattern, before
+#: it drops the near-duplicates among them and keeps the best ``candidates``.
+CANDIDATE_POOL = 16
+
+#: A candidate search keeps only the best of each block of this many consecutive
+#: dictionary entries before it ranks them: a block is a few neighboring entries,
+#: so this drops near-duplicates early, and it keeps every ranking narrow enough
+#: to sort in place (:data:`CANDIDATE_SLICE`).
+CANDIDATE_BLOCK = 32
+
+#: The widest row of scores a candidate search ranks at once. CUDA ranks a row of
+#: up to several hundred in place, and a wider one through a temporary buffer,
+#: which the workspace would then have to allocate on every batch.
+CANDIDATE_SLICE = 512
+
+#: How close two of a pattern's candidates of one phase may be, in dictionary
+#: steps and symmetry reduced, before the worse is dropped as the same basin.
+CANDIDATE_SEPARATION = 1.5
+
+#: A pattern's candidates are refined beyond the best only where the search's best
+#: and the best distinct runner-up score within this of each other ... On a
+#: simulated Ni scan with 16 counts a pixel and four candidates, 0.02 rechecked 8 %
+#: of the patterns and left 0.32 % more than 5 degrees off, against 0.29 % for
+#: rechecking every pattern (1.39 % with one candidate); 0.01 rechecked 4 % and
+#: left 0.47 %.
+RECHECK_MARGIN = 0.02
+
+#: ... or where the best's refined score is below this. A refined score depends on
+#: the patterns' quality, so by default only a pattern that matches nothing is
+#: rechecked for its score.
+RECHECK_SCORE = 0.0
 
 
 def fused_fit_available(device) -> bool:
@@ -191,6 +224,19 @@ class LiveIndexer:
     search_blur_deg
         How much the search's copy of the masters is blurred, see
         :data:`SEARCH_BLUR_DEG`.
+    candidates
+        How many of the search's distinct best entries each pattern may be refined
+        from, the refined orientation that matches its pattern best winning; see
+        :meth:`set_candidates`. One, the default, refines the search's best alone.
+    recheck_margin, recheck_score
+        With several *candidates*, only the patterns whose search found a distinct
+        runner-up within *recheck_margin* of its best, or whose best refined to a
+        score below *recheck_score*, have the rest refined; ``math.inf`` for both
+        refines every pattern's. See :data:`RECHECK_MARGIN`.
+    candidate_separation_deg
+        Candidates of one phase closer than this, symmetry reduced, are one
+        basin, and only the better is kept; by default
+        :data:`CANDIDATE_SEPARATION` dictionary steps.
     device
         Defaults to the first master's.
     dtype
@@ -222,6 +268,10 @@ class LiveIndexer:
         refine_shape: tuple[int, int] = (128, 128),
         refine_steps_deg=REFINE_STEPS_DEG,
         search_blur_deg: float = SEARCH_BLUR_DEG,
+        candidates: int = 1,
+        recheck_margin: float = RECHECK_MARGIN,
+        recheck_score: float = RECHECK_SCORE,
+        candidate_separation_deg: float | None = None,
         device=None,
         dtype=None,
         lock=None,
@@ -266,6 +316,14 @@ class LiveIndexer:
             phases.append(torch.full((len(q),), number, device=self.device, dtype=torch.int64))
         self.rotations = torch.cat(rotations)
         self.phase_of = torch.cat(phases)
+        self.point_groups = list(point_groups)
+        #: Each phase's proper rotations ``(phases, most, 3, 3)``, as the
+        #: dictionary's matrices are made, padded with the identity: a candidate
+        #: search's symmetry-reduced distances.
+        self.operators = _operator_table(self.point_groups, self.device)
+        #: :attr:`operators` as ``(9, phases * most)``: each column the nine numbers
+        #: whose product with a turn's nine gives ``trace(S turn)``.
+        self.trace_weights = self.operators.transpose(-1, -2).reshape(-1, 9).T.contiguous()
         self.sizes = [len(r) for r in rotations]
         #: Where each phase's entries start in :attr:`rotations`.
         self.offsets = np.cumsum([0, *self.sizes[:-1]])
@@ -289,6 +347,59 @@ class LiveIndexer:
                 dtype=self.dtype,
                 device=self.device,
             )
+        self.resolution = float(resolution)
+        self.recheck_margin = float(recheck_margin)
+        self.recheck_score = float(recheck_score)
+        separation = (
+            CANDIDATE_SEPARATION * self.resolution
+            if candidate_separation_deg is None
+            else candidate_separation_deg
+        )
+        #: Two candidates are one basin where ``trace(S g1 g2^T)`` is above this.
+        self.near_trace = 1.0 + 2.0 * math.cos(math.radians(separation))
+        #: Patterns whose candidates were refined beyond the best, over the
+        #: indexer's life (see :meth:`set_candidates`).
+        self.rechecked = 0
+        self.candidate_buffers = None
+        self.set_candidates(candidates)
+
+    @holds_lock
+    def set_candidates(self, count: int) -> None:
+        """Refine each pattern from up to *count* of the search's distinct best
+        entries from now on, and keep the refined orientation that matches its
+        pattern best (the normalized cross-correlation at the refine shape against
+        the unblurred master). One refines the search's best alone, as before.
+
+        The search pools its :data:`CANDIDATE_POOL` best entries (the best of each
+        block of :data:`CANDIDATE_BLOCK`), drops each that is within the
+        candidate separation of a better one of its phase, and keeps the best
+        *count*. A seed in the wrong basin -- a look-alike, a pseudo-symmetric
+        partner -- is refined to the wrong orientation, which a better-matching
+        distinct candidate then replaces; the cost is spent only on the patterns
+        that :attr:`recheck_margin` and :attr:`recheck_score` pick. On the fused
+        path the buffers are made here, so indexing still allocates nothing."""
+        count = int(count)
+        if count < 1:
+            raise ValueError("candidates must be at least 1")
+        self.candidates = count
+        self.candidate_buffers = None
+        if self.workspace is not None and count > 1:
+            self.candidate_buffers = self._candidate_buffers(self.workspace.capacity)
+
+    def _candidate_buffers(self, capacity: int) -> CandidateBuffers:
+        width = min(len(self.rotations), SEARCH_CHUNK)
+        return CandidateBuffers(
+            capacity,
+            blocks=max(1, width // CANDIDATE_BLOCK),
+            pool=max(CANDIDATE_POOL, 2 * self.candidates),
+            candidates=self.candidates,
+            operators=self.trace_weights.shape[1],
+            phases=self.operators.shape[0],
+            refine_pixels=len(self.refine_directions),
+            coarse_pixels=len(self.coarse_directions),
+            dtype=self.dtype,
+            device=self.device,
+        )
 
     @holds_lock
     def set_residual_background(self, residual: ResidualBackground | None) -> None:
@@ -535,6 +646,317 @@ class LiveIndexer:
         return self.phase_of[entry], self.rotations[entry], score, entry
 
     @holds_lock
+    def search_candidates(self, search_rows: torch.Tensor):
+        """Each pattern's :attr:`candidates` best distinct dictionary entries, best
+        first: ``(phase, g, score, entry, distinct)``, each ``(N, candidates, ...)``.
+        The first is :meth:`search`'s best; *distinct* is False where a pattern has
+        fewer distinct entries than that, its places then holding repeats. See
+        :meth:`set_candidates`."""
+        n = len(search_rows)
+        buffers = self._candidate_buffers(n)
+        self._search_candidates(search_rows.to(self.dtype), buffers, None)
+        columns = (buffers.phase, buffers.rotations, buffers.score, buffers.entry)
+        return (*(column[:n].clone() for column in columns), buffers.distinct[:n].clone())
+
+    def _search_candidates(self, rows, buffers: CandidateBuffers, workspace) -> None:
+        """The candidate search into *buffers*, scoring each chunk of the dictionary
+        into the *workspace*'s scores where there is one."""
+        n = len(rows)
+        buffers.pool_score[:n].fill_(-math.inf)
+        buffers.pool_entry[:n].zero_()
+        for lo in range(0, self.dictionary.shape[1], SEARCH_CHUNK):
+            chunk = self.dictionary[:, lo : lo + SEARCH_CHUNK]
+            width = chunk.shape[1]
+            scores = None if workspace is None else workspace.scores(n, width, self.dtype)
+            scores = rows @ chunk if scores is None else torch.matmul(rows, chunk, out=scores)
+            whole, tail = divmod(width, CANDIDATE_BLOCK)
+            if whole:
+                block_score = buffers.block_score.view(-1)[: n * whole].view(n, whole)
+                block_entry = buffers.block_entry.view(-1)[: n * whole].view(n, whole)
+                blocks = scores[:, : whole * CANDIDATE_BLOCK].view(n, whole, CANDIDATE_BLOCK)
+                torch.max(blocks, 2, out=(block_score, block_entry))
+                block_entry.add_(self._block_starts(whole)).add_(lo)
+                for first in range(0, whole, CANDIDATE_SLICE):
+                    last = min(whole, first + CANDIDATE_SLICE)
+                    self._pool_slice(
+                        block_score[:, first:last], block_entry[:, first:last], buffers
+                    )
+            if tail:
+                tail_score = buffers.slice_score.view(-1)[:n].view(n, 1)
+                tail_entry = buffers.slice_position.view(-1)[:n].view(n, 1)
+                torch.max(
+                    scores[:, whole * CANDIDATE_BLOCK :],
+                    1,
+                    keepdim=True,
+                    out=(tail_score, tail_entry),
+                )
+                tail_entry.add_(lo + whole * CANDIDATE_BLOCK)
+                self._merge_into_pool(tail_score, tail_entry, buffers)
+        torch.isneginf(buffers.pool_score[:n], out=buffers.invalid[:n])
+        self._drop_near_duplicates(n, buffers)
+
+    def _block_starts(self, whole: int) -> torch.Tensor:
+        """The first entry of each of *whole* blocks, kept on the device."""
+        starts = getattr(self, "_starts", None)
+        if starts is None or len(starts) < whole:
+            starts = torch.arange(whole, device=self.device, dtype=torch.int64) * CANDIDATE_BLOCK
+            self._starts = starts
+        return starts[:whole]
+
+    def _pool_slice(self, score, entry, buffers: CandidateBuffers) -> None:
+        """The best of one slice of blocks' bests (*score*, *entry* ``(N, width)``)
+        merged into each pattern's pool."""
+        n, width = score.shape
+        keep = min(buffers.pool, width)
+        best = buffers.slice_score.view(-1)[: n * keep].view(n, keep)
+        position = buffers.slice_position.view(-1)[: n * keep].view(n, keep)
+        torch.topk(score, keep, 1, out=(best, position))
+        found = buffers.slice_entry.view(-1)[: n * keep].view(n, keep)
+        torch.gather(entry, 1, position, out=found)
+        self._merge_into_pool(best, found, buffers)
+
+    @staticmethod
+    def _merge_into_pool(score, entry, buffers: CandidateBuffers) -> None:
+        """*score* and *entry* ``(N, width)`` merged into each pattern's pool, which
+        keeps its best."""
+        n, width = score.shape
+        pool = buffers.pool
+        merged_score, merged_entry = buffers.merged_score[:n], buffers.merged_entry[:n]
+        merged_score[:, :pool].copy_(buffers.pool_score[:n])
+        merged_entry[:, :pool].copy_(buffers.pool_entry[:n])
+        merged_score[:, pool : pool + width].copy_(score)
+        merged_entry[:, pool : pool + width].copy_(entry)
+        merged_score[:, pool + width :].fill_(-math.inf)
+        order = buffers.order[:n]
+        torch.topk(merged_score, pool, 1, out=(buffers.pool_score[:n], order))
+        torch.gather(merged_entry, 1, order, out=buffers.pool_entry[:n])
+
+    def _drop_near_duplicates(self, n: int, buffers: CandidateBuffers) -> None:
+        """Of each pattern's pool, the best :attr:`candidates` that are not within
+        the candidate separation of a better one of their phase, into *buffers*."""
+        pool, count = buffers.pool, buffers.candidates
+        entries = buffers.pool_entry[:n].view(-1)
+        g = torch.index_select(self.rotations, 0, entries, out=buffers.pool_rotations[: n * pool])
+        phase = torch.index_select(self.phase_of, 0, entries, out=buffers.pool_phase[: n * pool])
+        # every pair's turn g_i g_j^T in one product, (n, 3 pool, 3 pool), then laid
+        # out as nine numbers a pair, whose product with the operators gives
+        # trace(S g_i g_j^T) for every operator of every phase
+        if self.operators.shape[0] > 1:
+            # each pair (i, j) judged with i's phase's operators
+            buffers.pair_phase[: n * pool * pool].view(n, pool, pool).copy_(
+                phase.view(n, pool, 1).expand(n, pool, pool)
+            )
+        rows = g.view(n, pool * 3, 3)
+        pairs = torch.bmm(rows, rows.transpose(1, 2), out=buffers.pairs[:n])
+        turns = buffers.turns[:n]
+        turns.view(n, pool, pool, 3, 3).copy_(pairs.view(n, pool, 3, pool, 3).transpose(2, 3))
+        turns = turns.view(-1, 9)
+        closest = buffers.closest[:n].view(-1)
+        phases, most = self.operators.shape[:2]
+        step = buffers.traces.shape[0]
+        for lo in range(0, len(turns), step):
+            hi = min(len(turns), lo + step)
+            traces = torch.matmul(turns[lo:hi], self.trace_weights, out=buffers.traces[: hi - lo])
+            if phases == 1:
+                torch.amax(traces, 1, out=closest[lo:hi])
+                continue
+            per_phase = buffers.per_phase[: hi - lo]
+            torch.amax(traces.view(hi - lo, phases, most), 2, out=per_phase)
+            pair_phase = buffers.pair_phase[lo:hi]
+            torch.gather(per_phase, 1, pair_phase.view(-1, 1), out=closest[lo:hi].view(-1, 1))
+        closest = closest.view(n, pool, pool)
+        near = torch.gt(closest, self.near_trace, out=buffers.near[:n])
+        same = torch.eq(phase.view(n, pool, 1), phase.view(n, 1, pool), out=buffers.same[:n])
+        near.logical_and_(same).logical_and_(self._earlier(pool))
+        suppressed = torch.any(near, 2, out=buffers.suppressed[:n])
+        suppressed.logical_or_(buffers.invalid[:n])
+        # the kept first, best first, then the dropped: each ranked by its place in
+        # the pool, the dropped a whole pool later
+        key = buffers.key[:n].copy_(suppressed).mul_(pool).add_(self._places(pool))
+        pick = buffers.pick[:n]
+        torch.topk(key, count, 1, largest=False, out=(buffers.key_top[:n], pick))
+        entry = torch.gather(buffers.pool_entry[:n], 1, pick, out=buffers.entry[:n])
+        torch.gather(buffers.pool_score[:n], 1, pick, out=buffers.score[:n])
+        torch.gather(suppressed, 1, pick, out=buffers.distinct[:n]).logical_not_()
+        torch.index_select(self.phase_of, 0, entry.view(-1), out=buffers.phase[:n].view(-1))
+        torch.index_select(
+            self.rotations, 0, entry.view(-1), out=buffers.rotations[:n].view(-1, 3, 3)
+        )
+
+    def _earlier(self, pool: int) -> torch.Tensor:
+        """``(pool, pool)``: True where the column is a better place than the row."""
+        earlier = getattr(self, "_earlier_mask", None)
+        if earlier is None or len(earlier) != pool:
+            earlier = torch.ones(pool, pool, device=self.device, dtype=torch.bool).tril(-1)
+            self._earlier_mask = earlier
+        return earlier
+
+    def _places(self, pool: int) -> torch.Tensor:
+        """``(pool,)`` float32: 0, 1, 2, ..., kept on the device."""
+        places = getattr(self, "_place_numbers", None)
+        if places is None or len(places) != pool:
+            places = torch.arange(pool, device=self.device, dtype=torch.float32)
+            self._place_numbers = places
+        return places
+
+    def _recheck(self, refine_rows, coarse_rows, phase, g, score, entry, buffers, in_place):
+        """The patterns the recheck picks refined from their other candidates too,
+        and their *phase*, *g*, *score* and *entry* replaced, in place, by the
+        refined candidate that matches the pattern best (:meth:`_match`).
+
+        Every (pattern, candidate) pair is refined in the same launch, a batch of
+        pairs at a time, so the cost is the pairs', not one launch per rank.
+        *in_place* runs the fused kernels into *buffers*, with the patterns'
+        *coarse_rows* where a refine level is coarse; otherwise :meth:`refine`."""
+        n = len(g)
+        margin = torch.sub(buffers.score[:n, 0], buffers.score[:n, 1], out=buffers.margin[:n])
+        gate = torch.lt(margin, self.recheck_margin, out=buffers.gate[:n])
+        gate.logical_or_(torch.lt(score, self.recheck_score, out=buffers.low[:n]))
+        gate.logical_and_(buffers.distinct[:n, 1])
+        # one small copy to the host, which says how many pairs to launch for
+        picked = np.flatnonzero(gate.cpu().numpy())
+        m = len(picked)
+        self.rechecked += m
+        if not m:
+            return
+        count = buffers.candidates
+        others = count - 1
+        pairs = m * others
+        index = buffers.index[:m].copy_(torch.from_numpy(picked))
+        # the patterns' own refined orientations, matched first: the rows buffer is
+        # then the pairs'
+        rows = torch.index_select(refine_rows, 0, index, out=buffers.rows[:m])
+        best = torch.index_select(g, 0, index, out=buffers.best[:m])
+        best_score = torch.index_select(score, 0, index, out=buffers.best_score[:m])
+        best_phase = torch.index_select(phase, 0, index, out=buffers.best_phase[:m])
+        best_entry = torch.index_select(entry, 0, index, out=buffers.best_entry[:m])
+        best_match = self._match(rows, best, best_phase, buffers.best_match[:m], buffers, in_place)
+        # each pair: the pattern, and its candidate's place in the (N, count) columns
+        candidate = (picked[:, None] * count + np.arange(1, count)).ravel()
+        candidate = buffers.pair_candidate[:pairs].copy_(torch.from_numpy(candidate))
+        pattern = buffers.pair_pattern[:pairs].copy_(torch.from_numpy(np.repeat(picked, others)))
+        seed = torch.index_select(
+            buffers.rotations[:n].view(-1, 3, 3), 0, candidate, out=buffers.seed[:pairs]
+        )
+        seed_phase = torch.index_select(
+            buffers.phase[:n].view(-1), 0, candidate, out=buffers.seed_phase[:pairs]
+        )
+        seed_entry = torch.index_select(
+            buffers.entry[:n].view(-1), 0, candidate, out=buffers.seed_entry[:pairs]
+        )
+        distinct = torch.index_select(
+            buffers.distinct[:n].view(-1), 0, candidate, out=buffers.seed_distinct[:pairs]
+        )
+        refined, refined_score = buffers.refined[:pairs], buffers.refined_score[:pairs]
+        match = buffers.match[:pairs]
+        step = buffers.capacity
+        for lo in range(0, pairs, step):
+            hi = min(pairs, lo + step)
+            rows = torch.index_select(refine_rows, 0, pattern[lo:hi], out=buffers.rows[: hi - lo])
+            if in_place:
+                coarse = None
+                if coarse_rows is not None:
+                    coarse = torch.index_select(
+                        coarse_rows, 0, pattern[lo:hi], out=buffers.coarse_rows[: hi - lo]
+                    )
+                bases = torch.mul(seed_phase[lo:hi], 2, out=buffers.seed_bases[lo:hi])
+                # the coarse levels write the refined buffer itself when no fine
+                # level follows them
+                fine = len(self._coarse_steps()) < len(self.refine_steps)
+                first = buffers.coarse_refined[lo:hi] if fine else refined[lo:hi]
+                outs = (first, refined[lo:hi], refined_score[lo:hi])
+                self._refine_fused(rows, coarse, seed[lo:hi], bases, outs)
+            else:
+                found, found_score = self.refine(rows, seed_phase[lo:hi], seed[lo:hi])
+                refined[lo:hi].copy_(found)
+                refined_score[lo:hi].copy_(found_score)
+            self._match(
+                rows, refined[lo:hi], seed_phase[lo:hi], match[lo:hi], buffers, in_place, lo
+            )
+        # each pattern's best pair, a repeat of a better candidate never winning
+        match.masked_fill_(distinct.logical_not_(), -math.inf)
+        top_match, top = buffers.top_match[:m], buffers.top[:m]
+        torch.max(match.view(m, others), 1, out=(top_match, top))
+        top.add_(buffers.pair_offset[:m].copy_(torch.from_numpy(np.arange(m) * others)))
+        better = torch.gt(top_match, best_match, out=buffers.better[:m])
+        winner = torch.index_select(refined, 0, top, out=buffers.winner[:m])
+        torch.where(better.view(m, 1, 1), winner, best, out=best)
+        for chosen, values in (
+            (best_score, refined_score),
+            (best_phase, seed_phase),
+            (best_entry, seed_entry),
+        ):
+            winner = torch.index_select(values, 0, top, out=buffers.winner_value(values, m))
+            torch.where(better, winner, chosen, out=chosen)
+        g.index_copy_(0, index, best)
+        score.index_copy_(0, index, best_score)
+        phase.index_copy_(0, index, best_phase)
+        entry.index_copy_(0, index, best_entry)
+
+    def _match(self, rows, g, phase, out, buffers, in_place, first=0):
+        """How well each orientation *g* matches its pattern's *rows*, into *out*:
+        the normalized cross-correlation at the refine shape against the unblurred
+        master, which candidates are chosen by. In place, the phases' channels
+        are written to the bases buffer from *first* on."""
+        if in_place:
+            bases = torch.mul(phase, 2, out=buffers.seed_bases[first : first + len(g)])
+            return _kernels.score(self.texture, g, bases, self.refine_directions, rows, 1, out=out)
+        scores = self.score_candidates(g[:, None], phase, rows, self.refine_directions)
+        return out.copy_(scores[:, 0])
+
+    @holds_lock
+    def retry(self, frames, seeds, seed_phases, *, valid=None, fit: bool = False):
+        """Each of *frames* ``(N, H, W)`` refined from each of its *seeds* ``(N, S,
+        3, 3)`` of phases *seed_phases* ``(N, S)``, the refined seed that matches
+        it best kept: ``(phase, g, score, chosen)``, *chosen* ``(N,)`` the seed's
+        number. Seeds where *valid* ``(N, S)`` is False are passed over.
+
+        For a finished scan's speckle, re-tried from its neighbors' orientations:
+        put the point's own orientation first, so it is kept unless a neighbor's
+        matches better (:func:`~de_ebsd.index.neighbors.neighbor_seeds`, and
+        :func:`~de_ebsd.index.live.retry_speckle` for the whole pass). The frames
+        are prepared with the scan's background as it stands; with *fit* the
+        chosen orientations are fitted (:meth:`index`'s ``fit``), and the scan's
+        ghost is left as it is."""
+        frames = _stack(frames)
+        seeds = torch.as_tensor(seeds, dtype=torch.float32, device=self.device)
+        seed_phases = torch.as_tensor(seed_phases, dtype=torch.int64, device=self.device)
+        if valid is None:
+            valid = torch.ones(seed_phases.shape, dtype=torch.bool, device=self.device)
+        valid = torch.as_tensor(valid, dtype=torch.bool, device=self.device)
+        if seeds.shape[:2] != seed_phases.shape or len(seeds) != len(frames):
+            raise ValueError("seeds (N, S, 3, 3), seed_phases (N, S) and frames (N, ...)")
+        out = []
+        for lo in range(0, len(frames), BATCH):
+            hi = lo + BATCH
+            _, rows = self.prepare(frames[lo:hi])
+            best = None
+            for number in range(seeds.shape[1]):
+                phase = seed_phases[lo:hi, number]
+                g, score = seeds[lo:hi, number], None
+                if self.refine_steps:
+                    g, score = self.refine(rows, phase, g)
+                match = self.score_candidates(g[:, None], phase, rows, self.refine_directions)
+                match = torch.where(valid[lo:hi, number], match[:, 0], -math.inf)
+                score = match if score is None else score
+                chosen = torch.full_like(phase, number)
+                if best is None:
+                    best = [phase, g, score, chosen, match]
+                    continue
+                better = match > best[4]
+                best = [
+                    torch.where(better.view(-1, *[1] * (new.ndim - 1)), new, old)
+                    for new, old in zip((phase, g, score, chosen, match), best, strict=True)
+                ]
+            phase, g, score, chosen, _ = best
+            if fit:
+                g, _, score = self.refine_deformation(
+                    rows, phase, g, ghost=self.ghost, strain=False
+                )
+            out.append((phase, g, score, chosen))
+        return tuple(torch.cat(column) for column in zip(*out, strict=True))
+
+    @holds_lock
     def refine(
         self,
         refine_rows: torch.Tensor,
@@ -640,8 +1062,7 @@ class LiveIndexer:
         batch = FUSED_BATCH if self.fused and deformation.STRAIN_SCHEDULE else BATCH
         for lo in range(0, len(frames), batch):
             search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
-            phase, g, _, entry = self.search(search_rows)
-            g, _ = self.refine(refine_rows, phase, g)
+            phase, g, _, entry = self._choose(search_rows, refine_rows)
             batch_maps = None if maps is None else maps[lo : lo + batch]
             self.add_fits(phase, g, batch_maps)
             g, strain, score = self.refine_deformation(
@@ -655,7 +1076,9 @@ class LiveIndexer:
         """*frames* ``(N, H, W)`` on the device, indexed: ``(phase, g, score, entry)``.
         *entry* is the dictionary entry the search seeded the refine from (see
         :meth:`search`): anything worked out once per entry, such as a color, stands
-        for the refined orientation to within the dictionary's resolution.
+        for the refined orientation to within the dictionary's resolution. With
+        several :attr:`candidates` it is the chosen candidate's
+        (:meth:`set_candidates`).
 
         With *fit*, the refine's orientations are fitted on, rotations only
         (:meth:`refine_deformation` without the strains): the refine's steps stop
@@ -699,9 +1122,24 @@ class LiveIndexer:
             return self._index_batch_allocating(frames, fit)
         n = len(frames)
         search_rows, refine_rows = self._prepare_in_workspace(frames)
-        phase, g, _, entry = self._search_in_workspace(search_rows)
+        buffers = self.candidate_buffers
+        if buffers is None:
+            phase, g, _, entry = self._search_in_workspace(search_rows)
+        else:
+            rows = search_rows
+            if workspace.typed_search_rows is not None:
+                rows = workspace.typed_search_rows[:n].copy_(search_rows)
+            self._search_candidates(rows, buffers, workspace)
+            phase = workspace.phase[:n].copy_(buffers.phase[:n, 0])
+            g = workspace.seed[:n].copy_(buffers.rotations[:n, 0])
+            entry = workspace.entry[:n].copy_(buffers.entry[:n, 0])
         bases = workspace.bases[:n].copy_(phase).mul_(2)
         g, score, coarse_rows = self._refine_in_workspace(refine_rows, g, bases)
+        if buffers is not None:
+            if coarse_rows is None and self._coarse_steps():
+                coarse_rows = self._coarse_rows_in_workspace(refine_rows)
+            self._recheck(refine_rows, coarse_rows, phase, g, score, entry, buffers, True)
+            bases.copy_(phase).mul_(2)
         if fit:
             self._add_fits_in_workspace(phase, g, bases)
             g, score = self._fit_in_workspace(refine_rows, phase, g, bases, coarse_rows)
@@ -710,15 +1148,33 @@ class LiveIndexer:
     def _index_batch_allocating(self, frames, fit):
         """:meth:`_index_batch` through the public steps, each returning new tensors."""
         search_rows, refine_rows = self.prepare(frames)
-        phase, g, score, entry = self.search(search_rows)
-        if self.refine_steps:
-            g, score = self.refine(refine_rows, phase, g)
+        phase, g, score, entry = self._choose(search_rows, refine_rows)
         if fit:
             self.add_fits(phase, g)
             g, _, score = self.refine_deformation(
                 refine_rows, phase, g, ghost=self.ghost, strain=False
             )
         return phase, g, score, entry
+
+    def _choose(self, search_rows, refine_rows):
+        """Each pattern searched and refined, from its :attr:`candidates` best
+        distinct entries where there are several: ``(phase, g, score, entry)``."""
+        if self.candidates == 1 or not self.refine_steps:
+            phase, g, score, entry = self.search(search_rows)
+            if self.refine_steps:
+                g, score = self.refine(refine_rows, phase, g)
+            return phase, g, score, entry
+        n = len(search_rows)
+        buffers = self._candidate_buffers(n)
+        self._search_candidates(search_rows.to(self.dtype), buffers, None)
+        phase = buffers.phase[:n, 0].clone()
+        entry = buffers.entry[:n, 0].clone()
+        g, score = self.refine(refine_rows, phase, buffers.rotations[:n, 0].contiguous())
+        self._recheck(refine_rows, None, phase, g, score, entry, buffers, False)
+        return phase, g, score, entry
+
+    def _coarse_steps(self):
+        return [s for s in self.refine_steps if s >= math.radians(COARSE_REFINE_STEP_DEG)]
 
     # --- the same steps, in the workspace -----------------------------------------
     #
@@ -773,12 +1229,20 @@ class LiveIndexer:
         rows None where no level was coarse."""
         n = len(g)
         workspace = self.workspace
-        steps = self.refine_steps
-        coarse = [s for s in steps if s >= math.radians(COARSE_REFINE_STEP_DEG)]
-        fine = list(steps[len(coarse) :])
-        coarse_rows, score = None, None
-        if coarse:
+        coarse_rows = None
+        if self._coarse_steps():
             coarse_rows = self._coarse_rows_in_workspace(refine_rows)
+        outs = (workspace.coarse_refined[:n], workspace.refined[:n], workspace.score[:n])
+        g, score = self._refine_fused(refine_rows, coarse_rows, g, bases, outs)
+        return g, score, coarse_rows
+
+    def _refine_fused(self, refine_rows, coarse_rows, g, bases, out):
+        """:meth:`refine`'s levels on the fused kernels, the coarse ones on
+        *coarse_rows*: ``(g, score)`` written into *out*, ``(coarse_g, g, score)``."""
+        coarse = self._coarse_steps()
+        fine = list(self.refine_steps[len(coarse) :])
+        score = None
+        if coarse:
             g, score = _kernels.refine_stepped(
                 self.texture,
                 g,
@@ -787,7 +1251,7 @@ class LiveIndexer:
                 coarse_rows,
                 coarse,
                 SINGLE_PRECISION_FLOOR,
-                out=(workspace.coarse_refined[:n], workspace.score[:n]),
+                out=(out[0], out[2]),
             )
         if fine:
             g, score = _kernels.refine_stepped(
@@ -798,9 +1262,9 @@ class LiveIndexer:
                 refine_rows,
                 fine,
                 SINGLE_PRECISION_FLOOR,
-                out=(workspace.refined[:n], workspace.score[:n]),
+                out=(out[1], out[2]),
             )
-        return g, score, coarse_rows
+        return g, score
 
     def _add_fits_in_workspace(self, phase, g, bases):
         """:meth:`add_fits`, the simulations projected into the workspace."""
@@ -849,6 +1313,22 @@ class LiveIndexer:
             out=(workspace.fitted[:n], workspace.score[:n], workspace.refused[:n]),
         )
         return g, score
+
+
+def _operator_table(point_groups, device) -> torch.Tensor:
+    """Each point group's proper rotations as matrices ``(groups, most, 3, 3)``, made
+    as the dictionary's are (:func:`~de_ebsd.core.rotation.quaternion_to_matrix`
+    of orix's quaternions) and padded with the identity."""
+    groups = []
+    for point_group in point_groups:
+        proper = getattr(point_group, "proper_subgroup", point_group)
+        q = torch.as_tensor(np.asarray(proper.data), dtype=torch.float32, device=device)
+        groups.append(quaternion_to_matrix(q.reshape(-1, 4)))
+    most = max(len(m) for m in groups)
+    table = torch.eye(3, device=device).repeat(len(groups), most, 1, 1)
+    for number, matrices in enumerate(groups):
+        table[number, : len(matrices)] = matrices
+    return table
 
 
 def _stack(frames) -> torch.Tensor:

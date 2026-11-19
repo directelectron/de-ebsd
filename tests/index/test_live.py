@@ -16,16 +16,17 @@ from orix.quaternion import Orientation, Rotation
 from test_dictionary import _KNOWN_EULER_DEG, _symmetric_band_master
 
 from de_ebsd import EBSDDetector
-from de_ebsd.core.rotation import quaternion_to_matrix
+from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.crystal import Crystal
 from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
-from de_ebsd.index.live import LiveIndexer
+from de_ebsd.index.live import LiveIndexer, retry_speckle
 from de_ebsd.index.live import indexer as live_indexer
 from de_ebsd.index.live.background import MIN_FRAMES_FOR_STATIC
 from de_ebsd.index.live.common import pick, pool_into
 from de_ebsd.index.live.deformation import DEFORMATION_LINE_SEARCH, DEFORMATION_MAX_STEP
 from de_ebsd.index.live.indexer import texture_of
+from de_ebsd.index.neighbors import _operators, _pair_angles
 from de_ebsd.index.preprocess import normalize_rows
 
 fused = pytest.mark.skipif(
@@ -733,3 +734,173 @@ def test_a_scans_center_plane_is_read_back_from_its_strain(master, point_group, 
     assert np.abs(np.subtract(known.center, middle)).max() < 3e-4
     fixed = centers_from_strain(strain, positions, fitted_at, response, drift=drift)
     assert np.abs(np.subtract(fixed.center, middle)).max() < 3e-4
+
+
+# --- several candidates, and the retry -------------------------------------------
+
+
+def _errors(g, rotations, point_group):
+    found = Rotation.from_matrix(g.detach().cpu().numpy())
+    return Orientation(found, point_group).angle_with(
+        Orientation(rotations, point_group), degrees=True
+    )
+
+
+def _everything_rechecked(indexer):
+    indexer.recheck_margin = indexer.recheck_score = float("inf")
+    return indexer
+
+
+def test_the_candidates_start_with_the_best_entry_and_are_distinct(master, point_group, detector):
+    """The first candidate is the best entry the search finds, and no two kept ones
+    of a pattern are within the separation of each other, symmetry reduced."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu", candidates=4)
+    search_rows, _ = indexer.prepare(master.project(detector, _known()))
+    _, _, _, best = indexer.search(search_rows)
+    phase, g, score, entry, distinct = indexer.search_candidates(search_rows)
+    assert torch.equal(entry[:, 0], best)
+    assert (score[:, :-1] >= score[:, 1:]).all()
+    assert distinct.all()
+    operators = _operators(point_group)
+    separation = live_indexer.CANDIDATE_SEPARATION * indexer.resolution
+    for pattern in range(len(g)):
+        for i in range(4):
+            for j in range(i):
+                angle = _pair_angles(
+                    g[pattern, i].double().numpy(), g[pattern, j].double().numpy(), operators
+                )
+                assert angle > separation
+
+
+def _wrong_basin(indexer, patterns):
+    """The search led into the wrong basin for every pattern: a far-off dictionary
+    entry is given a copy of the entry each pattern matches best, a little
+    stronger, so the far one wins the search and the right one is the runner-up."""
+    search_rows, _ = indexer.prepare(patterns)
+    _, _, _, best = indexer.search(search_rows)
+    far = (best + indexer.dictionary.shape[1] // 2) % indexer.dictionary.shape[1]
+    indexer.dictionary[:, far] = 1.01 * indexer.dictionary[:, best]
+    assert (
+        _errors(indexer.rotations[far], _known()[: len(far)], indexer.point_groups[0]) > 10
+    ).all()
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])
+def test_a_better_matching_candidate_replaces_a_wrong_basin(master, point_group, detector, device):
+    """With one candidate a seed in the wrong basin is refined there; with two, the
+    runner-ups from the right basin match its pattern better and win, with its
+    own entry. On CUDA the workspace does it, with the fit."""
+    master = master.to(device)
+    patterns = master.project(detector, _known())
+    steps = dict(refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15))
+    one = _small_indexer(master, point_group, detector, device=device, **steps)
+    _wrong_basin(one, patterns)
+    _, g, _, _ = one.index(patterns)
+    assert (_errors(g, _known(), point_group) > 10).all()
+    two = _everything_rechecked(
+        _small_indexer(master, point_group, detector, device=device, candidates=2, **steps)
+    )
+    _wrong_basin(two, patterns)
+    phase, g, score, entry = two.index(patterns, fit=device == "cuda")
+    assert np.max(_errors(g, _known(), point_group)) < 0.5
+    assert two.rechecked == len(patterns)
+    assert (_errors(two.rotations[entry], _known(), point_group) < 10).all()
+
+
+def test_index_with_strain_chooses_the_candidate_as_index_does(master, point_group, detector):
+    patterns = master.project(detector, _known()[:2])
+    indexer = _everything_rechecked(
+        _small_indexer(master, point_group, detector, device="cpu", candidates=2)
+    )
+    _wrong_basin(indexer, patterns)
+    _, g, _, _, _ = indexer.index_with_strain(patterns)
+    # the strain fit of this band master's patterns is good to a couple of degrees;
+    # the wrong basin's seed is 30 or more off
+    assert np.max(_errors(g, _known()[:2], point_group)) < 3
+
+
+def test_the_gate_leaves_a_clear_winner_alone(master, point_group, detector):
+    """Clean patterns, whose best entry wins the search by a wide margin and refines
+    to a high score, are not rechecked, and index as with one candidate."""
+    patterns = master.project(detector, _known())
+    one = _small_indexer(master, point_group, detector, device="cpu").index(patterns)
+    indexer = _small_indexer(
+        master, point_group, detector, device="cpu", candidates=4, recheck_margin=0.0
+    )
+    found = indexer.index(patterns)
+    assert indexer.rechecked == 0
+    for a, b in zip(found, one, strict=True):
+        assert torch.equal(a, b)
+
+
+@fused
+def test_the_workspace_chooses_candidates_as_the_allocating_steps(master, point_group, detector):
+    indexer = _everything_rechecked(
+        _small_indexer(master, point_group, detector, device="cuda", candidates=4)
+    )
+    frames = _camera_frames(master, detector)
+    indexer.restart_static(frames)
+    indexer.index(frames, fit=True)
+    in_workspace, allocating = _index_twice(indexer, frames)
+    assert torch.equal(in_workspace[0], allocating[0])
+    assert torch.equal(in_workspace[3], allocating[3])
+    assert torch.allclose(in_workspace[1], allocating[1], atol=1e-4)
+    assert torch.allclose(in_workspace[2], allocating[2], atol=1e-4)
+
+
+@fused
+def test_index_with_candidates_allocates_nothing_once_it_has_run(master, point_group, detector):
+    """The candidates' search and recheck write into the indexer's
+    :class:`~de_ebsd.index.live.workspace.CandidateBuffers`, made with it."""
+    indexer = _everything_rechecked(
+        _small_indexer(master, point_group, detector, device="cuda", candidates=4)
+    )
+    frames = _camera_frames(master, detector)
+    indexer.restart_static(frames)
+    first = indexer.index(frames, fit=True)
+    out = tuple(torch.empty_like(column) for column in first)
+    indexer.index(frames, fit=True, out=out)
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_stats()["allocation.all.allocated"]
+    indexer.index(frames, fit=True, out=out)
+    torch.cuda.synchronize()
+    assert torch.cuda.memory_stats()["allocation.all.allocated"] - before <= 2
+
+
+def test_retry_keeps_the_seed_that_matches_best(master, point_group, detector):
+    """Seeds far off and near the truth: the near one is refined to it and chosen;
+    passed over where it is not valid."""
+    rotations = _known()
+    patterns = master.project(detector, rotations)
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    truth = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
+    near = truth @ rotation_vector_to_matrix(torch.tensor([[0.02, -0.01, 0.015]]))
+    far = truth @ rotation_vector_to_matrix(torch.tensor([[0.0, 0.6, 0.0]]))
+    seeds = torch.stack([far, near], 1)
+    phases = torch.zeros(len(truth), 2, dtype=torch.int64)
+    phase, g, score, chosen = indexer.retry(patterns, seeds, phases)
+    assert (chosen == 1).all()
+    assert np.max(_errors(g, rotations, point_group)) < 0.3
+    valid = torch.tensor([[True, False]]).repeat(len(truth), 1)
+    _, g, _, chosen = indexer.retry(patterns, seeds, phases, valid=valid)
+    assert (chosen == 0).all()
+
+
+def test_retry_speckle_puts_a_finished_maps_speckle_right(master, point_group, detector):
+    """A 4 x 4 single crystal whose map has one point in a wrong orientation: the
+    post-scan retry replaces that point, from its neighbors, and only that one."""
+    rotation = _known()[1]
+    patterns = master.project(detector, rotation).repeat(16, 1, 1)
+    truth = quaternion_to_matrix(torch.as_tensor(rotation.data, dtype=torch.float32))
+    g = truth.repeat(16, 1, 1)
+    g[6] = g[6] @ rotation_vector_to_matrix(torch.tensor([[0.5, 0.2, 0.0]]))[0]
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    phase = torch.zeros(16, dtype=torch.int64)
+    retried = retry_speckle(
+        indexer, patterns, phase, g, torch.zeros(16), torch.arange(16), shape=(4, 4)
+    )
+    assert retried.changed.tolist() == [i == 6 for i in range(16)]
+    assert retried.tried == 1
+    error = _errors(torch.as_tensor(retried.g), rotation, point_group)
+    assert np.max(error) < 0.5
+    assert retried.entry[6] in (2, 5, 7, 10)

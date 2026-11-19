@@ -1126,14 +1126,17 @@ def score(
     directions: torch.Tensor,
     rows: torch.Tensor,
     per_row: int,
+    out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Scores ``(M,)``: the normalized cross-correlation of each rotation's
     pattern (as :func:`project`) with ``rows[m // per_row]``, rows being
-    zero-mean, unit-norm ``(N, pixels)``."""
+    zero-mean, unit-norm ``(N, pixels)``. *out*, when given, is the contiguous
+    float32 ``(M,)`` buffer to write."""
     import cupy
 
     m = len(rotations)
-    out = torch.empty(m, device=rotations.device, dtype=torch.float32)
+    if out is None:
+        out = torch.empty(m, device=rotations.device, dtype=torch.float32)
     texture = texture.contiguous()
     _launch(
         "score",

@@ -1,0 +1,1 @@
+:func:`~de_ebsd.index.live.retry_speckle` re-tried a finished scan's speckle (points that agree with none of their neighbors, :func:`~de_ebsd.index.neighbors.speckle_fraction`) from their neighbors' orientations, keeping one only where it matched the pattern better.

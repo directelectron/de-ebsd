@@ -183,6 +183,38 @@ An indexer that will fit is built with
 levels at 1 degree where the fit is fused: the fit does what the finer levels
 did, for less.
 
+Speckle: several candidates, and the neighbors
+----------------------------------------------
+
+The refine reaches a few degrees, so a seed in the wrong basin -- a look-alike
+orientation, a pseudo-symmetric partner, or the right basin falling between two
+dictionary entries -- is polished into the wrong answer. On a map that is
+speckle: single points that agree with none of their neighbors
+(:func:`~de_ebsd.index.neighbors.speckle_fraction`).
+
+With ``candidates=K`` (or :meth:`~de_ebsd.index.LiveIndexer.set_candidates`)
+the search keeps each pattern's 16 best entries (the best of each block of 32),
+drops each within 1.5 dictionary steps of a better one of its phase, symmetry
+reduced, and keeps the best K. The best is refined as before; where the search's
+best and its distinct runner-up scored within ``recheck_margin`` of each other,
+the other candidates are refined too, all of a buffer's in one launch, and the
+one whose refined orientation matches its pattern best (the normalized
+cross-correlation at the refine shape against the unblurred master) wins, with
+its entry. On the fused path this runs in buffers made with the indexer.
+
+After a scan, :func:`~de_ebsd.index.live.retry_speckle` re-tries each speckled
+point from its own orientation and its four neighbors'
+(:func:`~de_ebsd.index.neighbors.neighbor_seeds`,
+:meth:`~de_ebsd.index.LiveIndexer.retry`), and keeps a neighbor's only where it
+matches the pattern better, so a real one-point grain stays.
+
+On a simulated 128 x 128 Ni scan (60 grains, 128-pixel frames with 16 counts a
+pixel, 3 degree dictionary, ``fit=True``, a Titan X), 1.39 % of the points
+landed more than 5 degrees off with one candidate, 0.32 % with four (8 % of the
+patterns rechecked, 29,000 patterns a second against 38,000), and none after the
+post-scan retry. ``scripts/benchmark_speckle.py`` measures it;
+``scripts/compare_speckle.py`` compares the settings on a saved scan.
+
 Calibrating the pattern center
 ------------------------------
 
