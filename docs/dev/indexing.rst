@@ -161,6 +161,107 @@ twin scan 6-9 % of the patterns landed 40-60 degrees off unblurred, none at
 2 degrees. The search only has to land in the right basin -- the refine does the
 rest.
 
+The in-plane search
+-------------------
+
+``LiveIndexer(..., search="inplane")`` replaces the dictionary with a search
+that factors the in-plane rotation out
+(:class:`~de_ebsd.index.live.inplane.InplaneSearch`). Turning the crystal about
+the axis through the pattern center normal to the screen turns its pattern about
+the pattern center by the same angle, so every orientation is
+
+.. math::
+
+    g = g_0(u)\, R_n(\theta),
+
+with :math:`n` the screen normal in the sample frame, :math:`u = g\,n` the
+crystal direction along it (two angles, on the sphere modulo the point group's
+proper rotations), :math:`g_0(u)` the smallest rotation taking :math:`n` to
+:math:`u`, and :math:`\theta` the turn about :math:`n`. On a polar grid about the
+pattern center -- radii :math:`\rho_k` by angles :math:`\phi_j` -- the pattern of
+:math:`g_0 R_n(\theta)` at :math:`\phi` is :math:`g_0`'s at :math:`\phi +
+\theta`: a shift along :math:`j`. One template per sphere direction holds every
+in-plane angle, and scoring a pattern against all of them is a correlation along
+the angle.
+
+**The two-angle grid.** The sphere is sampled icosahedrally and kept where it
+lies in the Dirichlet region of a generic direction under the proper rotations
+(``u . k >= (S u) . k`` for every symmetry ``S``), plus half a step so that a
+direction on the region's edge keeps its neighbours. Every point group's
+Dirichlet region of a point it moves nowhere is a fundamental region, so one rule
+serves all; the kept grid covers the sphere exactly as well as the whole
+icosahedral grid does, from a little over :math:`1/|S|` of it. At an equivalent
+step :math:`s` (the flat dictionary's resolution it stands in for) the sphere
+and in-plane steps are :math:`1.25 s`, the in-plane step no finer than 1.875
+degrees: the grid whose 99th-percentile covering radius matches the
+fundamental-zone grid's.
+
+**The masked normalization.** The screen is a rectangle off center on the polar
+grid, so each template is seen through a mask that depends on the pattern
+center, not on the template. With :math:`w_{kj}` the polar area weight
+:math:`\rho_k` on the screen and zero off it, :math:`q` the pattern made
+mean-free and unit over the visible samples, and :math:`t` the template, the
+normalized cross-correlation at in-plane shift :math:`s` is
+
+.. math::
+
+    \mathrm{NCC}(u, s) = \frac{\sum_{kj} w_{kj}\, q_{kj}\, t_{k,j+s}}{\sqrt{D(u,
+    s)}}, \qquad D(u, s) = A_2(s) - \frac{A_1(s)^2}{\sum_{kj} w_{kj}}, \qquad
+    A_p(s) = \sum_{kj} w_{kj}\, t_{k,j+s}^p .
+
+:math:`A_1` and :math:`A_2` are correlations of the mask with :math:`t` and
+:math:`t^2` along the angle, taken by FFT once per template whenever the mask
+changes -- the templates themselves never do. The numerator, by the correlation
+theorem, is :math:`\frac{1}{J}\sum_f c_f \operatorname{Re}\big(\overline{Q_f}\,
+T_f\, e^{2\pi i f s / J}\big)` summed over the radii, :math:`Q_f` and
+:math:`T_f` the pattern's and the template's spectra along the angle and
+:math:`c_f` 1 for the zero (and Nyquist) frequency and 2 otherwise. Only the low
+frequencies matter at a search's resolution: 48 are kept at 2 degrees and 64 at
+1 (more found the same orientations).
+
+**The products.** Per kept frequency, the real and imaginary parts of
+:math:`\overline{Q} T` summed over the radii are two real matrix products of
+the templates' spectra ``[Re T | Im T]`` (templates by twice the radii) with the
+patterns' ``[Re Q; Im Q]`` and ``[-Im Q; Re Q]`` (twice the radii by patterns).
+A third product takes the frequencies back to the in-plane angles, a scale by
+:math:`D^{-1/2}` and a maximum over the angles and the templates give each
+pattern's best, and a parabola through the best angle's neighbours gives a
+sub-step. Every phase's templates are stacked, each over its own symmetry; the
+best score gives the phase, as the flat search's does.
+
+Patterns are resampled about their own pattern centers -- each point of a scan
+at its own, with :meth:`~de_ebsd.index.LiveIndexer.index_with_strain`'s
+``pattern_centers`` -- at no cost, from the refine rows averaged to twice the
+search shape, at half a search pixel radially. The mask is the scan's: the
+samples on the screen at every center. Each screen edge is a linear inequality in
+the center (:math:`x \ge -a\,\mathrm{pc}_x/\mathrm{pc}_z` is :math:`x\,
+\mathrm{pc}_z + a\,\mathrm{pc}_x \ge 0`), so a sample is on the screen at every
+center of a set exactly when it is at every vertex of its convex hull: for a
+scan's center plane, its four corners
+(:meth:`~de_ebsd.index.LiveIndexer.set_scan_centers`).
+
+**On the device.** With CuPy on a CUDA device, one kernel resamples a batch onto
+the polar grid, weights, centers and normalizes it (one block per pattern); one
+matrix product takes it to its spectra; then, a chunk of templates at a time,
+two batched products per chunk, one product back to the angles, and one kernel
+that scales and folds the chunk's best into each pattern's running best by an
+atomic maximum on a packed score and entry -- no array of patterns by templates
+by angles is ever stored. A last kernel takes each pattern's winner through the
+sub-step to its orientation. All of it writes into buffers allocated when the
+indexer is built (:class:`~de_ebsd.index.live.workspace.InplaneWorkspace`), whose
+size is a memory budget: by default 256 MB, or less where the device's free
+memory, less 1 GB for whatever else it holds, is smaller; the chunk is the most
+templates that fit it. On GPUs with tensor cores the products take float16
+operands with float32 accumulation, as the flat dictionary does.
+
+What is not fused is the product back to the angles and the scaled maximum after
+it: the scores of one chunk are written and read once. Fusing them -- a matrix
+product with the scale and the maximum in its epilogue, the angle matrix resident
+in shared memory, in the manner of FlashAttention -- would save that traffic,
+about a sixth of the search at a 1-degree step on a Titan X, and on tensor cores
+could take the per-frequency products in the same kernel; it needs a
+hand-written (or CUTLASS or Triton) tiled product to keep cuBLAS's throughput.
+
 Refining the orientation
 ------------------------
 
@@ -201,12 +302,15 @@ the other candidates are refined too, all of a buffer's in one launch, and the
 one whose refined orientation matches its pattern best (the normalized
 cross-correlation at the refine shape against the unblurred master) wins, with
 its entry. On the fused path this runs in buffers made with the indexer.
+The in-plane search takes one candidate only: it keeps a pattern's best entry
+and no pool, and its seeds land in the wrong basin far less often.
 
 After a scan, :func:`~de_ebsd.index.live.retry_speckle` re-tries each speckled
 point from its own orientation and its four neighbors'
 (:func:`~de_ebsd.index.neighbors.neighbor_seeds`,
 :meth:`~de_ebsd.index.LiveIndexer.retry`), and keeps a neighbor's only where it
-matches the pattern better, so a real one-point grain stays.
+matches the pattern better, so a real one-point grain stays. It needs no
+dictionary, so it runs with either search.
 
 On a simulated 128 x 128 Ni scan (60 grains, 128-pixel frames with 16 counts a
 pixel, 3 degree dictionary, ``fit=True``, a Titan X), 1.39 % of the points

@@ -1024,6 +1024,246 @@ extern "C" __global__ void prepare(
 }
 """
 
+# The in-plane search's kernels (de_ebsd.index.live.inplane): the patterns on the
+# polar grid, the running best of the scaled scores, and the winners' sub-step.
+# Each is written for float and for half operands; the arithmetic is float.
+_INPLANE_SOURCE = r"""
+#include <cuda_fp16.h>
+
+__device__ __forceinline__ float to_float(float v) { return v; }
+__device__ __forceinline__ float to_float(__half v) { return __half2float(v); }
+template <typename T> __device__ __forceinline__ T from_float(float v);
+template <> __device__ __forceinline__ float from_float<float>(float v) { return v; }
+template <> __device__ __forceinline__ __half from_float<__half>(float v)
+{
+    return __float2half_rn(v);
+}
+
+// The image (rows x cols, pixel centers at +0.5) at gnomonic point (x, y), bilinear
+// and clamped at the edge: grid_sample's align_corners=False, padding "border".
+__device__ __forceinline__ float polar_sample(
+    const float* __restrict__ image, int rows, int cols, float x_min, float col_scale,
+    float y_max, float row_scale, float x, float y)
+{
+    float c = fminf(fmaxf((x - x_min) * col_scale - 0.5f, 0.f), (float)(cols - 1));
+    float r = fminf(fmaxf((y_max - y) * row_scale - 0.5f, 0.f), (float)(rows - 1));
+    int c0 = (int)floorf(c), r0 = (int)floorf(r);
+    int c1 = min(c0 + 1, cols - 1), r1 = min(r0 + 1, rows - 1);
+    float fc = c - c0, fr = r - r0;
+    float top = image[r0 * cols + c0] * (1.f - fc) + image[r0 * cols + c1] * fc;
+    float bottom = image[r1 * cols + c0] * (1.f - fc) + image[r1 * cols + c1] * fc;
+    return top * (1.f - fr) + bottom * fr;
+}
+
+// One block per pattern: the pattern resampled on the polar grid about its center,
+// weighted (radius times visibility), made mean-free and unit over the visible
+// samples, written (K, N, J). A sample is interpolated twice, once for the sums and
+// once for the output, rather than stored and read back.
+template <typename T>
+__device__ __forceinline__ void polar_patterns_impl(
+    const float* __restrict__ images, int rows, int cols,
+    const float* __restrict__ centers, int center_stride, float aspect,
+    const float* __restrict__ radii, const float* __restrict__ cosines,
+    const float* __restrict__ sines, int K, int J,
+    const float* __restrict__ weights, float visible, float floor_, int N,
+    T* __restrict__ out)
+{
+    extern __shared__ float sums[];
+    int n = blockIdx.x, t = threadIdx.x, b = blockDim.x;
+    const float* center = centers + (size_t)n * center_stride;
+    float pcx = center[0], pcy = center[1], pcz = center[2];
+    float x_min = -aspect * pcx / pcz, x_max = aspect * (1.f - pcx) / pcz;
+    float y_min = -(1.f - pcy) / pcz, y_max = pcy / pcz;
+    float col_scale = cols / (x_max - x_min), row_scale = rows / (y_max - y_min);
+    const float* image = images + (size_t)n * rows * cols;
+    int count = K * J;
+    float total = 0.f, squares = 0.f;
+    for (int i = t; i < count; i += b) {
+        float w = weights[i];
+        if (w == 0.f) continue;
+        int k = i / J, j = i - k * J;
+        float q = polar_sample(image, rows, cols, x_min, col_scale, y_max, row_scale,
+                               radii[k] * cosines[j], radii[k] * sines[j]);
+        total += w * q;
+        squares += w * q * q;
+    }
+    sums[t] = total;
+    sums[b + t] = squares;
+    block_sums(sums, 2);
+    float mean = sums[0] / visible;
+    float scale = 1.f / fmaxf(sqrtf(fmaxf(sums[b] - mean * sums[0], 0.f)), floor_);
+    for (int i = t; i < count; i += b) {
+        float w = weights[i];
+        int k = i / J, j = i - k * J;
+        float v = 0.f;
+        if (w != 0.f) {
+            float q = polar_sample(image, rows, cols, x_min, col_scale, y_max, row_scale,
+                                   radii[k] * cosines[j], radii[k] * sines[j]);
+            v = w * (q - mean) * scale;
+        }
+        out[((size_t)k * N + n) * J + j] = from_float<T>(v);
+    }
+}
+
+#define POLAR_PATTERNS(NAME, T)                                                        \
+extern "C" __global__ void NAME(                                                       \
+    const float* images, int rows, int cols, const float* centers, int center_stride,  \
+    float aspect, const float* radii, const float* cosines, const float* sines, int K, \
+    int J, const float* weights, float visible, float floor_, int N, T* out)          \
+{                                                                                      \
+    polar_patterns_impl<T>(images, rows, cols, centers, center_stride, aspect, radii,  \
+                           cosines, sines, K, J, weights, visible, floor_, N, out);    \
+}
+POLAR_PATTERNS(polar_patterns_float, float)
+POLAR_PATTERNS(polar_patterns_half, __half)
+
+// A score and its entry as one key whose unsigned order is the score's: the float's
+// bits made monotonic in the high word, the entry in the low one.
+__device__ __forceinline__ unsigned long long pack_best(float v, unsigned int entry)
+{
+    unsigned int bits = __float_as_uint(v);
+    bits = (bits & 0x80000000u) ? ~bits : (bits | 0x80000000u);
+    return ((unsigned long long)bits << 32) | entry;
+}
+
+__device__ __forceinline__ float unpack_score(unsigned long long key)
+{
+    unsigned int bits = (unsigned int)(key >> 32);
+    bits = (bits & 0x80000000u) ? (bits & 0x7fffffffu) : ~bits;
+    return __uint_as_float(bits);
+}
+
+// Each pattern's best of one chunk of templates' scores (thetas, chunk, N), each
+// scaled by its template's inverse visible norm at that angle, folded into the
+// pattern's running best by one atomic max. A thread takes one pattern and a few
+// templates, so the reads coalesce along the patterns and nothing per template is
+// written.
+template <typename T>
+__device__ __forceinline__ void inplane_best_impl(
+    const T* __restrict__ scores, const float* __restrict__ inverse_energy, int templates,
+    int lo, int thetas, int chunk, int N, int per_thread, unsigned long long* best)
+{
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    int u0 = blockIdx.y * per_thread, u1 = min(u0 + per_thread, chunk);
+    if (u1 <= u0) return;
+    float found = -3.402823466e38f;
+    unsigned int entry = 0u;
+    for (int u = u0; u < u1; u++) {
+        const float* w = inverse_energy + lo + u;
+        for (int m = 0; m < thetas; m++) {
+            float v = to_float(scores[((size_t)m * chunk + u) * N + n]) * w[(size_t)m * templates];
+            if (v > found) { found = v; entry = (unsigned int)((lo + u) * thetas + m); }
+        }
+    }
+    atomicMax(best + n, pack_best(found, entry));
+}
+
+#define INPLANE_BEST(NAME, T)                                                         \
+extern "C" __global__ void NAME(                                                      \
+    const T* scores, const float* inverse_energy, int templates, int lo, int thetas,  \
+    int chunk, int N, int per_thread, unsigned long long* best)                       \
+{                                                                                     \
+    inplane_best_impl<T>(scores, inverse_energy, templates, lo, thetas, chunk, N,     \
+                         per_thread, best);                                           \
+}
+INPLANE_BEST(inplane_best_float, float)
+INPLANE_BEST(inplane_best_half, __half)
+
+// Each pattern's winner: its scores at the winning angle and either side, from the
+// winning template's spectrum and the pattern's in float, a parabola's vertex
+// between them, and the orientation g0(u) R_n(theta). Blocks of 32 patterns by
+// FINISH_SLICES slices of the frequencies, the patterns along the warp so that the
+// operands' reads coalesce.
+#define FINISH_SLICES 8
+template <typename T>
+__device__ __forceinline__ void inplane_finish_impl(
+    const unsigned long long* __restrict__ best, const T* __restrict__ operands,
+    const T* __restrict__ spectra, const float* __restrict__ weights,
+    const float* __restrict__ inverse_energy, const float* __restrict__ axes,
+    const int* __restrict__ phases, const float* __restrict__ frame, int F, int K2,
+    int U, int thetas, int N, int substep, long long* phase_out, float* g_out,
+    float* score_out, long long* entry_out)
+{
+    __shared__ float partial[3][FINISH_SLICES][32];
+    int lane = threadIdx.x, slice = threadIdx.y;
+    int n = blockIdx.x * 32 + lane;
+    bool active = n < N;
+    unsigned long long key = active ? best[n] : 0ull;
+    unsigned int entry = (unsigned int)(key & 0xffffffffull);
+    int u = entry / thetas, m = entry - u * thetas;
+    int around[3] = {(m + thetas - 1) % thetas, m, (m + 1) % thetas};
+    float acc[3] = {0.f, 0.f, 0.f};
+    if (active && substep) {
+        for (int f = slice; f < F; f += FINISH_SLICES) {
+            const T* row = spectra + ((size_t)f * U + u) * K2;
+            const T* x0 = operands + (size_t)f * K2 * N + n;
+            const T* x1 = operands + (size_t)(F + f) * K2 * N + n;
+            float re = 0.f, im = 0.f;
+            for (int c = 0; c < K2; c++) {
+                float y = to_float(row[c]);
+                re += y * to_float(x0[(size_t)c * N]);
+                im += y * to_float(x1[(size_t)c * N]);
+            }
+            for (int a = 0; a < 3; a++)
+                acc[a] += weights[around[a] * 2 * F + f] * re
+                        + weights[around[a] * 2 * F + F + f] * im;
+        }
+    }
+    for (int a = 0; a < 3; a++) partial[a][slice][lane] = acc[a];
+    __syncthreads();
+    if (slice != 0 || !active) return;
+    float offset = 0.f;
+    if (substep) {
+        float s[3];
+        for (int a = 0; a < 3; a++) {
+            float total = 0.f;
+            for (int i = 0; i < FINISH_SLICES; i++) total += partial[a][i][lane];
+            s[a] = total * inverse_energy[(size_t)around[a] * U + u];
+        }
+        float curvature = s[0] - 2.f * s[1] + s[2];
+        if (curvature < 0.f)
+            offset = fminf(fmaxf(0.5f * (s[0] - s[2]) / curvature, -0.5f), 0.5f);
+    }
+    float theta = 6.283185307179586f * ((float)m + offset) / (float)thetas;
+    float c = cosf(theta), s = sinf(theta);
+    float rz[3][3] = {{c, -s, 0.f}, {s, c, 0.f}, {0.f, 0.f, 1.f}};
+    // frame^T Rz frame: the turn by theta about the screen normal, in the sample frame
+    float r[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            float total = 0.f;
+            for (int a = 0; a < 3; a++)
+                for (int e = 0; e < 3; e++)
+                    total += frame[a * 3 + i] * rz[a][e] * frame[e * 3 + j];
+            r[i][j] = total;
+        }
+    const float* g0 = axes + (size_t)u * 9;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            g_out[(size_t)n * 9 + i * 3 + j] =
+                g0[i * 3] * r[0][j] + g0[i * 3 + 1] * r[1][j] + g0[i * 3 + 2] * r[2][j];
+    phase_out[n] = phases[u];
+    score_out[n] = unpack_score(key);
+    entry_out[n] = (long long)entry;
+}
+
+#define INPLANE_FINISH(NAME, T)                                                       \
+extern "C" __global__ void NAME(                                                      \
+    const unsigned long long* best, const T* operands, const T* spectra,              \
+    const float* weights, const float* inverse_energy, const float* axes,             \
+    const int* phases, const float* frame, int F, int K2, int U, int thetas, int N,   \
+    int substep, long long* phase_out, float* g_out, float* score_out,                \
+    long long* entry_out)                                                             \
+{                                                                                     \
+    inplane_finish_impl<T>(best, operands, spectra, weights, inverse_energy, axes,    \
+                           phases, frame, F, K2, U, thetas, N, substep, phase_out,    \
+                           g_out, score_out, entry_out);                              \
+}
+INPLANE_FINISH(inplane_finish_float, float)
+INPLANE_FINISH(inplane_finish_half, __half)
+"""
+
 #: Threads per block of :func:`score`; a power of two for its reduction.
 SCORE_THREADS = 256
 #: Threads per block of :func:`refine_stepped` and :func:`fit_orientations`,
@@ -1050,7 +1290,7 @@ def _module(device_index: int):
     import cupy
 
     with cupy.cuda.Device(device_index):
-        return cupy.RawModule(code=_SOURCE, options=("--use_fast_math",))
+        return cupy.RawModule(code=_SOURCE + _INPLANE_SOURCE, options=("--use_fast_math",))
 
 
 def _cupy(tensor: torch.Tensor):
@@ -1409,3 +1649,130 @@ def prepare_fits(frame_shape, refine_shape, coarse_shape, search_shape) -> bool:
         and coarse_shape[0] * coarse_shape[1] <= PREPARE_MAX_SMALL
         and search_shape[0] * search_shape[1] <= PREPARE_MAX_SMALL
     )
+
+
+#: Threads per block of :func:`polar_patterns`, one block per pattern; a power of
+#: two for its reduction.
+POLAR_THREADS = 256
+#: Templates one thread of :func:`inplane_best` takes, each over every angle.
+BEST_TEMPLATES_PER_THREAD = 4
+
+
+def _suffix(dtype: torch.dtype) -> str:
+    """The in-plane kernels' name suffix for operands of *dtype*."""
+    if dtype == torch.float32:
+        return "float"
+    if dtype == torch.float16:
+        return "half"
+    raise ValueError(f"the in-plane kernels take float32 or float16, not {dtype}")
+
+
+def polar_patterns(
+    images, centers, aspect, radii, cosines, sines, weights, visible, floor, out
+) -> torch.Tensor:
+    """Patterns on the in-plane search's polar grid, in one launch, one block per
+    pattern: *images* ``(N, rows, cols)`` float32, each read about its pattern
+    center (*centers* ``(N, 3)``, or ``(3,)`` for every pattern) at radii ``(K,)``
+    and angles (their *cosines* and *sines*, ``(J,)``), weighted by *weights*
+    ``(K, J)`` (zero off the screen), made mean-free and unit over the samples whose
+    weights sum to *visible*, into *out* ``(K, N, J)`` (float32 or float16)."""
+    import cupy
+
+    n, rows, cols = images.shape
+    k, j = len(radii), len(cosines)
+    _launch(
+        f"polar_patterns_{_suffix(out.dtype)}",
+        (n,),
+        (POLAR_THREADS,),
+        (
+            _cupy(images),
+            cupy.int32(rows),
+            cupy.int32(cols),
+            _cupy(centers),
+            cupy.int32(3 if centers.ndim == 2 else 0),
+            cupy.float32(aspect),
+            _cupy(radii),
+            _cupy(cosines),
+            _cupy(sines),
+            cupy.int32(k),
+            cupy.int32(j),
+            _cupy(weights),
+            cupy.float32(visible),
+            cupy.float32(floor),
+            cupy.int32(n),
+            _cupy(out),
+        ),
+        shared_mem=2 * POLAR_THREADS * 4,
+    )
+    return out
+
+
+def inplane_best(scores, inverse_energy, lo, thetas, chunk, count, best) -> None:
+    """Fold one chunk of the in-plane search's scores, *scores* ``(thetas, chunk,
+    count)``, into each pattern's running best: ``max scores[m, u, n] *
+    inverse_energy[m, lo + u]`` over the chunk, as a packed key in *best*
+    ``(count,)`` int64 (the score's ordered bits high, the entry ``(lo + u) *
+    thetas + m`` low), which starts at zero."""
+    import cupy
+
+    threads = 256
+    per = BEST_TEMPLATES_PER_THREAD
+    _launch(
+        f"inplane_best_{_suffix(scores.dtype)}",
+        ((count + threads - 1) // threads, (chunk + per - 1) // per),
+        (threads,),
+        (
+            _cupy(scores),
+            _cupy(inverse_energy),
+            cupy.int32(inverse_energy.shape[1]),
+            cupy.int32(lo),
+            cupy.int32(thetas),
+            cupy.int32(chunk),
+            cupy.int32(count),
+            cupy.int32(per),
+            _cupy(best),
+        ),
+    )
+
+
+def inplane_finish(
+    best, operands, spectra, weights, inverse_energy, axes, phases, frame, thetas, substep, out
+):
+    """Each pattern's winner from *best* (:func:`inplane_best`'s keys) as ``(phase,
+    g, score, entry)`` written into *out*: the parabolic sub-step of its in-plane
+    angle (with *substep*) from the scores either side, worked out from the
+    template's *spectra* ``(F, U, 2K)`` and the pattern's *operands* ``(2, F, 2K,
+    N)`` with the angle *weights* ``(thetas, 2F)``, then the orientation ``axes[u]
+    @ R_n(theta)``, *frame* being the detector's (rows the screen's axes in the
+    sample frame)."""
+    import cupy
+
+    n = len(best)
+    f, u, k2 = spectra.shape
+    phase, g, score, entry = out
+    _launch(
+        f"inplane_finish_{_suffix(operands.dtype)}",
+        ((n + 31) // 32,),
+        (32, 8),
+        (
+            _cupy(best),
+            _cupy(operands),
+            _cupy(spectra),
+            _cupy(weights),
+            _cupy(inverse_energy),
+            _cupy(axes),
+            _cupy(phases),
+            _cupy(frame),
+            cupy.int32(f),
+            cupy.int32(k2),
+            cupy.int32(u),
+            cupy.int32(thetas),
+            cupy.int32(n),
+            cupy.int32(1 if substep else 0),
+            _cupy(phase),
+            _cupy(g),
+            _cupy(score),
+            _cupy(entry),
+        ),
+    )
+    return phase, g, score, entry

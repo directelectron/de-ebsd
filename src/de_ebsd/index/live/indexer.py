@@ -20,6 +20,11 @@ leave the device.
    master on the fly at the refine shape. A parabola through each axis's three
    scores moves the orientation; the step shrinks each level. Every level is the
    same seven projections per pattern, so its cost is fixed and known.
+   With ``search="inplane"`` the search is in-plane-factored instead
+   (:mod:`de_ebsd.index.live.inplane`): one polar template per crystal direction
+   along the screen normal, scored at every in-plane angle at once by a
+   correlation about the pattern center, a masked normalized cross-correlation
+   over the screen's visible part.
 4. **Pattern center** (:meth:`LiveIndexer.refine_pattern_center`): the center
    shared by a buffer's best patterns, refined the same way -- seven centers a
    level, each scored with every pattern's orientation refined again there.
@@ -213,7 +218,8 @@ class LiveIndexer:
         and angles); frames may come at any resolution, since they are averaged to
         ``search_shape`` and ``refine_shape``.
     resolution
-        The dictionary's sampling, in degrees.
+        The dictionary's sampling, in degrees: for the in-plane search, the
+        equivalent misorientation step its sphere and in-plane steps follow from.
     search_shape, refine_shape
         Detector shapes the search and the refine compare patterns at, as
         ``(rows, cols)`` or as one number: that many pixels on the long side of
@@ -222,12 +228,14 @@ class LiveIndexer:
     refine_steps_deg
         The refine levels' steps; empty for no refine.
     search_blur_deg
-        How much the search's copy of the masters is blurred, see
-        :data:`SEARCH_BLUR_DEG`.
+        How much the search's copy of the masters is blurred: by default
+        :data:`SEARCH_BLUR_DEG` for the flat search and half of *resolution* for
+        the in-plane one, which it was validated at.
     candidates
         How many of the search's distinct best entries each pattern may be refined
         from, the refined orientation that matches its pattern best winning; see
-        :meth:`set_candidates`. One, the default, refines the search's best alone.
+        :meth:`set_candidates`. One, the default, refines the search's best alone,
+        and the only choice with ``search="inplane"``.
     recheck_margin, recheck_score
         With several *candidates*, only the patterns whose search found a distinct
         runner-up within *recheck_margin* of its best, or whose best refined to a
@@ -254,6 +262,14 @@ class LiveIndexer:
         patterns still carry, from an appearance fit
         (:meth:`~de_ebsd.index.appearance.DetectorAppearance.residual_background`),
         removed from every prepared pattern; see :meth:`set_residual_background`.
+    search
+        ``"flat"``, a dictionary of every orientation at *resolution* over each
+        phase's fundamental zone, or ``"inplane"``, the in-plane-factored search
+        (:class:`~de_ebsd.index.live.inplane.InplaneSearch`): more accurate at the
+        same step, faster at fine steps, and a fraction of the memory.
+    search_options
+        Keyword arguments for :class:`~de_ebsd.index.live.inplane.InplaneSearch`,
+        such as its working-memory budget (``memory``, bytes).
     """
 
     @holds_lock
@@ -267,7 +283,7 @@ class LiveIndexer:
         search_shape: tuple[int, int] = (32, 32),
         refine_shape: tuple[int, int] = (128, 128),
         refine_steps_deg=REFINE_STEPS_DEG,
-        search_blur_deg: float = SEARCH_BLUR_DEG,
+        search_blur_deg: float | None = None,
         candidates: int = 1,
         recheck_margin: float = RECHECK_MARGIN,
         recheck_score: float = RECHECK_SCORE,
@@ -276,10 +292,18 @@ class LiveIndexer:
         dtype=None,
         lock=None,
         residual_background: ResidualBackground | None = None,
+        search: str = "flat",
+        search_options: dict | None = None,
     ) -> None:
         self.lock = resolve_lock(lock)
         from orix.sampling import get_sample_fundamental
 
+        if search not in ("flat", "inplane"):
+            raise ValueError(f'search is "flat" or "inplane", not {search!r}')
+        if search_options and search != "inplane":
+            raise ValueError('search_options are for search="inplane"')
+        if search_blur_deg is None:
+            search_blur_deg = SEARCH_BLUR_DEG if search == "flat" else 0.5 * resolution
         if len(masters) != len(point_groups):
             raise ValueError("one point group per master")
         if not len(masters):
@@ -305,17 +329,37 @@ class LiveIndexer:
         self.search_texture = texture_of(masters, self.device, search_blur_deg)
         self.stencil = torch.tensor(STENCIL, device=self.device, dtype=torch.float32)
 
-        rotations, phases = [], []
-        for number, point_group in enumerate(point_groups):
-            q = np.asarray(
-                get_sample_fundamental(resolution=resolution, point_group=point_group).data
+        #: The in-plane search (:class:`~de_ebsd.index.live.inplane.InplaneSearch`),
+        #: or None for the flat one.
+        self.inplane = None
+        #: The flat dictionary's orientations and their phases; None in-plane.
+        self.rotations = self.phase_of = None
+        if search == "inplane":
+            from de_ebsd.index.live.inplane import InplaneSearch
+
+            self.inplane = InplaneSearch(
+                self,
+                point_groups,
+                step=resolution,
+                capacity=FUSED_BATCH,
+                **(search_options or {}),
             )
-            rotations.append(
-                quaternion_to_matrix(torch.as_tensor(q, device=self.device, dtype=torch.float32))
-            )
-            phases.append(torch.full((len(q),), number, device=self.device, dtype=torch.int64))
-        self.rotations = torch.cat(rotations)
-        self.phase_of = torch.cat(phases)
+            self.sizes = list(self.inplane.sizes)
+        else:
+            rotations, phases = [], []
+            for number, point_group in enumerate(point_groups):
+                q = np.asarray(
+                    get_sample_fundamental(resolution=resolution, point_group=point_group).data
+                )
+                rotations.append(
+                    quaternion_to_matrix(
+                        torch.as_tensor(q, device=self.device, dtype=torch.float32)
+                    )
+                )
+                phases.append(torch.full((len(q),), number, device=self.device, dtype=torch.int64))
+            self.rotations = torch.cat(rotations)
+            self.phase_of = torch.cat(phases)
+            self.sizes = [len(r) for r in rotations]
         self.point_groups = list(point_groups)
         #: Each phase's proper rotations ``(phases, most, 3, 3)``, as the
         #: dictionary's matrices are made, padded with the identity: a candidate
@@ -324,8 +368,8 @@ class LiveIndexer:
         #: :attr:`operators` as ``(9, phases * most)``: each column the nine numbers
         #: whose product with a turn's nine gives ``trace(S turn)``.
         self.trace_weights = self.operators.transpose(-1, -2).reshape(-1, 9).T.contiguous()
-        self.sizes = [len(r) for r in rotations]
-        #: Where each phase's entries start in :attr:`rotations`.
+        #: Where each phase's entries start: in :attr:`rotations`, or in the in-plane
+        #: entries ``u * thetas + m``.
         self.offsets = np.cumsum([0, *self.sizes[:-1]])
         self.set_pattern_center(detector.pattern_center)
         self.background = ScanBackground(self.refine_shape, self.device)
@@ -343,7 +387,7 @@ class LiveIndexer:
                 search_pixels=len(self.search_directions),
                 refine_pixels=len(self.refine_directions),
                 coarse_pixels=len(self.coarse_directions),
-                entries_per_chunk=min(len(self.rotations), SEARCH_CHUNK),
+                entries_per_chunk=(0 if self.inplane else min(len(self.rotations), SEARCH_CHUNK)),
                 dtype=self.dtype,
                 device=self.device,
             )
@@ -377,10 +421,17 @@ class LiveIndexer:
         partner -- is refined to the wrong orientation, which a better-matching
         distinct candidate then replaces; the cost is spent only on the patterns
         that :attr:`recheck_margin` and :attr:`recheck_score` pick. On the fused
-        path the buffers are made here, so indexing still allocates nothing."""
+        path the buffers are made here, so indexing still allocates nothing.
+
+        The in-plane search (``search="inplane"``) keeps its best entry alone, so
+        it takes one candidate only: its seeds are seldom in the wrong basin, and
+        :func:`~de_ebsd.index.live.retry_speckle` re-tries a finished scan's
+        speckle from its neighbors with either search."""
         count = int(count)
         if count < 1:
             raise ValueError("candidates must be at least 1")
+        if count > 1 and self.inplane is not None:
+            raise ValueError('search="inplane" takes one candidate only')
         self.candidates = count
         self.candidate_buffers = None
         if self.workspace is not None and count > 1:
@@ -446,13 +497,20 @@ class LiveIndexer:
         Each chunk of entries is written straight into the dictionary, and a new
         center overwrites the old one's in place: the dictionary is the largest
         thing on the device, and building it beside a copy of itself (or a list of
-        its chunks) took two to three times its size."""
+        its chunks) took two to three times its size.
+
+        The in-plane search's templates do not depend on the center; its mask and
+        the templates' visible norms are worked out again at the next search, and
+        any scan centers (:meth:`set_scan_centers`) are forgotten."""
         self.detector = replace(
             self.detector, pattern_center=tuple(float(v) for v in pattern_center)
         )
         self.search_directions = self.directions_at(pattern_center, self.search_shape)
         self.refine_directions = self.directions_at(pattern_center, self.refine_shape)
         self.coarse_directions = self.directions_at(pattern_center, self.coarse_shape)
+        if self.inplane is not None:
+            self.inplane.set_scan_centers(None)
+            return
         shape = (len(self.search_directions), len(self.rotations))
         if self.dictionary is None or tuple(self.dictionary.shape) != shape:
             #: ``(pixels, entries)``, so the search's product reads it at full rate.
@@ -510,11 +568,38 @@ class LiveIndexer:
             return entry - offsets[phase.to(entry.device)]
         return np.asarray(entry) - self.offsets[np.asarray(phase)]
 
+    @holds_lock
     def phase_rotations(self, number: int) -> torch.Tensor:
         """Phase *number*'s dictionary orientations ``(entries, 3, 3)``, in
-        OIM's sample frame, on the device."""
+        OIM's sample frame, on the device: in-plane, worked out on each call."""
         first = int(self.offsets[number])
+        if self.inplane is not None:
+            entries = torch.arange(first, first + self.sizes[number], device=self.device)
+            return self.inplane.entry_rotations(entries)
         return self.rotations[first : first + self.sizes[number]]
+
+    @holds_lock
+    def entry_rotations(self, entry) -> torch.Tensor:
+        """The orientation ``(N, 3, 3)`` of each dictionary *entry*, as :meth:`index`
+        returns them: what anything worked out once per entry, such as a color,
+        stands for."""
+        if self.inplane is not None:
+            return self.inplane.entry_rotations(entry)
+        return self.rotations[torch.as_tensor(entry, device=self.device)]
+
+    @holds_lock
+    def set_scan_centers(self, pattern_centers) -> None:
+        """The pattern centers a scan's patterns span, ``(M, 3)``, for the in-plane
+        search's visibility mask: the samples on the screen at every one of them.
+        Pass the four corners of the scan's center plane
+        (:meth:`~de_ebsd.index.live.calibration.CenterPlane.at` at the scan's corner
+        positions), which give the mask the whole plane does, before indexing the
+        scan with :meth:`index_with_strain` and each point's center; ``None`` goes
+        back to the indexer's center, as :meth:`set_pattern_center` does. Without
+        it, :meth:`index_with_strain` makes the mask of the centers each call is
+        given. The flat search ignores it."""
+        if self.inplane is not None:
+            self.inplane.set_scan_centers(pattern_centers)
 
     # --- the scan's backgrounds ------------------------------------------------
 
@@ -629,12 +714,25 @@ class LiveIndexer:
         )
 
     @holds_lock
-    def search(self, search_rows: torch.Tensor):
+    def search(self, search_rows: torch.Tensor, refine_rows=None, pattern_centers=None):
         """The best dictionary entry for each pattern: ``(phase, g, score, entry)``,
         *entry* indexing :attr:`rotations` (every phase's entries, in phase order).
 
         The dictionary is scored :data:`SEARCH_CHUNK` entries at a time, keeping
-        each pattern's best so far, so the scores never outgrow one chunk."""
+        each pattern's best so far, so the scores never outgrow one chunk.
+
+        The in-plane search reads the *refine_rows* (or, without them, the search
+        rows drawn up to the refine shape), resampled about each pattern's own
+        center where *pattern_centers* ``(N, 3)`` are given; *entry* is then ``u *
+        thetas + m``, template ``u`` at in-plane step ``m`` (:meth:`entry_rotations`).
+        The flat search reads the search rows at the indexer's center."""
+        if self.inplane is not None:
+            if refine_rows is None:
+                n = len(search_rows)
+                images = search_rows.float().view(n, 1, *self.search_shape)
+                images = torch.nn.functional.interpolate(images, size=self.refine_shape)
+                refine_rows = images.view(n, -1)
+            return self.inplane.search(refine_rows, pattern_centers)
         rows = search_rows.to(self.dtype)
         score = torch.full((len(rows),), -math.inf, device=self.device)
         entry = torch.zeros(len(rows), dtype=torch.int64, device=self.device)
@@ -651,7 +749,9 @@ class LiveIndexer:
         first: ``(phase, g, score, entry, distinct)``, each ``(N, candidates, ...)``.
         The first is :meth:`search`'s best; *distinct* is False where a pattern has
         fewer distinct entries than that, its places then holding repeats. See
-        :meth:`set_candidates`."""
+        :meth:`set_candidates`. The flat search's only."""
+        if self.inplane is not None:
+            raise ValueError('search="inplane" has no candidate search')
         n = len(search_rows)
         buffers = self._candidate_buffers(n)
         self._search_candidates(search_rows.to(self.dtype), buffers, None)
@@ -1058,11 +1158,24 @@ class LiveIndexer:
         orientations are (:mod:`de_ebsd.core.frames`)."""
         frames = _stack(frames)
         maps = None if pattern_centers is None else self.center_maps(pattern_centers)
+        centers = None if pattern_centers is None else np.asarray(pattern_centers, float)
+        scan_centers = None if self.inplane is None else self.inplane.scan_centers
+        if centers is not None and self.inplane is not None and scan_centers is None:
+            # the mask of this call's centers, for this call
+            self.inplane.set_scan_centers(centers)
+        try:
+            return self._index_with_strain(frames, maps, centers)
+        finally:
+            if self.inplane is not None:
+                self.inplane.set_scan_centers(scan_centers)
+
+    def _index_with_strain(self, frames, maps, centers):
         out = []
         batch = FUSED_BATCH if self.fused and deformation.STRAIN_SCHEDULE else BATCH
         for lo in range(0, len(frames), batch):
             search_rows, refine_rows = self.prepare(frames[lo : lo + batch])
-            phase, g, _, entry = self._choose(search_rows, refine_rows)
+            batch_centers = None if centers is None else centers[lo : lo + batch]
+            phase, g, _, entry = self._choose(search_rows, refine_rows, batch_centers)
             batch_maps = None if maps is None else maps[lo : lo + batch]
             self.add_fits(phase, g, batch_maps)
             g, strain, score = self.refine_deformation(
@@ -1124,7 +1237,7 @@ class LiveIndexer:
         search_rows, refine_rows = self._prepare_in_workspace(frames)
         buffers = self.candidate_buffers
         if buffers is None:
-            phase, g, _, entry = self._search_in_workspace(search_rows)
+            phase, g, _, entry = self._search_in_workspace(search_rows, refine_rows)
         else:
             rows = search_rows
             if workspace.typed_search_rows is not None:
@@ -1156,11 +1269,12 @@ class LiveIndexer:
             )
         return phase, g, score, entry
 
-    def _choose(self, search_rows, refine_rows):
+    def _choose(self, search_rows, refine_rows, pattern_centers=None):
         """Each pattern searched and refined, from its :attr:`candidates` best
-        distinct entries where there are several: ``(phase, g, score, entry)``."""
+        distinct entries where there are several: ``(phase, g, score, entry)``.
+        *pattern_centers* are :meth:`search`'s."""
         if self.candidates == 1 or not self.refine_steps:
-            phase, g, score, entry = self.search(search_rows)
+            phase, g, score, entry = self.search(search_rows, refine_rows, pattern_centers)
             if self.refine_steps:
                 g, score = self.refine(refine_rows, phase, g)
             return phase, g, score, entry
@@ -1193,9 +1307,13 @@ class LiveIndexer:
             return self._remove_residual(prepared[1], prepared[0], workspace.scratch)
         return prepared
 
-    def _search_in_workspace(self, search_rows):
+    def _search_in_workspace(self, search_rows, refine_rows):
         n = len(search_rows)
         workspace = self.workspace
+        if self.inplane is not None:
+            self.inplane.prepare_mask()
+            out = (workspace.phase[:n], workspace.seed[:n], workspace.score[:n])
+            return self.inplane.search_into(refine_rows, (*out, workspace.entry[:n]))
         rows = search_rows
         if workspace.typed_search_rows is not None:
             rows = workspace.typed_search_rows[:n].copy_(search_rows)

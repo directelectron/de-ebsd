@@ -239,3 +239,134 @@ class CandidateBuffers:
             for value in vars(self).values()
             if isinstance(value, torch.Tensor)
         )
+
+
+class InplaneWorkspace:
+    """The working buffers of the in-plane search's fused path
+    (:class:`~de_ebsd.index.live.inplane.InplaneSearch`), for up to *capacity*
+    patterns, allocated once; each call takes views of the size it needs.
+
+    Two pairs of buffers share memory, each pair never needed at once: the patterns
+    averaged to the source shape (read once, into the polar grid) with their
+    spectra, and the patterns on the polar grid (read once, into their spectra)
+    with one chunk's per-frequency products and scores.
+
+    Parameters
+    ----------
+    capacity
+        The most patterns a call holds.
+    source_pixels
+        Pixels of a pattern at the shape it is resampled from.
+    polar_shape
+        The polar grid's ``(K, J)``.
+    frequencies, thetas
+        Angular frequencies kept and in-plane angles searched.
+    chunk
+        The most templates scored at once.
+    dtype
+        The search's operands'.
+    device
+        Where the buffers live.
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        source_pixels: int,
+        polar_shape: tuple[int, int],
+        frequencies: int,
+        thetas: int,
+        chunk: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
+        sizes = self.sizes(
+            capacity,
+            source_pixels=source_pixels,
+            polar_shape=polar_shape,
+            frequencies=frequencies,
+            thetas=thetas,
+            chunk=chunk,
+            dtype=dtype,
+        )
+        self.capacity = capacity
+        self.dtype = dtype
+        self.polar_shape = tuple(polar_shape)
+        self.frequencies = frequencies
+        self.thetas = thetas
+        self.chunk = chunk
+        self._operands = torch.empty(sizes["operands"], dtype=torch.uint8, device=device)
+        self._region = torch.empty(sizes["region"], dtype=torch.uint8, device=device)
+        #: Each pattern's running best, a packed score and entry.
+        self.best = torch.empty(capacity, dtype=torch.int64, device=device)
+        #: Each pattern's center, where they are its own.
+        self.centers = torch.empty(capacity, 3, dtype=torch.float32, device=device)
+
+    @staticmethod
+    def sizes(
+        capacity: int,
+        *,
+        source_pixels: int,
+        polar_shape: tuple[int, int],
+        frequencies: int,
+        thetas: int,
+        chunk: int,
+        dtype: torch.dtype,
+    ) -> dict:
+        """Bytes: ``operands`` (the spectra, or the source images), ``polar``,
+        ``per_template`` (one template's products and scores), ``region`` (the polar
+        patterns or a chunk's products and scores), ``fixed`` (all but the region)
+        and ``total``."""
+        element = torch.finfo(dtype).bits // 8
+        k, j = polar_shape
+        operands = max(2 * frequencies * 2 * k * capacity * element, capacity * source_pixels * 4)
+        polar = k * j * capacity * element
+        per_template = capacity * (2 * frequencies + thetas) * element
+        region = max(polar, chunk * per_template)
+        fixed = operands + capacity * (8 + 12)
+        return dict(
+            operands=operands,
+            polar=polar,
+            per_template=per_template,
+            region=region,
+            fixed=fixed,
+            total=fixed + region,
+        )
+
+    def _view(self, storage, offset: int, dtype: torch.dtype, *shape) -> torch.Tensor:
+        size = math.prod(shape) * (torch.finfo(dtype).bits // 8)
+        return storage[offset : offset + size].view(dtype).view(*shape)
+
+    def source(self, patterns: int, rows: int, cols: int) -> torch.Tensor:
+        """``(patterns, rows, cols)`` float32 for the patterns at the source shape."""
+        return self._view(self._operands, 0, torch.float32, patterns, rows, cols)
+
+    def operands(self, patterns: int) -> torch.Tensor:
+        """``(2, F, 2K, patterns)``: the patterns' spectra."""
+        k = self.polar_shape[0]
+        return self._view(self._operands, 0, self.dtype, 2, self.frequencies, 2 * k, patterns)
+
+    def polar(self, patterns: int) -> torch.Tensor:
+        """``(K, patterns, J)``: the patterns on the polar grid."""
+        k, j = self.polar_shape
+        return self._view(self._region, 0, self.dtype, k, patterns, j)
+
+    def products(self, templates: int, patterns: int) -> torch.Tensor:
+        """``(2, F, templates, patterns)``: one chunk's per-frequency products."""
+        return self._view(self._region, 0, self.dtype, 2, self.frequencies, templates, patterns)
+
+    def scores(self, templates: int, patterns: int) -> torch.Tensor:
+        """``(T, templates * patterns)``: one chunk's scores at every in-plane angle."""
+        element = torch.finfo(self.dtype).bits // 8
+        offset = 2 * self.frequencies * templates * patterns * element
+        return self._view(self._region, offset, self.dtype, self.thetas, templates * patterns)
+
+    @property
+    def nbytes(self) -> int:
+        """The device memory the buffers hold."""
+        return sum(
+            value.numel() * value.element_size()
+            for value in vars(self).values()
+            if isinstance(value, torch.Tensor)
+        )
