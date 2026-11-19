@@ -22,11 +22,11 @@ from test_dictionary import _KNOWN_EULER_DEG, _symmetric_band_master
 
 from de_ebsd import EBSDDetector, KinematicMaster
 from de_ebsd.core.lambert import sample_texture
-from de_ebsd.core.rotation import misorientation_deg
+from de_ebsd.core.rotation import misorientation_deg, rotation_vector_to_matrix
 from de_ebsd.crystal import Crystal
 from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
-from de_ebsd.index.live import LiveIndexer
+from de_ebsd.index.live import LiveIndexer, retry_speckle
 from de_ebsd.index.live import indexer as live_indexer
 from de_ebsd.index.live.indexer import texture_of
 from de_ebsd.index.live.inplane import (
@@ -436,6 +436,42 @@ def test_the_flat_search_takes_no_inplane_options(master, point_group, detector)
         LiveIndexer([master], [point_group], detector, search_options=dict(memory=1))
     with pytest.raises(ValueError, match="flat"):
         LiveIndexer([master], [point_group], detector, search="spherical")
+
+
+def test_the_inplane_search_takes_one_candidate(master, point_group, detector, indexer):
+    """The in-plane search keeps its best entry alone: several candidates are said
+    to be the flat search's, not ignored."""
+    with pytest.raises(ValueError, match="one candidate"):
+        _inplane(master, point_group, detector, candidates=2)
+    with pytest.raises(ValueError, match="one candidate"):
+        indexer.set_candidates(3)
+    assert indexer.candidates == 1
+    with pytest.raises(ValueError, match="no candidate search"):
+        indexer.search_candidates(indexer.prepare(master.project(detector, _known()))[0])
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])
+def test_retry_speckle_puts_an_inplane_maps_speckle_right(master, point_group, detector, device):
+    """A 6 x 6 scan of two grains indexed with the in-plane search, two of its
+    points then put in wrong orientations: the post-scan retry, seeded from the
+    neighbors with no dictionary, puts back those two and changes nothing else."""
+    rows, cols = 6, 6
+    grains = _known()[:2]
+    left = (np.arange(rows * cols) % cols) < cols // 2
+    rotations = Rotation(np.where(left[:, None], grains[0].data, grains[1].data))
+    patterns = master.project(detector, rotations).to(device)
+    indexer = _inplane(master, point_group, detector, device=device)
+    phase, g, score, entry = indexer.index(patterns)
+    assert max(_error_deg(g, rotations, point_group)) < 0.5
+    speckle = [7, 28]
+    g = g.clone()
+    for point, turn in zip(speckle, ([0.5, 0.2, 0.0], [0.0, -0.4, 0.3]), strict=True):
+        g[point] = g[point] @ rotation_vector_to_matrix(torch.tensor([turn])).to(g)[0]
+    retried = retry_speckle(indexer, patterns, phase, g, score, entry, shape=(rows, cols))
+    assert retried.changed.tolist() == [i in speckle for i in range(rows * cols)]
+    assert retried.tried == len(speckle)
+    error = _error_deg(torch.as_tensor(retried.g), rotations, point_group)
+    assert max(error) < 0.5, error
 
 
 # --- the fused kernels ------------------------------------------------------------

@@ -302,12 +302,15 @@ the other candidates are refined too, all of a buffer's in one launch, and the
 one whose refined orientation matches its pattern best (the normalized
 cross-correlation at the refine shape against the unblurred master) wins, with
 its entry. On the fused path this runs in buffers made with the indexer.
+The in-plane search takes one candidate only: it keeps a pattern's best entry
+and no pool, and its seeds land in the wrong basin far less often.
 
 After a scan, :func:`~de_ebsd.index.live.retry_speckle` re-tries each speckled
 point from its own orientation and its four neighbors'
 (:func:`~de_ebsd.index.neighbors.neighbor_seeds`,
 :meth:`~de_ebsd.index.LiveIndexer.retry`), and keeps a neighbor's only where it
-matches the pattern better, so a real one-point grain stays.
+matches the pattern better, so a real one-point grain stays. It needs no
+dictionary, so it runs with either search.
 
 On a simulated 128 x 128 Ni scan (60 grains, 128-pixel frames with 16 counts a
 pixel, 3 degree dictionary, ``fit=True``, a Titan X), 1.39 % of the points
