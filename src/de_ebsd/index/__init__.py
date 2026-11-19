@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib
 
 __all__ = [
+    "AppearanceFit",
+    "DetectorAppearance",
     "DictionaryIndexer",
     "HREBSDResult",
     "LiveIndexer",
@@ -21,10 +23,12 @@ __all__ = [
     "bin_pattern",
     "determine_pattern_center",
     "dictionary_scores",
+    "fit_appearance",
     "hrebsd",
     "master_from_emsoft",
     "merge_phases",
     "orientation_similarity_map",
+    "load_appearance",
     "phase_from_cif",
     "phase_from_crystal",
     "looks_like_kikuchi",
@@ -36,11 +40,17 @@ __all__ = [
     "remove_static_background",
     "sample_orientations",
     "search_pattern_center",
+    "select_patterns",
     "solve_pattern_center",
     "to_crystal_map",
 ]
 
 _ORIGIN = {
+    "AppearanceFit": "de_ebsd.index.appearance",
+    "DetectorAppearance": "de_ebsd.index.appearance",
+    "fit_appearance": "de_ebsd.index.appearance",
+    "load_appearance": "de_ebsd.index.appearance",
+    "select_patterns": "de_ebsd.index.appearance",
     "DictionaryIndexer": "de_ebsd.index.dictionary",
     "sample_orientations": "de_ebsd.index.dictionary",
     "dictionary_scores": "de_ebsd.index.dictionary",

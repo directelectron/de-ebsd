@@ -1,0 +1,1 @@
+An energy-resolved :class:`~de_ebsd.sim.MasterPattern` kept the Monte Carlo weight each energy carries (:attr:`~de_ebsd.sim.MasterPattern.energy_weights`, saved and loaded with it), and :meth:`~de_ebsd.sim.MasterPattern.collapse` summed its energies into one map, with those weights or others.

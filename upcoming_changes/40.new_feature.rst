@@ -1,0 +1,1 @@
+:func:`~de_ebsd.index.appearance.fit_appearance` fitted how a detector sees the master on a scan's own indexed patterns -- energy weights, point spread, contrast and a residual background -- and built the master :class:`~de_ebsd.index.live.LiveIndexer` matches against from the fit, the indexer removing the fitted background from the real patterns.
