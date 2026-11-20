@@ -9,6 +9,25 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.7.0 (2026-11-19)
+==================
+
+API and Behaviour Changes
+-------------------------
+
+- Orientations and strains came out in OIM's (EDAX TSL) sample frame with no turn, as a real scan re-indexed by OIM confirmed, so :func:`~de_ebsd.core.frames.scan_euler`, :func:`~de_ebsd.core.frames.to_scan_frame` and :func:`~de_ebsd.core.frames.scan_tensor` no longer turned them 90 degrees about the surface normal and were deprecated, ``SCAN_TURN`` was removed, and ``Match.orientation`` and ``PhaseDictionary.orientations`` were deprecated in favor of their ``euler``. (`#42 <https://github.com/directelectron/de-ebsd/pull/42>`_)
+
+
+New Features
+------------
+
+- :class:`~de_ebsd.index.LiveIndexer` took ``candidates=K`` to refine each pattern from up to K distinct search entries and keep the one that matches it best, which on a simulated Ni scan cut the points indexed more than 5 degrees off from 1.4 % to 0.3 % at four candidates, for about a quarter of the throughput; the default is still one. (`#39 <https://github.com/directelectron/de-ebsd/pull/39>`_)
+- An energy-resolved :class:`~de_ebsd.sim.MasterPattern` kept the Monte Carlo weight each energy carries (:attr:`~de_ebsd.sim.MasterPattern.energy_weights`, saved and loaded with it), and :meth:`~de_ebsd.sim.MasterPattern.collapse` summed its energies into one map, with those weights or others. (`#40 <https://github.com/directelectron/de-ebsd/pull/40>`_)
+- :func:`~de_ebsd.index.appearance.fit_appearance` fitted how a detector sees the master on a scan's own indexed patterns -- energy weights, point spread, contrast and a residual background -- and built the master :class:`~de_ebsd.index.live.LiveIndexer` matches against from the fit, the indexer removing the fitted background from the real patterns. (`#40 <https://github.com/directelectron/de-ebsd/pull/40>`_)
+- :class:`~de_ebsd.index.live.LiveIndexer` took ``search="inplane"``, a dictionary search with the in-plane rotation factored out, which on simulated Ni, Ti and Fe scans at 12 counts a pixel left 0-0.21 % of patterns more than 5 degrees off where the flat dictionary at the same step left 0.06-0.73 %, indexed with ``fit=True`` 1.8-2.5 times faster at 2 degrees and 2.7-5.3 times faster at 1.5 and 1 degree on a Titan X, held 1/40 to 1/80 of the flat dictionary's memory, and built in under a second. It takes one search candidate (``candidates=1``); :func:`~de_ebsd.index.live.retry_speckle` re-tries its speckle from the neighbors as it does the flat search's. (`#41 <https://github.com/directelectron/de-ebsd/pull/41>`_)
+- :func:`~de_ebsd.index.live.retry_speckle` re-tried a finished scan's speckle (points that agree with none of their neighbors, :func:`~de_ebsd.index.neighbors.speckle_fraction`) from their neighbors' orientations, keeping one only where it matched the pattern better.
+
+
 0.6.0 (2026-11-13)
 ==================
 
