@@ -10,6 +10,12 @@ A map is a grid ``(rows, cols)`` of orientations, as rotation matrices ``(rows, 
 3, 3)`` (sample to crystal, as :class:`~de_ebsd.index.live.LiveIndexer` gives them)
 or orix-ordered quaternions ``(rows, cols, 4)``, NumPy or torch; the neighbors of a
 point are the four sharing an edge with it.
+
+A pattern on a grain boundary is a blend of both grains' patterns, and its best
+match may be neither: a rim of such points along the boundary, each agreeing
+with its rim neighbors and with neither grain. Those are not speckle, but they
+score low; :func:`neighbor_seeds` takes them by score too, and seeds them from
+the points a few steps away on either side (*radius*).
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ __all__ = [
     "NeighborSeeds",
     "neighbor_misorientation",
     "neighbor_seeds",
+    "seed_offsets",
     "speckle_fraction",
     "speckled",
 ]
@@ -37,13 +44,32 @@ SPECKLE_DEG = 5.0
 #: :func:`neighbor_misorientation` and :class:`NeighborSeeds` keeps them.
 NEIGHBORS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
+#: The eight directions a seed further than one step is taken along.
+DIRECTIONS = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
 
-def neighbor_slices(shape) -> Iterator[tuple[int, tuple[slice, slice], tuple[slice, slice]]]:
-    """For each of :data:`NEIGHBORS`: ``(number, here, there)``, *here* the points
-    of a ``(rows, cols)`` grid that have that neighbor and *there* the neighbors,
-    as slices of the grid, so ``grid[here]`` and ``grid[there]`` line up."""
+
+def seed_offsets(radius: int = 1) -> tuple[tuple[int, int], ...]:
+    """The (row, column) offsets a point is seeded from: its four :data:`NEIGHBORS`
+    at *radius* 1, else each of the eight :data:`DIRECTIONS` at every step from 1
+    to *radius*, so that a rim up to *radius* - 1 points wide still has both
+    grains beyond it."""
+    radius = int(radius)
+    if radius < 1:
+        raise ValueError("radius must be at least 1")
+    if radius == 1:
+        return NEIGHBORS
+    return tuple((dr * k, dc * k) for k in range(1, radius + 1) for dr, dc in DIRECTIONS)
+
+
+def neighbor_slices(
+    shape, offsets=NEIGHBORS
+) -> Iterator[tuple[int, tuple[slice, slice], tuple[slice, slice]]]:
+    """For each of *offsets* (:data:`NEIGHBORS` by default): ``(number, here,
+    there)``, *here* the points of a ``(rows, cols)`` grid that have that neighbor
+    and *there* the neighbors, as slices of the grid, so ``grid[here]`` and
+    ``grid[there]`` line up."""
     rows, cols = int(shape[0]), int(shape[1])
-    for number, (dr, dc) in enumerate(NEIGHBORS):
+    for number, (dr, dc) in enumerate(offsets):
         here = (slice(max(0, -dr), rows - max(0, dr)), slice(max(0, -dc), cols - max(0, dc)))
         there = (slice(max(0, dr), rows + min(0, dr)), slice(max(0, dc), cols + min(0, dc)))
         yield number, here, there
@@ -159,24 +185,26 @@ def speckle_fraction(
 
 @dataclass
 class NeighborSeeds:
-    """Seeds to retry a map's speckle with: each speckled point's own orientation and
-    its four neighbors'.
+    """Seeds to retry a map's points with: each point's own orientation and its
+    neighbors' (:func:`seed_offsets`; the four sharing an edge, at radius 1).
 
     Attributes
     ----------
     points
-        ``(M,)`` the speckled points' flat (row-major) indices into the map.
+        ``(M,)`` the retried points' flat (row-major) indices into the map.
     rotations
-        ``(M, 5, 3, 3)`` float32: each point's own orientation first, so that a retry
-        keeps it unless a neighbor's scores better, then its four neighbors'
-        (:data:`NEIGHBORS`), the point's own again where it has no such neighbor.
+        ``(M, S, 3, 3)`` float32: each point's own orientation first, so that a retry
+        keeps it unless a neighbor's scores better, then its neighbors' in
+        :func:`seed_offsets` order, the point's own again where it has no such
+        neighbor.
     phases
-        ``(M, 5)`` int64: the seeds' phases.
+        ``(M, S)`` int64: the seeds' phases.
     entries
-        ``(M, 5)`` int64: the seeds' dictionary entries, where the map's were
+        ``(M, S)`` int64: the seeds' dictionary entries, where the map's were
         given, else -1.
     valid
-        ``(M, 5)`` booleans: whether the seed exists (the point's own always does).
+        ``(M, S)`` booleans: whether the seed is one (the point's own always is): a
+        neighbor off the map, or one that is retried itself, is not.
     """
 
     points: np.ndarray
@@ -196,10 +224,19 @@ def neighbor_seeds(
     entry=None,
     *,
     threshold_deg: float = SPECKLE_DEG,
+    score=None,
+    score_fraction: float | None = None,
+    radius: int = 1,
 ) -> NeighborSeeds:
-    """The map's speckled points (:func:`speckled`) and their neighbors' orientations,
-    phases and dictionary entries, to give :meth:`LiveIndexer.retry
+    """The map's points to retry and their neighbors' orientations, phases and
+    dictionary entries, to give :meth:`LiveIndexer.retry
     <de_ebsd.index.live.LiveIndexer.retry>` as seeds.
+
+    The points retried are the speckled (:func:`speckled`) and, with *score* and
+    *score_fraction*, those scoring below *score_fraction* of the map's median
+    score: a boundary's rim, which agrees with its own neighbors along the rim. A
+    retried point is not a seed for another, so a rim is seeded from the grains
+    on either side of it, up to *radius* steps out (:func:`seed_offsets`).
 
     Parameters
     ----------
@@ -209,25 +246,37 @@ def neighbor_seeds(
         ``(rows, cols)`` the map's dictionary entries (as
         :meth:`LiveIndexer.index <de_ebsd.index.live.LiveIndexer.index>` returns
         them), carried along so a retried point keeps an entry; None for none.
+    score, score_fraction
+        ``(rows, cols)`` the map's scores, and the share of their median below
+        which a point is retried too; None for speckle alone.
+    radius
+        How far out the seeds are taken from: 1, the four neighbors, or more.
     """
     g = _matrices(orientations)
     rows, cols = g.shape[:2]
     phase = np.zeros((rows, cols), dtype=np.int64) if phase is None else _numpy(phase)
     entry = np.full((rows, cols), -1, dtype=np.int64) if entry is None else _numpy(entry)
     mask = speckled(g, symmetries, phase, threshold_deg=threshold_deg)
-    # each point itself, then its neighbors, as a (rows, cols, 5) stack: the point
+    if score is not None and score_fraction is not None:
+        score = _numpy(score).astype(np.float64).reshape(rows, cols)
+        finite = np.isfinite(score)
+        if finite.any():
+            floor = float(score_fraction) * float(np.median(score[finite]))
+            mask = mask | (finite & (score < floor))
+    offsets = seed_offsets(radius)
+    # each point itself, then its neighbors, as a (rows, cols, S) stack: the point
     # itself again where it has no such neighbor
-    seeds = 1 + len(NEIGHBORS)
+    seeds = 1 + len(offsets)
     rotations = np.repeat(g[:, :, None], seeds, 2)
     phases = np.repeat(phase[:, :, None], seeds, 2).astype(np.int64)
     entries = np.repeat(entry[:, :, None], seeds, 2).astype(np.int64)
     valid = np.zeros((rows, cols, seeds), dtype=bool)
     valid[:, :, 0] = True
-    for number, here, there in neighbor_slices((rows, cols)):
+    for number, here, there in neighbor_slices((rows, cols), offsets):
         rotations[here + (1 + number,)] = g[there]
         phases[here + (1 + number,)] = phase[there]
         entries[here + (1 + number,)] = entry[there]
-        valid[here + (1 + number,)] = True
+        valid[here + (1 + number,)] = ~mask[there]
     points = np.flatnonzero(mask)
     flat = rows * cols
     return NeighborSeeds(

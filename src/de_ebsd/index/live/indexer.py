@@ -234,8 +234,7 @@ class LiveIndexer:
     candidates
         How many of the search's distinct best entries each pattern may be refined
         from, the refined orientation that matches its pattern best winning; see
-        :meth:`set_candidates`. One, the default, refines the search's best alone,
-        and the only choice with ``search="inplane"``.
+        :meth:`set_candidates`. One, the default, refines the search's best alone.
     recheck_margin, recheck_score
         With several *candidates*, only the patterns whose search found a distinct
         runner-up within *recheck_margin* of its best, or whose best refined to a
@@ -423,25 +422,29 @@ class LiveIndexer:
         that :attr:`recheck_margin` and :attr:`recheck_score` pick. On the fused
         path the buffers are made here, so indexing still allocates nothing.
 
-        The in-plane search (``search="inplane"``) keeps its best entry alone, so
-        it takes one candidate only: its seeds are seldom in the wrong basin, and
-        :func:`~de_ebsd.index.live.retry_speckle` re-tries a finished scan's
-        speckle from its neighbors with either search."""
+        The in-plane search (``search="inplane"``) pools each template's best
+        in-plane angle the same way, its templates standing for the blocks: a
+        pattern on a grain boundary, a blend of both grains', then has both grains
+        among its candidates, and keeps the one whose refined orientation matches
+        it best rather than a third that matched the blend's search best. On the
+        in-plane path the candidate search allocates its scores per chunk of
+        templates."""
         count = int(count)
         if count < 1:
             raise ValueError("candidates must be at least 1")
-        if count > 1 and self.inplane is not None:
-            raise ValueError('search="inplane" takes one candidate only')
         self.candidates = count
         self.candidate_buffers = None
         if self.workspace is not None and count > 1:
             self.candidate_buffers = self._candidate_buffers(self.workspace.capacity)
 
     def _candidate_buffers(self, capacity: int) -> CandidateBuffers:
-        width = min(len(self.rotations), SEARCH_CHUNK)
+        if self.inplane is not None:
+            blocks = 1
+        else:
+            blocks = max(1, min(len(self.rotations), SEARCH_CHUNK) // CANDIDATE_BLOCK)
         return CandidateBuffers(
             capacity,
-            blocks=max(1, width // CANDIDATE_BLOCK),
+            blocks=blocks,
             pool=max(CANDIDATE_POOL, 2 * self.candidates),
             candidates=self.candidates,
             operators=self.trace_weights.shape[1],
@@ -749,12 +752,16 @@ class LiveIndexer:
         first: ``(phase, g, score, entry, distinct)``, each ``(N, candidates, ...)``.
         The first is :meth:`search`'s best; *distinct* is False where a pattern has
         fewer distinct entries than that, its places then holding repeats. See
-        :meth:`set_candidates`. The flat search's only."""
-        if self.inplane is not None:
-            raise ValueError('search="inplane" has no candidate search')
+        :meth:`set_candidates`. The in-plane search reads the search rows drawn up
+        to the refine shape, as :meth:`search` does without refine rows."""
         n = len(search_rows)
         buffers = self._candidate_buffers(n)
-        self._search_candidates(search_rows.to(self.dtype), buffers, None)
+        if self.inplane is not None:
+            images = search_rows.float().view(n, 1, *self.search_shape)
+            images = torch.nn.functional.interpolate(images, size=self.refine_shape)
+            self._search_inplane_candidates(images.view(n, -1), buffers, None)
+        else:
+            self._search_candidates(search_rows.to(self.dtype), buffers, None)
         columns = (buffers.phase, buffers.rotations, buffers.score, buffers.entry)
         return (*(column[:n].clone() for column in columns), buffers.distinct[:n].clone())
 
@@ -794,6 +801,58 @@ class LiveIndexer:
                 self._merge_into_pool(tail_score, tail_entry, buffers)
         torch.isneginf(buffers.pool_score[:n], out=buffers.invalid[:n])
         self._drop_near_duplicates(n, buffers)
+
+    def _search_inplane_candidates(self, refine_rows, buffers: CandidateBuffers, centers):
+        """The in-plane candidate search into *buffers*: per chunk of templates,
+        each template's best in-plane angle, ranked into each pattern's pool like a
+        flat block's best, then the near-duplicates dropped. The scores of one
+        chunk, ``(thetas, chunk, N)``, are the most it holds at once; *centers*
+        are :meth:`search`'s *pattern_centers*."""
+        search = self.inplane
+        search.prepare_mask()
+        n = len(refine_rows)
+        if centers is not None:
+            centers = np.asarray(centers, dtype=np.float64)
+        buffers.pool_score[:n].fill_(-math.inf)
+        buffers.pool_entry[:n].zero_()
+        t, f = search.thetas, search.frequencies
+        for first in range(0, n, search.capacity):
+            last = min(n, first + search.capacity)
+            here = None if centers is None else centers[first:last]
+            operands = search.operands(search._source(refine_rows[first:last]), here)
+            view = _PoolView(buffers, first, last)
+            for lo in range(0, search.template_count, search.chunk):
+                hi = min(search.template_count, lo + search.chunk)
+                spectra = search.spectra[:, lo:hi]
+                products = torch.stack([spectra @ operands[0], spectra @ operands[1]])
+                scores = (search._angle_weights_typed @ products.view(2 * f, -1)).float()
+                scores = scores.view(t, hi - lo, last - first)
+                scores.mul_(search.inverse_energy[:, lo:hi, None])
+                value, angle = scores.max(0)
+                value = value.to(buffers.slice_score.dtype)
+                templates = torch.arange(lo, hi, device=self.device, dtype=torch.int64)
+                entry = angle.add_(templates[:, None] * t)
+                for start in range(0, hi - lo, CANDIDATE_SLICE):
+                    stop = min(hi - lo, start + CANDIDATE_SLICE)
+                    self._pool_slice(
+                        value[start:stop].T.contiguous(), entry[start:stop].T.contiguous(), view
+                    )
+        torch.isneginf(buffers.pool_score[:n], out=buffers.invalid[:n])
+        self._drop_near_duplicates(n, buffers)
+
+    def _entry_rotations_into(self, entries, out) -> torch.Tensor:
+        """The orientations of dictionary *entries* (flat, as :meth:`search` numbers
+        them) into *out*."""
+        if self.inplane is not None:
+            return out.copy_(self.inplane.entry_rotations(entries))
+        return torch.index_select(self.rotations, 0, entries, out=out)
+
+    def _entry_phases_into(self, entries, out) -> torch.Tensor:
+        """The phases of dictionary *entries* into *out*."""
+        if self.inplane is not None:
+            phases = self.inplane.template_phase
+            return torch.index_select(phases, 0, entries // self.inplane.thetas, out=out)
+        return torch.index_select(self.phase_of, 0, entries, out=out)
 
     def _block_starts(self, whole: int) -> torch.Tensor:
         """The first entry of each of *whole* blocks, kept on the device."""
@@ -836,8 +895,8 @@ class LiveIndexer:
         the candidate separation of a better one of their phase, into *buffers*."""
         pool, count = buffers.pool, buffers.candidates
         entries = buffers.pool_entry[:n].view(-1)
-        g = torch.index_select(self.rotations, 0, entries, out=buffers.pool_rotations[: n * pool])
-        phase = torch.index_select(self.phase_of, 0, entries, out=buffers.pool_phase[: n * pool])
+        g = self._entry_rotations_into(entries, buffers.pool_rotations[: n * pool])
+        phase = self._entry_phases_into(entries, buffers.pool_phase[: n * pool])
         # every pair's turn g_i g_j^T in one product, (n, 3 pool, 3 pool), then laid
         # out as nine numbers a pair, whose product with the operators gives
         # trace(S g_i g_j^T) for every operator of every phase
@@ -878,10 +937,8 @@ class LiveIndexer:
         entry = torch.gather(buffers.pool_entry[:n], 1, pick, out=buffers.entry[:n])
         torch.gather(buffers.pool_score[:n], 1, pick, out=buffers.score[:n])
         torch.gather(suppressed, 1, pick, out=buffers.distinct[:n]).logical_not_()
-        torch.index_select(self.phase_of, 0, entry.view(-1), out=buffers.phase[:n].view(-1))
-        torch.index_select(
-            self.rotations, 0, entry.view(-1), out=buffers.rotations[:n].view(-1, 3, 3)
-        )
+        self._entry_phases_into(entry.view(-1), buffers.phase[:n].view(-1))
+        self._entry_rotations_into(entry.view(-1), buffers.rotations[:n].view(-1, 3, 3))
 
     def _earlier(self, pool: int) -> torch.Tensor:
         """``(pool, pool)``: True where the column is a better place than the row."""
@@ -1239,10 +1296,13 @@ class LiveIndexer:
         if buffers is None:
             phase, g, _, entry = self._search_in_workspace(search_rows, refine_rows)
         else:
-            rows = search_rows
-            if workspace.typed_search_rows is not None:
-                rows = workspace.typed_search_rows[:n].copy_(search_rows)
-            self._search_candidates(rows, buffers, workspace)
+            if self.inplane is not None:
+                self._search_inplane_candidates(refine_rows, buffers, None)
+            else:
+                rows = search_rows
+                if workspace.typed_search_rows is not None:
+                    rows = workspace.typed_search_rows[:n].copy_(search_rows)
+                self._search_candidates(rows, buffers, workspace)
             phase = workspace.phase[:n].copy_(buffers.phase[:n, 0])
             g = workspace.seed[:n].copy_(buffers.rotations[:n, 0])
             entry = workspace.entry[:n].copy_(buffers.entry[:n, 0])
@@ -1280,7 +1340,14 @@ class LiveIndexer:
             return phase, g, score, entry
         n = len(search_rows)
         buffers = self._candidate_buffers(n)
-        self._search_candidates(search_rows.to(self.dtype), buffers, None)
+        if self.inplane is not None:
+            if refine_rows is None:
+                images = search_rows.float().view(n, 1, *self.search_shape)
+                images = torch.nn.functional.interpolate(images, size=self.refine_shape)
+                refine_rows = images.view(n, -1)
+            self._search_inplane_candidates(refine_rows, buffers, pattern_centers)
+        else:
+            self._search_candidates(search_rows.to(self.dtype), buffers, None)
         phase = buffers.phase[:n, 0].clone()
         entry = buffers.entry[:n, 0].clone()
         g, score = self.refine(refine_rows, phase, buffers.rotations[:n, 0].contiguous())
@@ -1454,3 +1521,21 @@ def _stack(frames) -> torch.Tensor:
     ``(H, W)`` frame as a stack of one."""
     t = as_frames(frames)
     return t[None] if t.ndim == 2 else t
+
+
+class _PoolView:
+    """Rows *first*:*last* of a :class:`CandidateBuffers`' pool and the scratch
+    :meth:`LiveIndexer._pool_slice` ranks into, as the buffers themselves: the
+    in-plane candidate search fills a pool a capacity of patterns at a time."""
+
+    def __init__(self, buffers: CandidateBuffers, first: int, last: int) -> None:
+        self._buffers = buffers
+        self.pool = buffers.pool
+        self.pool_score = buffers.pool_score[first:last]
+        self.pool_entry = buffers.pool_entry[first:last]
+        self.merged_score = buffers.merged_score[first:last]
+        self.merged_entry = buffers.merged_entry[first:last]
+        self.order = buffers.order[first:last]
+
+    def __getattr__(self, name):
+        return getattr(self._buffers, name)
