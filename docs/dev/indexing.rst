@@ -330,6 +330,25 @@ patterns rechecked, 29,000 patterns a second against 38,000), and none after the
 post-scan retry. ``scripts/benchmark_speckle.py`` measures it;
 ``scripts/compare_speckle.py`` compares the settings on a saved scan.
 
+On a grain boundary the step is the main lever. A boundary's patterns blend both
+grains', and at a coarse step neither grain may have an entry near enough to win:
+the blend's best is a third orientation, and the refine polishes it. On a real
+500 x 500 Ni scan (128-pixel patterns, the in-plane search, ``fit=True``), the
+points indexed at an orientation more than 5 degrees from every reference point
+within three steps of them were:
+
+====  ==============  ===============
+step  one candidate   two candidates
+====  ==============  ===============
+3     223             97
+2     5               3
+1.5   5               4
+====  ==============  ===============
+
+At 1.5 degrees with two candidates, 1,219 points (0.5 %) were more than 5
+degrees from the reference, nearly all a point to one side of where it put a
+boundary, at 17,200 patterns a second on a Titan X.
+
 Calibrating the pattern center
 ------------------------------
 
