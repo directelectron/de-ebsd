@@ -346,8 +346,7 @@ step  one candidate   two candidates
 ====  ==============  ===============
 
 At 1.5 degrees with two candidates, 1,219 points (0.5 %) were more than 5
-degrees from the reference, nearly all a point to one side of where it put a
-boundary, at 17,200 patterns a second on a Titan X.
+degrees from the reference, at 17,200 patterns a second on a Titan X.
 
 Calibrating the pattern center
 ------------------------------
