@@ -438,16 +438,94 @@ def test_the_flat_search_takes_no_inplane_options(master, point_group, detector)
         LiveIndexer([master], [point_group], detector, search="spherical")
 
 
-def test_the_inplane_search_takes_one_candidate(master, point_group, detector, indexer):
-    """The in-plane search keeps its best entry alone: several candidates are said
-    to be the flat search's, not ignored."""
-    with pytest.raises(ValueError, match="one candidate"):
-        _inplane(master, point_group, detector, candidates=2)
-    with pytest.raises(ValueError, match="one candidate"):
-        indexer.set_candidates(3)
-    assert indexer.candidates == 1
-    with pytest.raises(ValueError, match="no candidate search"):
-        indexer.search_candidates(indexer.prepare(master.project(detector, _known()))[0])
+def test_the_inplane_search_takes_several_candidates(master, point_group, detector, indexer):
+    """With two candidates the in-plane search pools each template's best angle:
+    its first candidate is the plain search's best, and known patterns index as
+    well as with one."""
+    two = _inplane(master, point_group, detector, candidates=2)
+    rotations = _known()
+    search_rows, refine_rows = two.prepare(master.project(detector, rotations))
+    _, _, _, entry = indexer.search(search_rows)
+    _, g, score, entries, distinct = two.search_candidates(search_rows)
+    assert entries.shape == (rotations.size, 2)
+    assert torch.equal(entries[:, 0], entry)
+    assert torch.all(score[:, 0] >= score[:, 1])
+    _, g, _, _ = two.index(master.project(detector, rotations))
+    assert max(_error_deg(g, rotations, point_group)) < 0.5
+
+
+def _neighbors(count, angle_deg, seed):
+    """*count* pairs of orientations *angle_deg* apart about random axes."""
+    first = _random(count, seed)
+    axes = np.random.default_rng(seed).normal(size=(count, 3))
+    turn = Rotation.from_axes_angles(
+        axes / np.linalg.norm(axes, axis=1, keepdims=True), np.radians(angle_deg)
+    )
+    return first, turn * first
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])
+def test_a_boundary_blend_is_indexed_as_one_of_its_grains(master, point_group, detector, device):
+    """A pattern on a grain boundary is a blend of both grains' patterns: with two
+    candidates each blend, at weights 0.3 to 0.7, indexes as one of its two grains,
+    never a third orientation."""
+    first, second = _neighbors(20, 20.0, seed=3)
+    a = master.project(detector, first).float()
+    b = master.project(detector, second).float()
+    indexer = _inplane(master, point_group, detector, device=device, candidates=2)
+    for weight in (0.3, 0.4, 0.5, 0.6, 0.7):
+        _, g, _, _ = indexer.index((weight * a + (1 - weight) * b).to(device))
+        nearest = np.minimum(_error_deg(g, first, point_group), _error_deg(g, second, point_group))
+        assert max(nearest) < 3.0, (weight, nearest)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])
+def test_a_low_score_retry_puts_a_boundary_rim_right(master, point_group, detector, device):
+    """Two grains 20 degrees apart with a rim of blended patterns between them, each
+    rim point put in a wrong orientation that agrees with the rim but with neither
+    grain, and a real one-point grain inside the left one. The rim is no speckle;
+    retried by its low score and seeded two steps out, each rim point becomes one
+    of its two grains, and the one-point grain stays."""
+    rows, cols = 6, 8
+    grains, others = _neighbors(1, 20.0, seed=5)
+    lonely = _random(1, 11)
+    column = np.arange(rows * cols) % cols
+    rim = (column == 3) | (column == 4)
+    rotations = Rotation(np.where((column < 4)[:, None], grains.data, others.data))
+    patterns = master.project(detector, rotations).float()
+    left = master.project(detector, grains).float()
+    right = master.project(detector, others).float()
+    patterns[rim] = 0.5 * left + 0.5 * right
+    lonely_point = 1 * cols + 1
+    patterns[lonely_point] = master.project(detector, lonely).float()[0]
+    patterns = patterns.to(device)
+    indexer = _inplane(master, point_group, detector, device=device)
+    phase, g, score, entry = indexer.index(patterns)
+    g = g.clone()
+    wrong = torch.as_tensor(_random(1, 13).to_matrix(), dtype=g.dtype, device=g.device)[0]
+    g[torch.as_tensor(rim, device=g.device)] = wrong
+    score = score.clone()
+    floor = float(score.median())
+    assert bool(torch.all(score[torch.as_tensor(rim, device=score.device)] < 0.9 * floor))
+    retried = retry_speckle(
+        indexer,
+        patterns,
+        phase,
+        g,
+        score,
+        entry,
+        shape=(rows, cols),
+        score_fraction=0.9,
+        radius=2,
+    )
+    found = torch.as_tensor(retried.g)
+    nearest = np.minimum(
+        _error_deg(found[rim], Rotation(np.repeat(grains.data, rim.sum(), 0)), point_group),
+        _error_deg(found[rim], Rotation(np.repeat(others.data, rim.sum(), 0)), point_group),
+    )
+    assert max(nearest) < 3.0, nearest
+    assert _error_deg(found[lonely_point : lonely_point + 1], lonely, point_group)[0] < 0.5
+    assert not retried.changed[~rim].any()
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])

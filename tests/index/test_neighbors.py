@@ -10,6 +10,7 @@ from de_ebsd.index.neighbors import (
     NEIGHBORS,
     neighbor_misorientation,
     neighbor_seeds,
+    seed_offsets,
     speckle_fraction,
     speckled,
 )
@@ -106,3 +107,42 @@ def test_no_speckle_no_seeds():
     seeds = neighbor_seeds(q, Oh)
     assert len(seeds) == 0
     assert seeds.rotations.shape == (0, 5, 3, 3)
+
+
+def test_a_rim_is_retried_by_its_score_and_seeded_from_both_grains():
+    """Two grains with a two-point-wide rim between them, agreeing with itself and
+    with neither grain: no speckle, but with a score floor the rim is retried, and
+    its seeds (radius 3) include both grains and never another rim point."""
+    left, _ = _grain((6, 9), seed=1)
+    right, _ = _grain((6, 9), seed=2)
+    rim, _ = _grain((6, 9), seed=3)
+    q = np.where((np.arange(9) < 4)[None, :, None], left, right)
+    q[:, 4:6] = rim[:, 4:6]
+    score = np.full((6, 9), 0.6)
+    score[:, 4:6] = 0.2
+    assert not speckled(q, Oh).any()
+    seeds = neighbor_seeds(q, Oh, score=score, score_fraction=0.6, radius=3)
+    flat = np.arange(54).reshape(6, 9)
+    assert sorted(seeds.points.tolist()) == sorted(flat[:, 4:6].ravel().tolist())
+    assert seeds.rotations.shape[1] == 1 + len(seed_offsets(3)) == 25
+    matrices = Rotation(q.reshape(-1, 4)).to_matrix().reshape(6, 9, 3, 3)
+    for point, rotations, valid in zip(seeds.points, seeds.rotations, seeds.valid, strict=True):
+        r, c = divmod(int(point), 9)
+        sources = []
+        for (dr, dc), ok, g in zip(seed_offsets(3), valid[1:], rotations[1:], strict=True):
+            if ok:
+                rr, cc = r + dr, c + dc
+                assert not 4 <= cc <= 5, "a rim point seeds another"
+                assert np.allclose(g, matrices[rr, cc], atol=1e-6)
+                sources.append("left" if cc < 4 else "right")
+        assert {"left", "right"} <= set(sources)
+
+
+def test_without_a_score_floor_the_seeds_are_the_speckles_as_before():
+    q, _ = _grain((4, 5))
+    q[0, 2] = _random(1, 3).data
+    score = np.full((4, 5), 0.5)
+    assert neighbor_seeds(q, Oh, score=score).points.tolist() == [2]
+    assert seed_offsets(1) == NEIGHBORS
+    with pytest.raises(ValueError, match="radius"):
+        seed_offsets(0)

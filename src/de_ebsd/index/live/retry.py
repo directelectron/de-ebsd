@@ -8,6 +8,12 @@ refined again from its own orientation and from each neighbor's, and the one tha
 matches its pattern best is kept (:meth:`LiveIndexer.retry
 <de_ebsd.index.live.LiveIndexer.retry>`). A point a neighbor's orientation does
 not match better keeps its own, so a real one-point grain stays.
+
+A grain boundary leaves a different mistake: a rim of points whose patterns blend
+both grains', matched by an orientation that is neither. The rim agrees with
+itself along the boundary, so it is not speckle; it is found by its low score
+(*score_fraction*) and seeded from the grains a few steps out on either side
+(*radius*).
 """
 
 from __future__ import annotations
@@ -64,8 +70,11 @@ def retry_speckle(
     threshold_deg: float = SPECKLE_DEG,
     rounds: int = 2,
     fit: bool = False,
+    score_fraction: float | None = None,
+    radius: int = 1,
 ) -> RetriedMap:
-    """Retry a finished scan's speckle from its neighbors' orientations.
+    """Retry a finished scan's speckle, and its low-scoring points, from their
+    neighbors' orientations.
 
     Parameters
     ----------
@@ -92,6 +101,14 @@ def retry_speckle(
         Fit the retried orientations, as ``index(..., fit=True)`` does; pass what
         the scan was indexed with, so a retried point's score compares with its
         neighbors'.
+    score_fraction
+        Retry too the points scoring below this share of the map's median score
+        (a grain boundary's rim); None for speckle alone. See
+        :func:`~de_ebsd.index.neighbors.neighbor_seeds`.
+    radius
+        How many steps out the seeds are taken from: 1, the four neighbors, or
+        more, the eight directions at each step
+        (:func:`~de_ebsd.index.neighbors.seed_offsets`).
     """
     rows, cols = int(shape[0]), int(shape[1])
     phase = _numpy(phase).astype(np.int64).copy()
@@ -113,6 +130,9 @@ def retry_speckle(
             phase.reshape(rows, cols),
             entry.reshape(rows, cols),
             threshold_deg=threshold_deg,
+            score=score.reshape(rows, cols),
+            score_fraction=score_fraction,
+            radius=radius,
         )
         if not len(seeds):
             break

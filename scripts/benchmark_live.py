@@ -222,6 +222,7 @@ def build(args, master, point_group, detector, search, step, device):
         refine_steps_deg=fitted_refine_steps_deg(device),
         device=device,
         dtype=dtype,
+        candidates=args.candidates,
         **options,
     )
 
@@ -396,6 +397,9 @@ def main():
     parser.add_argument("--dtype", choices=("auto", "float32", "float16"), default="auto")
     parser.add_argument("--memory-mb", type=float, help="the in-plane search's working memory")
     parser.add_argument("--json", help="append one JSON line per row to this file")
+    parser.add_argument(
+        "--candidates", type=int, default=1, help="the candidates each pattern is refined from"
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.master):

@@ -302,15 +302,26 @@ the other candidates are refined too, all of a buffer's in one launch, and the
 one whose refined orientation matches its pattern best (the normalized
 cross-correlation at the refine shape against the unblurred master) wins, with
 its entry. On the fused path this runs in buffers made with the indexer.
-The in-plane search takes one candidate only: it keeps a pattern's best entry
-and no pool, and its seeds land in the wrong basin far less often.
+The in-plane search pools the same way, each template's best in-plane angle
+standing for a block's best: a chunk of templates is scored, each template's
+best angle kept, and those ranked into each pattern's pool, so no more than one
+chunk's scores are held at once. A pattern on a grain boundary blends both
+grains' patterns, and its search's best may match the blend and neither grain;
+with two candidates both grains are among them, and the one whose refined
+orientation matches the pattern best is kept.
 
 After a scan, :func:`~de_ebsd.index.live.retry_speckle` re-tries each speckled
 point from its own orientation and its four neighbors'
 (:func:`~de_ebsd.index.neighbors.neighbor_seeds`,
 :meth:`~de_ebsd.index.LiveIndexer.retry`), and keeps a neighbor's only where it
 matches the pattern better, so a real one-point grain stays. It needs no
-dictionary, so it runs with either search.
+dictionary, so it runs with either search. A boundary's rim -- a line of blended
+patterns, each matched by an orientation that is neither grain's -- agrees with
+itself along the boundary and is no speckle; with ``score_fraction`` the points
+scoring below that share of the map's median are retried too, and with
+``radius`` their seeds are taken from the eight directions up to that many steps
+out (:func:`~de_ebsd.index.neighbors.seed_offsets`), never from another retried
+point, so a rim is seeded from the grains on either side of it.
 
 On a simulated 128 x 128 Ni scan (60 grains, 128-pixel frames with 16 counts a
 pixel, 3 degree dictionary, ``fit=True``, a Titan X), 1.39 % of the points
@@ -318,6 +329,24 @@ landed more than 5 degrees off with one candidate, 0.32 % with four (8 % of the
 patterns rechecked, 29,000 patterns a second against 38,000), and none after the
 post-scan retry. ``scripts/benchmark_speckle.py`` measures it;
 ``scripts/compare_speckle.py`` compares the settings on a saved scan.
+
+On a grain boundary the step is the main lever. A boundary's patterns blend both
+grains', and at a coarse step neither grain may have an entry near enough to win:
+the blend's best is a third orientation, and the refine polishes it. On a real
+500 x 500 Ni scan (128-pixel patterns, the in-plane search, ``fit=True``), the
+points indexed at an orientation more than 5 degrees from every reference point
+within three steps of them were:
+
+====  ==============  ===============
+step  one candidate   two candidates
+====  ==============  ===============
+3     223             97
+2     5               3
+1.5   5               4
+====  ==============  ===============
+
+At 1.5 degrees with two candidates, 1,219 points (0.5 %) were more than 5
+degrees from the reference, at 17,200 patterns a second on a Titan X.
 
 Calibrating the pattern center
 ------------------------------
