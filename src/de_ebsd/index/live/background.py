@@ -43,8 +43,9 @@ LOG_POLYNOMIAL = "log-polynomial"
 #: The pattern divided by the scan's running mean.
 STATIC = "static"
 BACKGROUNDS = (LOG_POLYNOMIAL, STATIC)
-#: The log-polynomial surface's degree: 2 (six terms) was measured on real Ni
-#: scans; degrees 4 and 6 indexed no better.
+#: The log-polynomial surface's degree: 2 (six terms) is what the real scans were
+#: measured at. Degrees 4 and 6 were tried on two of them and were not clearly
+#: better.
 BACKGROUND_DEGREE = 2
 #: The log is taken of the pattern plus this share of its own mean: a counted
 #: pattern's dark pixels are zero or a few counts, whose log is all noise, and an
