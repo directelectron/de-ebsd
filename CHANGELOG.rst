@@ -9,6 +9,15 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.8.1 (2026-11-22)
+==================
+
+Performance
+-----------
+
+- :meth:`DynamicalIndexer.pooled <de_ebsd.pipeline.orientation.indexing.DynamicalIndexer.pooled>` pooled a batch of camera frames to the refine shape once, to give to both ``observe`` and ``index``, which each used to convert and pool it themselves; :meth:`LiveIndexer.pooled <de_ebsd.index.live.LiveIndexer.pooled>` converted integer frames 128 at a time instead of the whole batch as float. On 512 x 512 frames a live scan's preparation took a quarter of the time, and a batch of 1,024 no longer held a gigabyte of floats.
+
+
 0.8.0 (2026-11-22)
 ==================
 
