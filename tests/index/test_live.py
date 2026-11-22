@@ -7,6 +7,7 @@ back: the search must land in the right cell of a coarse dictionary and the
 refine must take it to well under that cell's size.
 """
 
+import functools
 from dataclasses import replace
 
 import numpy as np
@@ -21,13 +22,24 @@ from de_ebsd.crystal import Crystal
 from de_ebsd.index import _kernels
 from de_ebsd.index.io import phase_from_crystal
 from de_ebsd.index.live import LiveIndexer, retry_speckle
+from de_ebsd.index.live import background as background_module
 from de_ebsd.index.live import indexer as live_indexer
-from de_ebsd.index.live.background import MIN_FRAMES_FOR_STATIC
+from de_ebsd.index.live.background import (
+    LOG_POLYNOMIAL,
+    MIN_FRAMES_FOR_STATIC,
+    ScanBackground,
+    polynomial_basis,
+)
 from de_ebsd.index.live.common import pick, pool_into
 from de_ebsd.index.live.deformation import DEFORMATION_LINE_SEARCH, DEFORMATION_MAX_STEP
 from de_ebsd.index.live.indexer import texture_of
 from de_ebsd.index.neighbors import _operators, _pair_angles
 from de_ebsd.index.preprocess import normalize_rows
+
+# The band masters' patterns run from -1 to 1: not intensities to take the log of,
+# so these indexers remove the dynamic background alone, as the static kind does
+# until it has seen frames. The log-polynomial background has its own tests.
+BandIndexer = functools.partial(LiveIndexer, background="static")
 
 fused = pytest.mark.skipif(
     not _kernels.available("cuda") or not torch.cuda.is_available(),
@@ -61,7 +73,7 @@ def test_round_trip_recovers_known_orientations(master, point_group, detector):
     dictionary: the refine, not the search, sets the accuracy."""
     rotations = _known()
     patterns = master.project(detector, rotations)
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master],
         [point_group],
         detector,
@@ -83,7 +95,7 @@ def test_round_trip_recovers_known_orientations(master, point_group, detector):
 
 
 def _small_indexer(master, point_group, detector, **kwargs):
-    return LiveIndexer(
+    return BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), **kwargs
     )
 
@@ -149,7 +161,7 @@ def test_refine_moves_a_seed_toward_its_orientation(master, point_group, detecto
     """A seed 2° off is moved to within a tenth of that."""
     rotations = _known()
     patterns = master.project(detector, rotations)
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master],
         [point_group],
         detector,
@@ -176,7 +188,7 @@ def test_pattern_center_is_refined_from_the_patterns(master, point_group, detect
     patterns = master.project(detector, _known())
     found = []
     for start in (detector.pattern_center, tuple(v + 0.006 for v in detector.pattern_center)):
-        indexer = LiveIndexer(
+        indexer = BandIndexer(
             [master],
             [point_group],
             replace(detector, pattern_center=start),
@@ -224,7 +236,7 @@ def test_fused_score_is_the_normalized_cross_correlation(master, detector):
 def test_center_maps_move_the_directions_to_another_center(master, point_group, detector):
     """The refine's directions at one center, mapped and normalized, are exactly
     the directions at another."""
-    indexer = LiveIndexer([master], [point_group], detector, resolution=10.0, device="cpu")
+    indexer = BandIndexer([master], [point_group], detector, resolution=10.0, device="cpu")
     other = (0.507, 0.392, 0.561)
     (m,) = indexer.center_maps([other])
     moved = indexer.refine_directions @ m.T
@@ -244,7 +256,7 @@ def test_strain_is_refined_with_the_orientation(master, point_group, detector):
     deformed lattice -- not how closely a master matches a camera; on a real scan
     see :data:`DEFORMATION_ITERATIONS`."""
     rotations = _known()
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
@@ -274,7 +286,7 @@ def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
     orientation comes back to within a few hundredths of a degree, the strain is
     zero, and :meth:`LiveIndexer.index` with *fit* runs it after the refine."""
     rotations = _known()
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(rotations.data, dtype=torch.float32))
@@ -290,13 +302,21 @@ def test_the_orientation_only_fit_refines_the_orientation_and_no_strain(
 
 
 @fused
-@pytest.mark.parametrize("blur", [None, 0.05])
-def test_the_fused_prepare_is_the_torch_one(master, point_group, detector, blur):
-    """The frames' preparation in one launch (static background, dynamic
-    background, both shapes, normalized) against the torch path: the same rows to
-    float32 rounding, with a plain and a blurred static background."""
+@pytest.mark.parametrize(
+    ("background", "blur"), [("static", None), ("static", 0.05), ("log-polynomial", None)]
+)
+def test_the_fused_prepare_is_the_torch_one(master, point_group, detector, background, blur):
+    """The frames' preparation in one launch (log-polynomial or static background,
+    dynamic background, both shapes, normalized) against the torch path: the same
+    rows to float32 rounding, with a plain and a blurred static background."""
     indexer = LiveIndexer(
-        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
+        [master],
+        [point_group],
+        detector,
+        resolution=10.0,
+        refine_shape=(64, 64),
+        device="cuda",
+        background=background,
     )
     assert indexer.fused
     generator = torch.Generator(device="cuda").manual_seed(0)
@@ -315,7 +335,7 @@ def test_the_fused_stepped_refine_is_the_torch_one(master, point_group, detector
     """The stepped refine in one launch (one block per pattern, every level) against
     the torch refine on the same seeds: the same orientations and scores."""
     rotations = _known()
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
     )
     assert indexer.fused
@@ -350,7 +370,7 @@ def test_the_fused_orientation_fit_is_the_torch_one(
 
     monkeypatch.setattr(deformation, "ANALYTIC_JACOBIAN", analytic)
     rotations = _known()
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
     )
     assert indexer.fused
@@ -384,7 +404,7 @@ def test_the_fused_strain_fit_is_the_torch_one(master, point_group, detector, mo
     from de_ebsd.index.live import deformation
 
     rotations = _known()
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cuda"
     )
     assert indexer.fused and deformation.STRAIN_SCHEDULE
@@ -425,7 +445,7 @@ def test_the_static_ghost_bends_no_strain(master, point_group, detector):
     a frame divided by a static background made of the scan's own frames does: fitted
     with the :attr:`~LiveIndexer.ghost`, their strain is zero; fitted without, the
     ghost of the other grains is taken for strain."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
@@ -445,7 +465,7 @@ def test_a_fit_cannot_run_away(master, point_group, detector):
     """A pattern of noise beside a real one: the noise's fit moves at most
     DEFORMATION_MAX_STEP times the line search's longest multiple an iteration,
     and the real pattern's fit is untouched."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
@@ -463,7 +483,7 @@ def test_a_pattern_the_fit_cannot_move_keeps_its_seed(master, point_group, detec
     """A simulation no step changes leaves the fit's normal matrix singular, as a
     blank frame did on a real camera: that pattern keeps its seed and no strain,
     and the batch is not lost to the exception."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known()[:2].data, dtype=torch.float32))
@@ -485,7 +505,7 @@ def test_the_line_search_closes_a_soft_patterns_fit_sooner(master, point_group, 
     plain fit has nearly converged may tie)."""
     from de_ebsd.index.preprocess import gaussian_blur
 
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
@@ -619,7 +639,7 @@ def test_uint16_frames_are_picked_as_they_are():
 def test_the_static_background_divides_out(master, point_group, detector):
     """Bands multiplied by the backscattered intensity, as on a real screen: divided
     by a static background of that intensity, they are as if it were even."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     bands = 1.0 + 0.1 * torch.rand(3, 64, 64, generator=torch.Generator().manual_seed(0))
@@ -637,7 +657,7 @@ def test_a_search_starts_the_static_background_and_a_single_crystal_blurs_it(
     """A search's frames are the static background from a scan's first frame. One
     crystal's frames all carry its band, so their mean does; blurred, it does not,
     and there is no ghost."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     y, x = torch.meshgrid(torch.linspace(-1, 1, 64), torch.linspace(-1, 1, 64), indexing="ij")
@@ -658,7 +678,7 @@ def test_a_search_starts_the_static_background_and_a_single_crystal_blurs_it(
 def test_strain_from_a_reference_pattern(master, point_group, detector):
     """Patterns of one orientation with known strains, against an unstrained
     pattern of it: the strain comes back relative to that reference."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known()[:1].data, dtype=torch.float32))
@@ -683,7 +703,7 @@ def test_a_center_error_shows_as_the_strain_strain_per_center_predicts(
 ):
     """Patterns projected at a center a few thousandths off and fitted at the
     indexer's: their strain is what the geometry alone predicts."""
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
     )
     g = quaternion_to_matrix(torch.as_tensor(_known().data, dtype=torch.float32))
@@ -904,3 +924,85 @@ def test_retry_speckle_puts_a_finished_maps_speckle_right(master, point_group, d
     error = _errors(torch.as_tensor(retried.g), rotation, point_group)
     assert np.max(error) < 0.5
     assert retried.entry[6] in (2, 5, 7, 10)
+
+
+def test_the_polynomial_basis_is_orthonormal_over_the_degree():
+    """The log-polynomial basis is orthonormal and spans every polynomial of the
+    degree: a surface of degree 2 is all projection, nothing left over."""
+    basis = polynomial_basis((24, 32), 2)
+    assert basis.shape == (6, 24 * 32)
+    assert torch.allclose(basis @ basis.T, torch.eye(6), atol=1e-5)
+    y, x = torch.meshgrid(torch.linspace(-1, 1, 24), torch.linspace(-1, 1, 32), indexing="ij")
+    surface = (1.0 + 0.4 * x - 0.3 * y + 0.2 * x * y + 0.5 * x**2 - 0.1 * y**2).reshape(-1)
+    left = surface - (surface @ basis.T) @ basis
+    assert left.abs().max() < 1e-5
+
+
+def test_the_log_polynomial_background_takes_off_a_smooth_envelope(master, detector, monkeypatch):
+    """A pattern multiplied by a smooth envelope (a degree-2 surface in the log, as
+    the screen's backscattered intensity is near enough) comes out of the
+    log-polynomial background as the pattern alone: exactly with no offset in the
+    log, and within a few percent with the offset, which trades that for a
+    counted pattern's zeros."""
+    patterns = 2.0 + master.project(detector, _known()).float()  # an intensity: positive
+    y, x = torch.meshgrid(torch.linspace(-1, 1, 64), torch.linspace(-1, 1, 64), indexing="ij")
+    envelope = torch.exp(0.8 * x - 0.5 * y - 0.6 * x**2 + 0.3 * x * y - 0.4 * y**2)
+    background = ScanBackground((64, 64), torch.device("cpu"))
+    assert background.kind == LOG_POLYNOMIAL
+    plain = normalize_rows(background.remove(patterns).flatten(1))
+    lit = normalize_rows(background.remove(patterns * envelope).flatten(1))
+    assert ((plain * lit).sum(1) > 0.95).all()
+    monkeypatch.setattr(background_module, "LOG_OFFSET", 0.0)
+    plain = background.remove(patterns)
+    lit = background.remove(patterns * envelope)
+    assert torch.allclose(plain, lit, atol=1e-4), (plain - lit).abs().max()
+
+
+def test_the_log_polynomial_background_needs_no_other_frame(master, point_group, detector):
+    """With the log-polynomial background a pattern is prepared from itself alone:
+    the frames seen before it change nothing, and there is no ghost."""
+    indexer = LiveIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    assert indexer.background.kind == LOG_POLYNOMIAL
+    frames = _camera_frames(master, detector, device="cpu")
+    before = indexer.prepare(frames[:4])
+    indexer.observe(frames[4:])
+    indexer.index(frames, fit=True)
+    after = indexer.prepare(frames[:4])
+    for a, b in zip(before, after, strict=True):
+        assert torch.equal(a, b)
+    assert indexer.ghost is None
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=fused)])
+def test_camera_frames_round_trip_through_the_log_polynomial_background(
+    master, point_group, detector, device
+):
+    """A camera's frames (the known orientations under a backscatter falloff, with
+    counting noise) indexed with the log-polynomial background, the default, come
+    back within half a degree of the truth, on the torch path and the fused one."""
+    indexer = LiveIndexer(
+        [master],
+        [point_group],
+        detector,
+        resolution=10.0,
+        refine_shape=(64, 64),
+        refine_steps_deg=(5, 2.5, 1.2, 0.6, 0.3, 0.15),
+        device=device,
+    )
+    assert indexer.background.kind == LOG_POLYNOMIAL
+    frames = _camera_frames(master, detector, device=device)
+    phase, g, score, entry = indexer.index(frames)
+    known = _known().data
+    truth = Rotation(np.tile(known, (len(frames) // len(known), 1)))
+    error = Orientation(Rotation.from_matrix(g.cpu().numpy()), point_group).angle_with(
+        Orientation(truth, point_group), degrees=True
+    )
+    assert (phase == 0).all()
+    assert np.max(error) < 0.5, error
+
+
+def test_an_unknown_background_is_refused():
+    with pytest.raises(ValueError, match="log-polynomial"):
+        ScanBackground((8, 8), torch.device("cpu"), kind="mean")

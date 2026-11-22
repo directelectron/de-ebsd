@@ -220,6 +220,8 @@ def test_fit_on_the_indexers_patterns_improves_indexing(resolved, truth, point_g
             search_blur_deg=3.0,
             device="cpu",
             residual_background=appearance.residual_background(),
+            # the appearance model prepares its simulations as the static kind does
+            background="static",
         )
         _, found, score, _ = indexer.index(patterns)
         error = np.array(
@@ -343,7 +345,7 @@ def test_indexer_removes_the_residual_background(resolved, point_group):
     coefficients = (0.4, -0.6, 0.3, 0.0, 0.2, 0.2, -0.1, 0.0, 0.1)
     background = (torch.tensor(coefficients) @ legendre_terms((40, 40), 3)).view(1, 40, 40)
     carrying = clean + background
-    dynamic = ScanBackground((40, 40), "cpu").remove
+    dynamic = ScanBackground((40, 40), "cpu", kind="static").remove
     b = normalize_rows(dynamic(background).flatten(1))
     centered = dynamic(carrying).flatten(1)
     centered = centered - centered.mean(1, keepdim=True)
@@ -351,7 +353,13 @@ def test_indexer_removes_the_residual_background(resolved, point_group):
     residual = ResidualBackground(coefficients, 3, share, high_pass=True)
     assert torch.allclose(residual.direction((40, 40)), b[0], atol=1e-5)
 
-    kwargs = dict(resolution=10.0, search_shape=(20, 20), refine_shape=(40, 40), device="cpu")
+    kwargs = dict(
+        resolution=10.0,
+        search_shape=(20, 20),
+        refine_shape=(40, 40),
+        device="cpu",
+        background="static",
+    )
     plain = LiveIndexer([master], [point_group], det, **kwargs)
     removing = LiveIndexer([master], [point_group], det, residual_background=residual, **kwargs)
     reference = normalize_rows(dynamic(clean).flatten(1))
@@ -364,6 +372,7 @@ def test_indexer_removes_the_residual_background(resolved, point_group):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_fit_runs_on_cuda(resolved, truth):
+    torch.manual_seed(0)  # what runs before must not move the fit
     det = detector((40, 40))
     g = random_orientations(60)
     patterns = render(resolved, truth, g, det, counts=200).cuda()
@@ -406,7 +415,13 @@ def test_model_prepares_its_simulations_as_the_indexer_prepares_patterns(resolve
     params = model.initial(flags, None)
     simulated = model.simulate(params, torch.as_tensor(g, dtype=torch.float32), torch.zeros(24, 3))
     indexer = LiveIndexer(
-        [master], [point_group], det, resolution=10.0, refine_shape=(40, 40), device="cpu"
+        [master],
+        [point_group],
+        det,
+        resolution=10.0,
+        refine_shape=(40, 40),
+        device="cpu",
+        background="static",
     )
     frames = master.project(det, Rotation.from_matrix(g), rescale=False)
     _, prepared = indexer.prepare(frames)

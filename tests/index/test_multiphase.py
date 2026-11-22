@@ -9,6 +9,8 @@ orientation back. Ported from Autopilot's multi-phase ``Indexer`` and
 whose wrapper this replaces.
 """
 
+import functools
+
 import numpy as np
 import pytest
 import torch
@@ -29,6 +31,11 @@ from de_ebsd.index.live import (
 )
 from de_ebsd.index.live.common import as_frames, shape_in_aspect
 from de_ebsd.sim.kinematic_bands import reflectors_from_phase
+
+# The band masters' patterns run from -1 to 1: not intensities to take the log of,
+# so these indexers remove the dynamic background alone, as the static kind does
+# until it has seen frames. The log-polynomial background has its own tests.
+BandIndexer = functools.partial(LiveIndexer, background="static")
 
 PER_PHASE = 6
 SHAPE = (60, 80)
@@ -78,7 +85,7 @@ def frames(masters, detector, truth):
 
 @pytest.fixture(scope="module")
 def indexer(masters, point_groups, detector):
-    return LiveIndexer(
+    return BandIndexer(
         masters,
         point_groups,
         detector,
@@ -191,7 +198,7 @@ def test_kinematic_masters_join_dynamical_ones_on_their_grid(masters):
 
 def test_indexing_needs_a_phase(detector):
     with pytest.raises(ValueError, match="at least one phase"):
-        LiveIndexer([], [], detector, device="cpu")
+        BandIndexer([], [], detector, device="cpu")
 
 
 def test_the_capabilities_on_a_cpu():
@@ -217,7 +224,7 @@ def random_indexer():
     master = MasterPattern(torch.rand(1, 2, 31, 31, generator=generator), np.array([20.0]), {})
     detector = Setup.default("SEM", shape=FRAME_SHAPE).detector
     point_group = phase_from_crystal(_crystals()[0]).point_group
-    return LiveIndexer(
+    return BandIndexer(
         [master],
         [point_group],
         detector,
