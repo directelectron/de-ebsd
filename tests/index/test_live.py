@@ -926,6 +926,18 @@ def test_retry_speckle_puts_a_finished_maps_speckle_right(master, point_group, d
     assert retried.entry[6] in (2, 5, 7, 10)
 
 
+def test_integer_frames_are_pooled_a_chunk_at_a_time_as_a_whole(
+    master, point_group, detector, monkeypatch
+):
+    """A camera's integer frames, converted to float `POOL_CHUNK` at a time as
+    they are pooled, average as the whole batch converted at once."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    frames = _camera_frames(master, detector, device="cpu").to(torch.int32)
+    monkeypatch.setattr(live_indexer, "POOL_CHUNK", 3)
+    whole = indexer.pooled(frames.to(torch.float32))
+    assert torch.equal(indexer.pooled(frames), whole)
+
+
 def test_the_polynomial_basis_is_orthonormal_over_the_degree():
     """The log-polynomial basis is orthonormal and spans every polynomial of the
     degree: a surface of degree 2 is all projection, nothing left over."""

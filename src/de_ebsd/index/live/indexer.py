@@ -107,6 +107,9 @@ COARSE_REFINE_STEP_DEG = 1.0
 #: (30,443 entries) is one chunk; a triclinic one's (729,000) would otherwise
 #: score into 750 MB per batch.
 SEARCH_CHUNK = 65_536
+#: Integer frames converted to float this many at a time as they are pooled
+#: (:meth:`LiveIndexer.pooled`): 128 MiB of 512 x 512.
+POOL_CHUNK = 128
 
 #: The refine's steps when :meth:`LiveIndexer.index` fits the orientations after it
 #: (``fit=True``) on the fused kernels: the fit does what the finer levels did. On a
@@ -637,10 +640,21 @@ class LiveIndexer:
     def pooled(self, frames) -> torch.Tensor:
         """*frames* on the device as float ``(N, H, W)`` averaged to the refine shape:
         *frames* themselves where they already are, such as a stack from
-        :func:`~de_ebsd.index.live.common.pool_into`."""
+        :func:`~de_ebsd.index.live.common.pool_into`.
+
+        Integer frames (a camera's) are converted `POOL_CHUNK` at a time, so a
+        batch is never held at full resolution as float: 1,024 frames of 512 x 512
+        would be a gigabyte. Pooled once and handed to :meth:`observe` and
+        :meth:`index`, a batch is converted once, not by each, and the index takes
+        its fused path, which wants float32."""
         t = as_frames(frames).to(self.device)
         t = t[None] if t.ndim == 2 else t
-        return average_to(t.to(torch.float32), self.refine_shape)
+        if t.dtype == torch.float32 or tuple(t.shape[-2:]) == self.refine_shape:
+            return average_to(t.to(torch.float32), self.refine_shape)
+        out = torch.empty((len(t), *self.refine_shape), device=self.device)
+        for lo in range(0, len(t), POOL_CHUNK):
+            pool_into(t[lo : lo + POOL_CHUNK].to(torch.float32), out[lo : lo + POOL_CHUNK])
+        return out
 
     @holds_lock
     def restart_static(self, frames=None, *, blur: float | None = None) -> None:
