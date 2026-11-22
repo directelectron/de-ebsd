@@ -505,6 +505,7 @@ class DynamicalIndexer:
         lock=None,
         refine_side: int = REFINE_SIDE,
         search: str = "flat",
+        background: str = "log-polynomial",
     ) -> None:
         """*lock* is held by every call into the live indexer (see
         :func:`de_ebsd.core.device.resolve_lock`); by default the indexer has its
@@ -521,7 +522,12 @@ class DynamicalIndexer:
         of every orientation at *step_deg*, or ``"inplane"``, one template per
         crystal direction along the screen normal turned through every in-plane
         angle at once, more accurate at the same step and faster at fine ones. Its
-        entries number a template and an in-plane angle (`entry_orientations`)."""
+        entries number a template and an in-plane angle (`entry_orientations`).
+
+        *background* is de_ebsd's ``ScanBackground`` kind: ``"log-polynomial"``,
+        each pattern's log less its own low-degree surface, or ``"static"``, the
+        pattern divided by the scan's running mean (:meth:`restart_static`,
+        :meth:`observe`), which early in a scan carries its first grains' bands."""
         import threading
 
         from de_ebsd.index.live import LiveIndexer
@@ -549,6 +555,7 @@ class DynamicalIndexer:
                 device=device,
                 lock=threading.RLock() if lock is None else lock,
                 search=search,
+                background=background,
                 **steps,
             )
         #: Where each phase's entries start in the live indexer's dictionary.

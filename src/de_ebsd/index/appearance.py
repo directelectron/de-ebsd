@@ -41,7 +41,12 @@ from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.geometry import sample_to_detector_matrix
 from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
-from de_ebsd.index.live.background import ResidualBackground, ScanBackground, legendre_terms
+from de_ebsd.index.live.background import (
+    STATIC,
+    ResidualBackground,
+    ScanBackground,
+    legendre_terms,
+)
 from de_ebsd.index.live.common import average_to
 from de_ebsd.index.preprocess import normalize_rows
 
@@ -591,7 +596,11 @@ def fit_appearance(
     patterns
         ``(N, rows, cols)`` real patterns, background corrected as the indexer
         corrects them (``LiveIndexer.prepare``'s refine rows, reshaped), at the
-        resolution the indexer refines at; or ``(N, rows * cols)`` rows.
+        resolution the indexer refines at; or ``(N, rows * cols)`` rows. The model
+        prepares its simulations as the static background does (divided, then the
+        dynamic background), so the indexer must be built with
+        ``background="static"``: a log-polynomial pattern is a log, and its
+        contrast is not the detector's.
     orientations
         ``(N, 3, 3)`` matrices the patterns were indexed at (sample to crystal), or an
         orix ``Rotation``.
@@ -912,7 +921,9 @@ class _Model:
         self.aspect = detector.ncols / detector.nrows
         #: the indexer's dynamic background removal, put on the model's simulations
         #: where the real patterns had it
-        self.dynamic = ScanBackground(detector.shape, device) if dynamic_background else None
+        self.dynamic = (
+            ScanBackground(detector.shape, device, kind=STATIC) if dynamic_background else None
+        )
 
     # parameters: raw, unconstrained tensors; the physical values are functions of them
 

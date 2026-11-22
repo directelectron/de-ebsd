@@ -75,8 +75,8 @@ Live indexing
 =============
 
 :class:`~de_ebsd.index.LiveIndexer` indexes a camera's frames where they already
-are, on the GPU, in a fixed number of batched steps. Frames are divided by the
-scan's running static background and have their own dynamic background removed;
+are, on the GPU, in a fixed number of batched steps. Each frame is taken as its
+log less its own polynomial surface and has its dynamic background removed;
 one matrix product against every phase's stacked dictionary gives the phase and
 a seed orientation; a local dictionary of seven projections per level, with a
 parabola through each axis's scores, refines the seed. The same machinery
@@ -127,20 +127,36 @@ rows that are scored, in three steps:
 1. Each frame is averaged over the whole sensor down to the refine shape
    (``refine_shape``, 128 x 128 by default). Averaging the whole sensor, rather
    than cropping, keeps every band and every count.
-2. It is divided by the scan's **static background**, the running mean of the
-   frames the scan has seen (:meth:`~de_ebsd.index.LiveIndexer.observe`). A live
-   scan's frames come from a few grains at a time, so the mean waits for 32
-   frames before it is used; :meth:`~de_ebsd.index.LiveIndexer.restart_static`
-   starts it from frames chosen from all over the specimen (a survey's), which
-   average their bands away in fewer. On a single crystal every frame carries
-   the same bands, so the mean would keep them: there it is blurred.
+2. Its **log-polynomial background** is taken off (``background=
+   "log-polynomial"``, the default): the log of the pattern plus half its mean,
+   less the least-squares polynomial surface of degree 2 that fits it. The
+   screen's backscattered intensity is a smooth envelope that multiplies the
+   bands; in the log it is a smooth surface added to them, which six terms take
+   away without the bands. The half mean keeps a counted pattern's zeros, and an
+   integrating camera's offset, from ruling the log. It needs no other frame, so
+   no grain's bands come into it from the frames before, and a scan's first
+   pattern is corrected as well as its last.
+
+   With ``background="static"`` the pattern is instead divided by the scan's
+   **static background**, the running mean of the frames the scan has seen
+   (:meth:`~de_ebsd.index.LiveIndexer.observe`). A live scan's frames come from
+   a few grains at a time, so the mean waits for 32 frames before it is used;
+   :meth:`~de_ebsd.index.LiveIndexer.restart_static` starts it from frames
+   chosen from all over the specimen (a survey's), which average their bands
+   away in fewer. On a single crystal every frame carries the same bands, so the
+   mean would keep them: there it is blurred. Early in a scan the mean still
+   carries its first grains' bands. Against OIM, counting the points more than
+   5 degrees from every OIM point within 3 steps, it left 599 of a 200 x 200 Ni
+   scan's 40,000 and 3 of a counted 500 x 500 one's 250,000, where the
+   log-polynomial background left none of either.
 3. The pattern's own slowly varying **dynamic background** is removed, the rows
    are normalized to zero mean and unit length, and a copy is averaged again to
    the search shape (``search_shape``, 32 x 32 by default).
 
-Whatever of the grains' bands the static background still holds -- the
+With the static background, whatever of the grains' bands it still holds -- the
 **ghost** -- is tracked from the orientations already fitted, so the strain fit
-below can take it out of patterns and simulations alike.
+below can take it out of patterns and simulations alike. The log-polynomial
+background has none.
 
 Searching the dictionary
 ------------------------

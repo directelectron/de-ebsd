@@ -896,24 +896,29 @@ extern "C" __global__ void fit_strain_passes(
     fit_passes_body<8>(FIT_PASSES_FORWARD, (float*)0, p_out, score_out, refused_out);
 }
 // prepare: LiveIndexer.prepare in one launch, one block per frame. The frame
-// (frame_rows x frame_cols) is averaged to the refine shape, divided by the static
-// background (if any) less one, less its dynamic background (the refine rows
+// (frame_rows x frame_cols) is averaged to the refine shape; then either its log
+// (of itself plus log_offset of its mean, floored at log_floor), less its
+// projection onto *basis* (terms orthonormal rows over the refine pixels:
+// the log-polynomial background), or divided by the static background (if any)
+// less one; then less its dynamic background (the refine rows
 // averaged to a quarter, Gaussian-blurred with reflected edges, drawn back up
 // bilinearly as F.interpolate does with align_corners=False), then averaged to
 // the search shape; both are normalized as normalize_rows does. Every shape must
 // divide the one before it. refine_out holds the unnormalized rows meanwhile.
 #define PREPARE_THREADS 256
 #define PREPARE_MAX_SMALL 1024
+#define PREPARE_MAX_TERMS 28
 extern "C" __global__ void prepare(
     const float* __restrict__ frames, int frame_rows, int frame_cols,
-    const float* __restrict__ statics, int rows, int cols,
+    const float* __restrict__ statics, const float* __restrict__ basis, int terms,
+    float log_offset, float log_floor, int rows, int cols,
     int coarse_rows, int coarse_cols, const float* __restrict__ weights, int radius,
     int search_rows, int search_cols, float floor_,
     float* __restrict__ refine_out, float* __restrict__ search_out)
 {
     __shared__ float coarse[PREPARE_MAX_SMALL], blurred[PREPARE_MAX_SMALL];
     __shared__ float search[PREPARE_MAX_SMALL], sums[2 * PREPARE_THREADS];
-    __shared__ float moments[4];
+    __shared__ float moments[4], coefficients[PREPARE_MAX_TERMS];
     long long i = blockIdx.x;
     int t = threadIdx.x, b = blockDim.x;
     const float* frame = frames + i * (long long)frame_rows * frame_cols;
@@ -929,10 +934,39 @@ extern "C" __global__ void prepare(
         for (int dy = 0; dy < fy; dy++)
             for (int dx = 0; dx < fx; dx++) total += corner[dy * frame_cols + dx];
         float v = total * inverse_bin;
-        if (statics) v = v / fmaxf(statics[q], floor_) - 1.f;
+        if (!basis && statics) v = v / fmaxf(statics[q], floor_) - 1.f;
         out[q] = v;
     }
     __syncthreads();
+
+    // the log-polynomial background: the log (of the pattern plus a share of its
+    // mean) less its projection on the basis
+    if (basis) {
+        float own = 0.f;
+        for (int q = t; q < rows * cols; q += b) own += out[q];
+        sums[t] = own;
+        block_sums(sums, 1);
+        float offset = log_offset * sums[0] / (float)(rows * cols);
+        __syncthreads();
+        for (int q = t; q < rows * cols; q += b) out[q] = logf(fmaxf(out[q] + offset, log_floor));
+        __syncthreads();
+        for (int k = 0; k < terms; k++) {
+            const float* term = basis + (long long)k * rows * cols;
+            float dot = 0.f;
+            for (int q = t; q < rows * cols; q += b) dot += out[q] * term[q];
+            sums[t] = dot;
+            block_sums(sums, 1);
+            if (t == 0) coefficients[k] = sums[0];
+            __syncthreads();
+        }
+        for (int q = t; q < rows * cols; q += b) {
+            float v = out[q];
+            for (int k = 0; k < terms; k++)
+                v -= coefficients[k] * basis[(long long)k * rows * cols + q];
+            out[q] = v;
+        }
+        __syncthreads();
+    }
 
     // the dynamic background: averaged down, blurred along each axis (reflected)
     int cy = rows / coarse_rows, cx = cols / coarse_cols;
@@ -1595,17 +1629,38 @@ def fit_passes(
 #: Threads per block of :func:`prepare`, and the most pixels of its coarse and
 #: search shapes (PREPARE_THREADS and PREPARE_MAX_SMALL in the source).
 PREPARE_THREADS, PREPARE_MAX_SMALL = 256, 1024
+#: The most terms of :func:`prepare`'s log-polynomial basis (PREPARE_MAX_TERMS in
+#: the source): degree 6 has 28.
+PREPARE_MAX_TERMS = 28
 
 
-def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, floor, out=None):
+def prepare(
+    frames,
+    statics,
+    refine_shape,
+    coarse_shape,
+    search_shape,
+    weights,
+    floor,
+    out=None,
+    basis=None,
+    log_offset=0.0,
+    log_floor=0.0,
+):
     """:meth:`LiveIndexer.prepare` in one launch, one block per frame: ``(search,
     refine)`` rows, normalized, for *frames* ``(N, H, W)`` float32 whose shape the
     refine shape divides, which divides the *coarse* (the dynamic background's)
     and *search* shapes. *statics* is the static background at the refine shape,
     or None; *weights* the dynamic background's Gaussian, its radius each side.
-    *out*, when given, is the contiguous ``(search, refine)`` buffers to write."""
+    *out*, when given, is the contiguous ``(search, refine)`` buffers to write.
+    With *basis* ``(terms, pixels)``, orthonormal rows at the refine shape, each
+    pattern's log (of itself plus *log_offset* of its mean, floored at
+    *log_floor*) less its projection on them is taken
+    instead of dividing by *statics*: the log-polynomial background."""
     import cupy
 
+    if basis is not None and len(basis) > PREPARE_MAX_TERMS:
+        raise ValueError(f"at most {PREPARE_MAX_TERMS} basis terms, not {len(basis)}")
     n, frame_rows, frame_cols = frames.shape
     rows, cols = refine_shape
     search_pixels = search_shape[0] * search_shape[1]
@@ -1619,7 +1674,11 @@ def prepare(frames, statics, refine_shape, coarse_shape, search_shape, weights, 
             _cupy(frames),
             cupy.int32(frame_rows),
             cupy.int32(frame_cols),
-            _cupy(statics.float()) if statics is not None else cupy.uint64(0),
+            _cupy(statics.float()) if statics is not None and basis is None else cupy.uint64(0),
+            _cupy(basis.float().contiguous()) if basis is not None else cupy.uint64(0),
+            cupy.int32(0 if basis is None else len(basis)),
+            cupy.float32(log_offset),
+            cupy.float32(log_floor),
             cupy.int32(rows),
             cupy.int32(cols),
             cupy.int32(coarse_shape[0]),

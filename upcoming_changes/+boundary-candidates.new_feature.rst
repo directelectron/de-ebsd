@@ -1,1 +1,0 @@
-The in-plane search took several candidates (``candidates=K``): with two and a fine step, a pattern on a grain boundary indexed as one of its two grains rather than a third orientation; and :func:`~de_ebsd.index.live.retry_speckle` could also retry, after a scan, the points scoring below ``score_fraction`` of the map's median from seeds up to ``radius`` steps out.
