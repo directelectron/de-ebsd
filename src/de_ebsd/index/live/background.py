@@ -1,10 +1,26 @@
-"""The backgrounds a scan's patterns are divided by: static, dynamic and ghost.
+"""The backgrounds removed from a scan's patterns: log-polynomial or static, then
+dynamic; and the ghost.
 
-The static background is the running mean of the scan's frames; a pattern is
-divided by it, then its own slowly varying (dynamic) background is removed. The
-ghost is what the static background keeps of the scan's grains. A residual
-background, fitted (:func:`~de_ebsd.index.appearance.fit_appearance`), is what the
-corrected patterns still carry that no simulation has.
+By default (:data:`LOG_POLYNOMIAL`) each pattern's background is its own: the
+log of the pattern (plus :data:`LOG_OFFSET` of its mean), less the least-squares
+polynomial surface of degree
+:data:`BACKGROUND_DEGREE` that fits it. The screen's backscattered intensity is a
+smooth envelope that multiplies the bands, so in the log it is a smooth surface
+added to them, and a low-degree surface removes it without taking the bands. It
+needs no other frame: no grain's bands come into it from its neighbors, and the
+first pattern of a scan is corrected as well as the last.
+
+The static background (:data:`STATIC`) is instead the running mean of the scan's
+frames; a pattern is divided by it. Early in a scan that mean is of a few grains
+and carries their bands, and the patterns divided by it are indexed wrong.
+Against OIM, counting the points more than 5 degrees from every OIM point within
+3 steps, the static background left 599 of a 200 x 200 Ni scan's 40,000 and 3 of
+a counted 500 x 500 one's 250,000; the log-polynomial none of either.
+
+Either way each pattern's own slowly varying (dynamic) background is then
+removed. The ghost is what the static background keeps of the scan's grains. A
+residual background, fitted (:func:`~de_ebsd.index.appearance.fit_appearance`),
+is what the corrected patterns still carry that no simulation has.
 """
 
 from __future__ import annotations
@@ -21,6 +37,26 @@ from de_ebsd.index.preprocess import gaussian_blur, normalize_rows
 #: Frames the static background is averaged over before it is used: fewer still
 #: carry the bands of the few grains they came from.
 MIN_FRAMES_FOR_STATIC = 32
+
+#: Each pattern's log less its own polynomial surface (:class:`ScanBackground`).
+LOG_POLYNOMIAL = "log-polynomial"
+#: The pattern divided by the scan's running mean.
+STATIC = "static"
+BACKGROUNDS = (LOG_POLYNOMIAL, STATIC)
+#: The log-polynomial surface's degree: 2 (six terms) is what the real scans were
+#: measured at. Degrees 4 and 6 were tried on two of them and were not clearly
+#: better.
+BACKGROUND_DEGREE = 2
+#: The log is taken of the pattern plus this share of its own mean: a counted
+#: pattern's dark pixels are zero or a few counts, whose log is all noise, and an
+#: integrating camera's pattern sits on an offset. Measured on real scans (0,
+#: 0.1, 0.25, 0.5 and 1 of the mean): at 0.5 a counted 500 x 500 Ni scan had no
+#: point more than 5 degrees from every OIM point within 3 steps (28 with none),
+#: an integrating scan scored 0.52 (0.16 with none), and the others as well as
+#: at any.
+LOG_OFFSET = 0.5
+#: And floored here, for a pattern with negative pixels.
+LOG_FLOOR = 1e-3
 
 
 def legendre_terms(shape, order: int, device=None, dtype=torch.float32) -> torch.Tensor:
@@ -48,6 +84,18 @@ def legendre_terms(shape, order: int, device=None, dtype=torch.float32) -> torch
     if not terms:
         return torch.zeros(0, rows * cols, device=device, dtype=dtype)
     return torch.stack(terms)
+
+
+def polynomial_basis(shape, degree: int, device=None) -> torch.Tensor:
+    """Orthonormal rows ``(terms, rows * cols)`` spanning the polynomials of total
+    degree up to *degree* over the detector, the constant among them: the
+    log-polynomial background is a pattern's projection on them. Any basis of the
+    same polynomials projects the same."""
+    rows, cols = int(shape[0]), int(shape[1])
+    constant = torch.ones(1, rows * cols, dtype=torch.float64, device=device)
+    terms = torch.cat([constant, legendre_terms(shape, degree, device, torch.float64)])
+    q, _ = torch.linalg.qr(terms.T)
+    return q.T.to(torch.float32).contiguous()
 
 
 @dataclass(frozen=True)
@@ -79,12 +127,19 @@ class ResidualBackground:
         background = background @ terms
         if self.high_pass:
             grid = background.view(1, *(int(v) for v in shape))
-            background = ScanBackground(tuple(grid.shape[-2:]), grid.device).remove(grid)
+            # the dynamic background alone: the terms are not an intensity to take the log of
+            background = ScanBackground(tuple(grid.shape[-2:]), grid.device, kind=STATIC).remove(
+                grid
+            )
         return normalize_rows(background.reshape(1, -1))[0]
 
 
 class ScanBackground:
-    """The static background and ghost of one scan, at the refine shape.
+    """The backgrounds and ghost of one scan, at the refine shape.
+
+    *kind* is :data:`LOG_POLYNOMIAL` (each pattern's own, of *degree*) or
+    :data:`STATIC` (the scan's running mean). The static background is kept
+    either way, for what looks at it, but only the static kind divides by it.
 
     *min_frames* is how many frames the static background waits for. A live scan's
     frames come from a few grains at a time, so it waits for
@@ -97,10 +152,17 @@ class ScanBackground:
         refine_shape: tuple[int, int],
         device: torch.device,
         min_frames: int = MIN_FRAMES_FOR_STATIC,
+        kind: str = LOG_POLYNOMIAL,
+        degree: int = BACKGROUND_DEGREE,
     ) -> None:
+        if kind not in BACKGROUNDS:
+            raise ValueError(f"the background is one of {BACKGROUNDS}, not {kind!r}")
         self.refine_shape = refine_shape
         self.device = device
         self.min_frames = int(min_frames)
+        self.kind = kind
+        self.degree = int(degree)
+        self._bases: dict[tuple[int, int], torch.Tensor] = {}
         self.static = None
         self.blur = None
         self._static_sum = torch.zeros(refine_shape, device=device)
@@ -134,16 +196,33 @@ class ScanBackground:
                 static = gaussian_blur(static[None], self.blur * static.shape[-1], 4.0)[0]
             self.static = static
 
+    def basis(self, shape=None) -> torch.Tensor | None:
+        """The log-polynomial background's :func:`polynomial_basis` at *shape*
+        (the refine shape by default); None for the static kind."""
+        if self.kind != LOG_POLYNOMIAL:
+            return None
+        shape = self.refine_shape if shape is None else tuple(shape)
+        if shape not in self._bases:
+            self._bases[shape] = polynomial_basis(shape, self.degree, self.device)
+        return self._bases[shape]
+
     def remove(self, t: torch.Tensor) -> torch.Tensor:
-        """*t* ``(N, H, W)`` divided by the static background, less each pattern's
-        dynamic one, at whatever shape it is.
+        """*t* ``(N, H, W)`` less its log-polynomial background, or divided by the
+        static background, then less each pattern's dynamic one, at whatever
+        shape it is.
 
         Divided rather than less: the bands' contrast scales with the
         backscattered intensity, so a pattern less its static background still
         has its bands weighted by the bright middle of the screen, and that
-        weighting moves a band's center differently in every grain."""
+        weighting moves a band's center differently in every grain. In the log
+        that weighting is a sum, which the polynomial takes away."""
         shape = tuple(t.shape[-2:])
-        if self.static is not None:
+        basis = self.basis(shape)
+        if basis is not None:
+            offset = LOG_OFFSET * t.mean(dim=(-2, -1), keepdim=True)
+            flat = torch.log((t + offset).clamp_min(LOG_FLOOR)).flatten(1)
+            t = (flat - (flat @ basis.T) @ basis).view(t.shape)
+        elif self.static is not None:
             static = self.static
             if shape != self.refine_shape:
                 static = F.interpolate(
@@ -160,9 +239,15 @@ class ScanBackground:
             - F.interpolate(coarse[:, None], size=shape, mode="bilinear", align_corners=False)[:, 0]
         )
 
+    @property
+    def has_ghost(self) -> bool:
+        """Whether the patterns carry a ghost: only a static background that is not
+        blurred puts one in."""
+        return self.kind == STATIC and not self.blur
+
     def add_fits(self, simulations: torch.Tensor) -> None:
         """Add the simulations ``(N, pixels)`` of fitted orientations to the :attr:`ghost`."""
-        if self.blur:
+        if not self.has_ghost:
             return
         self._fit_sum += normalize_rows(simulations).sum(0)
         self._fit_count += len(simulations)
@@ -171,7 +256,7 @@ class ScanBackground:
         """:meth:`add_fits`, normalizing *simulations* where they are and summing
         them into *scratch*, at least ``max(2 N, pixels)`` floats: the same
         operations, so the same ghost to the bit."""
-        if self.blur:
+        if not self.has_ghost:
             return
         normalize_rows_into(simulations, scratch)
         self._fit_sum += torch.sum(simulations, 0, out=scratch[: simulations.shape[1]])
@@ -180,7 +265,7 @@ class ScanBackground:
     def ghost_into(self, out: torch.Tensor, scratch: torch.Tensor) -> torch.Tensor | None:
         """:attr:`ghost` written into *out* ``(pixels,)``, *scratch* at least two
         floats, or None where there is none."""
-        if self.static is None or not self._fit_count:
+        if not self.has_ghost or self.static is None or not self._fit_count:
             return None
         return normalize_rows_into(out.copy_(self._fit_sum)[None], scratch)[0]
 
@@ -193,8 +278,9 @@ class ScanBackground:
         faint copy of every grain's bands, and a frame divided by it carries
         their negative. A simulation has no such ghost; fitted without it, a
         strain bends to match the ghost of the other grains, differently in each
-        grain. A blurred static background has no bands, so then there is no ghost.
+        grain. A blurred static background has no bands, so then there is no ghost,
+        and nor is there with the log-polynomial background, which divides by none.
         """
-        if self.static is None or not self._fit_count:
+        if not self.has_ghost or self.static is None or not self._fit_count:
             return None
         return normalize_rows(self._fit_sum[None])[0]

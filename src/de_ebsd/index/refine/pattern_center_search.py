@@ -37,7 +37,7 @@ import torch.nn.functional as F
 
 from de_ebsd.core.device import holds_lock, resolve_device
 from de_ebsd.index.dictionary import DictionaryIndexer, dictionary_scores, sample_orientations
-from de_ebsd.index.live.background import ScanBackground
+from de_ebsd.index.live.background import STATIC, ScanBackground
 from de_ebsd.index.preprocess import bin_pattern
 from de_ebsd.index.refine.pattern_center import determine_pattern_center
 
@@ -201,7 +201,9 @@ def clean_patterns(patterns, *, single_crystal: bool = False, device=None) -> to
     t = torch.as_tensor(np.asarray(patterns, dtype=np.float32), device=device)
     if t.ndim == 2:
         t = t[None]
-    background = ScanBackground(tuple(t.shape[-2:]), device, min_frames=MIN_PATTERNS_FOR_STATIC)
+    background = ScanBackground(
+        tuple(t.shape[-2:]), device, min_frames=MIN_PATTERNS_FOR_STATIC, kind=STATIC
+    )
     background.restart(blur=SINGLE_CRYSTAL_BLUR if single_crystal else None)
     background.observe(t)
     return background.remove(t)

@@ -8,6 +8,7 @@ drawn at known orientations, with two phases, and with each pattern at its own
 center; then its memory; then, on CUDA, the fused kernels against the torch path.
 """
 
+import functools
 import math
 from dataclasses import replace
 
@@ -41,6 +42,11 @@ from de_ebsd.index.live.inplane import (
 from de_ebsd.index.live.workspace import InplaneWorkspace
 from de_ebsd.sim.kinematic_bands import reflectors_from_phase
 
+# The band masters' patterns run from -1 to 1: not intensities to take the log of,
+# so these indexers remove the dynamic background alone, as the static kind does
+# until it has seen frames. The log-polynomial background has its own tests.
+BandIndexer = functools.partial(LiveIndexer, background="static")
+
 fused = pytest.mark.skipif(
     not _kernels.available("cuda") or not torch.cuda.is_available(),
     reason="the fused kernels need CUDA and CuPy",
@@ -66,7 +72,7 @@ def detector():
 
 def _inplane(master, point_group, detector, device="cpu", **kwargs):
     options = dict(resolution=5.0, refine_shape=(64, 64), device=device, search="inplane")
-    return LiveIndexer([master], [point_group], detector, **(options | kwargs))
+    return BandIndexer([master], [point_group], detector, **(options | kwargs))
 
 
 @pytest.fixture(scope="module")
@@ -203,7 +209,7 @@ def test_the_inplane_search_finds_what_the_flat_one_finds(master, point_group, d
     of the truth, and the refine takes either seed to the same orientation."""
     rotations = _random(24, 3)
     patterns = master.project(detector, rotations)
-    flat = LiveIndexer(
+    flat = BandIndexer(
         [master],
         [point_group],
         detector,
@@ -314,7 +320,7 @@ def test_two_phases_are_told_apart_and_indexed():
         )
         + 0.2
     )
-    indexer = LiveIndexer(
+    indexer = BandIndexer(
         masters,
         point_groups,
         detector,
@@ -433,9 +439,9 @@ def test_too_little_memory_is_said_and_the_search_still_runs(master, point_group
 
 def test_the_flat_search_takes_no_inplane_options(master, point_group, detector):
     with pytest.raises(ValueError, match="inplane"):
-        LiveIndexer([master], [point_group], detector, search_options=dict(memory=1))
+        BandIndexer([master], [point_group], detector, search_options=dict(memory=1))
     with pytest.raises(ValueError, match="flat"):
-        LiveIndexer([master], [point_group], detector, search="spherical")
+        BandIndexer([master], [point_group], detector, search="spherical")
 
 
 def test_the_inplane_search_takes_several_candidates(master, point_group, detector, indexer):

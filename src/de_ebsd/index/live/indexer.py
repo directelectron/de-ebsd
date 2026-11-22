@@ -6,10 +6,12 @@ over patterns or phases -- and only each pattern's phase, orientation and score
 leave the device.
 
 1. **Prepare** (:meth:`LiveIndexer.prepare`): each frame averaged over the whole
-   sensor down to the refine shape, divided by the scan's static background (the
-   running mean of its frames, :meth:`LiveIndexer.observe`, started from a search's
-   and blurred for a single crystal, :meth:`LiveIndexer.restart_static`), the
-   per-pattern dynamic background removed, then averaged again to the search shape.
+   sensor down to the refine shape; its log less its own low-degree polynomial
+   surface (the default, ``background="log-polynomial"``), or divided by the scan's
+   static background (``"static"``: the running mean of its frames,
+   :meth:`LiveIndexer.observe`, started from a search's and blurred for a single
+   crystal, :meth:`LiveIndexer.restart_static`); the per-pattern dynamic background
+   removed, then averaged again to the search shape.
 2. **Search** (:meth:`LiveIndexer.search`): one matrix product against every
    phase's dictionary at once. The dictionaries are the phases' dynamical master
    patterns projected over their fundamental zones, stacked into one matrix, so the
@@ -48,7 +50,13 @@ from de_ebsd.core.lambert import sample_texture
 from de_ebsd.core.rotation import quaternion_to_matrix, rotation_vector_to_matrix
 from de_ebsd.index import _kernels
 from de_ebsd.index.live import calibration, deformation
-from de_ebsd.index.live.background import ResidualBackground, ScanBackground
+from de_ebsd.index.live.background import (
+    LOG_FLOOR,
+    LOG_OFFSET,
+    LOG_POLYNOMIAL,
+    ResidualBackground,
+    ScanBackground,
+)
 from de_ebsd.index.live.common import (
     BATCH,
     FUSED_BATCH,
@@ -269,6 +277,13 @@ class LiveIndexer:
     search_options
         Keyword arguments for :class:`~de_ebsd.index.live.inplane.InplaneSearch`,
         such as its working-memory budget (``memory``, bytes).
+    background
+        How a pattern's background is removed before its dynamic one
+        (:class:`~de_ebsd.index.live.background.ScanBackground`):
+        ``"log-polynomial"``, the pattern's log less its own low-degree surface,
+        which needs no other frame; or ``"static"``, the pattern divided by the
+        scan's running mean (:meth:`observe`), which early in a scan carries the
+        bands of its first grains.
     """
 
     @holds_lock
@@ -293,6 +308,7 @@ class LiveIndexer:
         residual_background: ResidualBackground | None = None,
         search: str = "flat",
         search_options: dict | None = None,
+        background: str = LOG_POLYNOMIAL,
     ) -> None:
         self.lock = resolve_lock(lock)
         from orix.sampling import get_sample_fundamental
@@ -371,7 +387,7 @@ class LiveIndexer:
         #: entries ``u * thetas + m``.
         self.offsets = np.cumsum([0, *self.sizes[:-1]])
         self.set_pattern_center(detector.pattern_center)
-        self.background = ScanBackground(self.refine_shape, self.device)
+        self.background = ScanBackground(self.refine_shape, self.device, kind=background)
         self.set_residual_background(residual_background)
         #: The dynamic background's Gaussian for the fused :meth:`prepare`.
         self._prepare_weights, _ = _gaussian_kernel_1d(
@@ -663,7 +679,7 @@ class LiveIndexer:
     def add_fits(self, phase, g, center_maps=None) -> None:
         """Add the simulations of fitted orientations *g* ``(N, 3, 3)`` to the
         scan's :attr:`ghost`."""
-        if self.background.blur:
+        if not self.background.has_ghost:
             return
         if center_maps is not None:
             g = g @ center_maps
@@ -714,6 +730,9 @@ class LiveIndexer:
             self._prepare_weights,
             SINGLE_PRECISION_FLOOR,
             out=out,
+            basis=self.background.basis(),
+            log_offset=LOG_OFFSET,
+            log_floor=LOG_FLOOR,
         )
 
     @holds_lock
@@ -1453,7 +1472,7 @@ class LiveIndexer:
 
     def _add_fits_in_workspace(self, phase, g, bases):
         """:meth:`add_fits`, the simulations projected into the workspace."""
-        if self.background.blur:
+        if not self.background.has_ghost:
             return
         workspace = self.workspace
         simulations = workspace.simulations(len(g), len(self.refine_directions))
