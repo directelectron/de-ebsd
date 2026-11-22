@@ -586,6 +586,17 @@ class DynamicalIndexer:
         with accelerator_lock(self.device), torch.no_grad():
             self.live.observe(_on_device(frames, self.device))
 
+    def pooled(self, frames):
+        """*frames* on the device, averaged to the refine shape
+        (``LiveIndexer.pooled``): give these to :meth:`observe` and
+        :meth:`index` in place of the frames, which index the same, and a
+        camera's batch is converted and pooled once instead of by each — a
+        quarter of the time at 512 x 512."""
+        import torch
+
+        with accelerator_lock(self.device), torch.no_grad():
+            return self.live.pooled(_as_tensor(frames).to(self.device))
+
     def corrected(self, frame) -> np.ndarray:
         """One frame background-corrected at its own resolution, on the host,
         to be looked at."""
@@ -676,13 +687,21 @@ def refine_pattern_center(
         return indexer.live.refine_pattern_center(t)
 
 
+def _as_tensor(frames):
+    """*frames* as a tensor, where they are and in their dtype: a CuPy array
+    handed over without a copy (DLPack), a NumPy one wrapped."""
+    import torch
+
+    if isinstance(frames, torch.Tensor):
+        return frames
+    if hasattr(frames, "__dlpack__") and not isinstance(frames, np.ndarray):
+        return torch.from_dlpack(frames)
+    return torch.as_tensor(np.asarray(frames))
+
+
 def _on_device(frames, device):
     """*frames* as float32 on *device*. A CuPy array is handed over without a
     copy (DLPack) and converted there; a NumPy one is uploaded."""
     import torch
 
-    if hasattr(frames, "__dlpack__") and not isinstance(frames, np.ndarray):
-        t = torch.from_dlpack(frames)
-    else:
-        t = torch.as_tensor(np.asarray(frames))
-    return t.to(device=device, dtype=torch.float32)
+    return _as_tensor(frames).to(device=device, dtype=torch.float32)

@@ -904,3 +904,15 @@ def test_retry_speckle_puts_a_finished_maps_speckle_right(master, point_group, d
     error = _errors(torch.as_tensor(retried.g), rotation, point_group)
     assert np.max(error) < 0.5
     assert retried.entry[6] in (2, 5, 7, 10)
+
+
+def test_integer_frames_are_pooled_a_chunk_at_a_time_as_a_whole(
+    master, point_group, detector, monkeypatch
+):
+    """A camera's integer frames, converted to float `POOL_CHUNK` at a time as
+    they are pooled, average as the whole batch converted at once."""
+    indexer = _small_indexer(master, point_group, detector, device="cpu")
+    frames = _camera_frames(master, detector, device="cpu").to(torch.int32)
+    monkeypatch.setattr(live_indexer, "POOL_CHUNK", 3)
+    whole = indexer.pooled(frames.to(torch.float32))
+    assert torch.equal(indexer.pooled(frames), whole)
