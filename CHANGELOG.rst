@@ -9,6 +9,21 @@ time by `towncrier <https://towncrier.readthedocs.io/>`_ — see
 
 .. towncrier release notes start
 
+0.8.0 (2026-11-22)
+==================
+
+API and Behaviour Changes
+-------------------------
+
+- The live indexer's patterns had their background removed by default as each pattern's log (of itself plus half its mean) less its own least-squares polynomial surface of degree 2 (``background="log-polynomial"`` on :class:`~de_ebsd.index.live.LiveIndexer`, :class:`~de_ebsd.pipeline.orientation.indexing.DynamicalIndexer` and :class:`~de_ebsd.index.live.background.ScanBackground`), in the fused prepare kernel as on the torch path, instead of dividing by the scan's running mean. The running mean carried the bands of a scan's first grains. Against OIM, counting the points more than 5 degrees from every OIM point within 3 steps: a 200 x 200 Ni scan went from 599 to none, a counted 500 x 500 one from 3 to none; an integrating scan with no reference scored 0.52 for 0.32. There is no static background, search frames or ghost to keep. Pass ``background="static"`` for the old preparation, which :func:`~de_ebsd.index.appearance.fit_appearance` needs: its model prepares simulations the static way.
+
+
+New Features
+------------
+
+- The in-plane search took several candidates (``candidates=K``): with two and a fine step, a pattern on a grain boundary indexed as one of its two grains rather than a third orientation; and :func:`~de_ebsd.index.live.retry_speckle` could also retry, after a scan, the points scoring below ``score_fraction`` of the map's median from seeds up to ``radius`` steps out.
+
+
 0.7.0 (2026-11-19)
 ==================
 
