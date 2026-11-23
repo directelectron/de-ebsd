@@ -641,17 +641,29 @@ class DynamicalIndexer:
                 measured,
             )
 
-    def strain_from_reference(self, frames, reference) -> np.ndarray:
+    def strain_from_reference(
+        self, frames, reference, rotations=None, reference_rotation=None, phase: int = 0
+    ) -> np.ndarray:
         """The deviatoric strain ``(N, 3, 3)`` of *frames*, in OIM's sample
-        frame, relative to one real *reference* frame: correlated against it
-        rather than against the master, so it holds only within the
-        reference's grain (de_ebsd's ``strain_from_reference``)."""
+        frame, relative to one real *reference* frame: fitted against it rather
+        than against the master, so it holds only within the reference's grain
+        (de_ebsd's ``strain_from_reference``). With the frames' indexed
+        *rotations* and the reference's, of *phase*, each fit starts from the
+        lattice rotation between them, which it needs beyond a fraction of a
+        degree."""
         import torch
 
         frames = frames[None] if frames.ndim == 2 else frames
+        seed = {}
+        if rotations is not None:
+            seed = {
+                "rotations": np.asarray(rotations).reshape(-1, 3, 3),
+                "reference_rotation": np.asarray(reference_rotation).reshape(3, 3),
+                "symmetry": self.symmetry(phase),
+            }
         with accelerator_lock(self.device), torch.no_grad():
             strain, _, _ = self.live.strain_from_reference(
-                _on_device(frames, self.device), _on_device(reference, self.device)
+                _on_device(frames, self.device), _on_device(reference, self.device), **seed
             )
             return strain.cpu().numpy()
 
