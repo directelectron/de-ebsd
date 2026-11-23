@@ -46,6 +46,47 @@ lengths in nm. Per step, at energy ``E``:
 The angular distribution is strongly forward-peaked (``alpha`` of order 1e-3),
 so backscatter accumulates from many small deflections.
 
+Mott elastic scattering
+-----------------------
+
+Screened Rutherford is the first Born approximation. It scatters too much
+between about 5 and 60 degrees and too little past 90 (for nickel at 15 keV its
+differential cross section is 1.3-1.7 times the Mott value from 5 to 20 degrees
+and 0.8 times past 120, and its transport cross section is 17 % high), so it
+overestimates the backscatter yield. ``elastic="mott"`` (or
+``compute(mc_elastic="mott")``) replaces it with Mott cross sections computed by
+ELSEPA :cite:`salvat2005elsepa` for the neutral free atom with ELSEPA's default
+model (Dirac-Fock density, Fermi nucleus, Furness-McCarthy exchange, no
+polarization or absorption):
+
+- mean free path ``1 / (n sum_i x_i sigma_i(E))`` from ELSEPA's total cross
+  sections, interpolated in ``ln sigma`` against ``ln E``;
+- the atom of each collision drawn with probability ``x_i sigma_i / sum``, for a
+  compound, ``x_i`` its number fraction;
+- the polar angle from the inverse cumulative distribution of that atom's
+  differential cross section, interpolated between the two bracketing table
+  energies in ``ln E``.
+
+The package table (:func:`~de_ebsd.sim.montecarlo.mott_cross_sections`, 41
+elements, 50 eV to 30 keV) keeps ELSEPA's differential cross section at 30
+energies and 128 of its 606 angles. Against ELSEPA's full output (119 energies,
+all angles) the sampled distribution differs by at most 0.0011 in cumulative
+probability above 1 keV, and nickel's backscatter coefficient by under 0.001.
+``scripts/generate_mott_tables.py`` rebuilds the table, or one with other
+elements, from an ELSEPA executable.
+
+========================  ==========  ===================  =====
+15 keV, normal incidence  measured    screened Rutherford  Mott
+========================  ==========  ===================  =====
+Ni                        about 0.30  0.328                0.304
+Al                                    0.168                0.155
+Au                                    0.558                0.481
+========================  ==========  ===================  =====
+
+The Mott model applies to the hard-mode Monte Carlo
+(``simulate_depth_distribution``); the scalar reference trajectory and the
+differentiable soft mode remain screened Rutherford.
+
 Binning follows EMsoft's host code: energy bin
 ``round((E - Ehistmin) / Ebinsize)``, depth bin
 ``round(|escape_depth| / depthstep)`` with ``escape_depth = z_pre / c_z``, and

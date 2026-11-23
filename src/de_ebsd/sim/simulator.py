@@ -120,6 +120,7 @@ class MasterPatternSimulator:
         dtype: torch.dtype = torch.float32,
         chunk_size: int = 262_144,
         mc_electrons: int = 200_000,
+        mc_elastic: str = "screened_rutherford",
         symmetry: bool = True,
         energy_resolved: bool = False,
         progress: Callable[[int, int], None] | None = None,
@@ -139,6 +140,11 @@ class MasterPatternSimulator:
             Electron count for the native Monte Carlo depth profile built when
             the backend needs one and no ``monte_carlo`` was supplied. Ignored if
             a depth profile is provided or the backend does not use one.
+        mc_elastic
+            Elastic scattering model of that Monte Carlo: ``"screened_rutherford"``
+            (EMsoft's, the default) or ``"mott"`` (ELSEPA cross sections, closer
+            to measured backscatter yields); see
+            :func:`~de_ebsd.sim.montecarlo.transport.simulate_depth_distribution`.
         symmetry
             Fold the beam directions onto the point-group fundamental sector so
             each symmetry-distinct direction is computed once (exact; ~15x fewer
@@ -184,6 +190,7 @@ class MasterPatternSimulator:
                 n_electrons=mc_electrons,
                 device=device,
                 seed=0,
+                elastic=mc_elastic,
             )
 
         # beam directions and the (energy-independent) symmetry fold

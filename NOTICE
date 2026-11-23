@@ -42,3 +42,16 @@ The spherical-harmonic and SO(3) cross-correlation indexer follows Lenthe, Singh
 and De Graef, "A spherical harmonic transform approach to the indexing of
 electron back-scattered diffraction patterns", Ultramicroscopy 207, 112841
 (2019).
+
+ELSEPA
+------
+The Mott elastic cross sections in sim/montecarlo/data/mott_elsepa.npz were
+computed with ELSEPA (Salvat, Jablonski and Powell, "ELSEPA - Dirac partial-wave
+calculation of elastic scattering of electrons and positrons by atoms, positive
+ions and molecules", Comput. Phys. Commun. 165, 157-190, 2005), from the
+distribution at https://github.com/eScatter/elsepa (Copyright 2004 Francesc
+Salvat, Aleksander Jablonski and Cedric J. Powell; 2016 Johan Hidding,
+Netherlands eScience Center; Apache License 2.0). The table holds ELSEPA's
+numeric output only; ELSEPA itself is not distributed with de-ebsd and is not
+called at run time. scripts/generate_mott_tables.py rebuilds the table and
+records the ELSEPA settings in it.

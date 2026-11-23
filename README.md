@@ -79,7 +79,11 @@ explorer = sim.crystal.explore(energy_kev=200, dmin=0.1)
 
 The exit-depth statistics the dynamical solve integrates over come from a native
 Monte Carlo (`de_ebsd.sim.montecarlo`) unless you pass a `DepthDistribution`,
-for example one read from an EMsoft Monte Carlo file.
+for example one read from an EMsoft Monte Carlo file. Its elastic scattering is
+EMsoft's screened Rutherford by default; `sim.compute(mc_elastic="mott")` uses
+Mott cross sections computed with [ELSEPA](https://github.com/eScatter/elsepa)
+(Salvat, Jablonski & Powell 2005), which match measured backscatter yields more
+closely.
 
 ## License
 

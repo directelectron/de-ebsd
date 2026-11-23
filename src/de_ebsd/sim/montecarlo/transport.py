@@ -1,15 +1,16 @@
 """Monte Carlo electron transport in a bulk sample.
 
-Screened Rutherford elastic scattering with Joy-Luo continuous slowing down,
-batched on the GPU, producing the backscattered exit energy/depth statistics the
-master pattern integrates over. The scattering model is that of EMsoft's
-``EMMC.cl`` kernel.
+Elastic scattering with Joy-Luo continuous slowing down, batched on the GPU,
+producing the backscattered exit energy/depth statistics the master pattern
+integrates over. The default elastic model, screened Rutherford, and the rest of
+the scattering model are those of EMsoft's ``EMMC.cl`` kernel; Mott cross
+sections (:mod:`de_ebsd.sim.montecarlo.mott`) are the alternative.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import torch
@@ -17,6 +18,8 @@ import torch
 from de_ebsd.core.constants import C_AVOGADRO
 from de_ebsd.core.device import resolve_device
 from de_ebsd.crystal.lattice import Crystal
+from de_ebsd.crystal.scattering import atomic_number
+from de_ebsd.sim.montecarlo.mott import MottCrossSections, MottSampler
 
 if TYPE_CHECKING:
     from de_ebsd.sim.montecarlo.depth import DepthDistribution
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
 __all__ = [
     "mean_ionization_potential_kev",
     "MaterialProperties",
+    "ELASTIC_MODELS",
     "screening_parameter",
     "elastic_cross_section_na",
     "mean_free_path_nm",
@@ -47,6 +51,9 @@ _STOP_C = 0.00785  # Joy-Luo mass stopping-power prefactor
 _STOP_A = 1.166  # stopping-power log scale:  ln(1.166 E/J + 0.9911)
 _STOP_B = 0.9911  # stopping-power log offset
 _CM_TO_NM = 1.0e7
+
+#: The elastic scattering models ``simulate_depth_distribution(elastic=...)`` takes.
+ELASTIC_MODELS = ("screened_rutherford", "mott")
 
 
 def mean_ionization_potential_kev(z: float) -> float:
@@ -75,6 +82,11 @@ class MaterialProperties:
         Atomic number density in atoms/nm^3.
     mean_ionization_kev
         Berger-Seltzer mean ionization potential J in keV.
+    composition
+        ``(Z, number fraction)`` per element. Screened Rutherford scatters off
+        one mean atom of ``mean_z`` and ignores it; Mott scattering picks an atom
+        per collision and needs it. Empty when unknown, which Mott scattering
+        accepts only for a pure element (a whole ``mean_z``).
     """
 
     mean_z: float
@@ -82,6 +94,7 @@ class MaterialProperties:
     density: float
     number_density: float
     mean_ionization_kev: float
+    composition: tuple[tuple[int, float], ...] = ()
 
     @classmethod
     def from_crystal(cls, crystal: Crystal) -> MaterialProperties:
@@ -91,13 +104,32 @@ class MaterialProperties:
         density = crystal.density
         # atoms/nm^3 = (g/cm^3)(atoms/mol)/(g/mol) [=atoms/cm^3] * 1e-21 cm^3/nm^3
         number_density = density * C_AVOGADRO / mean_a * 1e-21
+        counts: dict[int, float] = {}
+        for site, count in zip(crystal.sites, crystal._site_counts, strict=True):
+            z = atomic_number(site.element)
+            counts[z] = counts.get(z, 0.0) + float(count)
+        total = sum(counts.values())
         return cls(
             mean_z=mean_z,
             mean_a=mean_a,
             density=density,
             number_density=number_density,
             mean_ionization_kev=mean_ionization_potential_kev(mean_z),
+            composition=tuple((z, counts[z] / total) for z in sorted(counts)),
         )
+
+    def element_fractions(self) -> tuple[tuple[int, float], ...]:
+        """``composition``, or the one element ``mean_z`` names when it is empty."""
+        if self.composition:
+            return self.composition
+        z = round(self.mean_z)
+        if abs(self.mean_z - z) > 1e-6:
+            raise ValueError(
+                f"Mott scattering needs the composition of a material of mean Z "
+                f"{self.mean_z:.4g}: build it with MaterialProperties.from_crystal or "
+                "pass composition=((Z, fraction), ...)."
+            )
+        return ((int(z), 1.0),)
 
     def __repr__(self) -> str:
         return (
@@ -293,6 +325,7 @@ def simulate_depth_distribution(
     max_steps: int = 1000,
     device: str | torch.device | None = None,
     seed: int | None = None,
+    elastic: Literal["screened_rutherford", "mott"] | MottCrossSections = "screened_rutherford",
 ) -> DepthDistribution:
     """Native (EMsoft-free) exit depth/energy statistics via a batched MC.
 
@@ -309,6 +342,20 @@ def simulate_depth_distribution(
     window is the reconciliation item for M-MC.4). ``e_min_kev`` doubles as the
     energy-bin floor (``Ehistmin``) and the absorption cutoff -- an electron that
     slows below it can only lose more energy, so it could never land in a bin.
+
+    ``elastic`` picks the elastic scattering model. ``"screened_rutherford"``
+    (the default) is EMsoft's: one mean atom of ``mean_z``, closed-form mean free
+    path and angle. ``"mott"`` scatters by ELSEPA's Mott cross sections
+    (:mod:`de_ebsd.sim.montecarlo.mott`), which correct screened Rutherford's
+    excess between about 5 and 60 degrees and its shortfall past 90 degrees, and
+    so its overestimate of the backscatter yield (for nickel at 15 keV, normal
+    incidence, 0.30 measured, 0.304 Mott, 0.328 screened Rutherford). Each
+    collision picks an atom of the composition by its share of the cross section.
+    The package table covers the common elements; a ``MottCrossSections`` read
+    from a table you generated covers the rest. A seeded Mott run is
+    reproducible, but its random stream is not screened Rutherford's (a compound
+    draws one more number a step to pick the atom), and the default model's
+    results are those of earlier releases bit for bit.
     """
     from de_ebsd.sim.montecarlo.depth import DepthDistribution
 
@@ -321,6 +368,7 @@ def simulate_depth_distribution(
     gen = torch.Generator(device=dev)
     if seed is not None:
         gen.manual_seed(int(seed))
+    mott = _mott_sampler(elastic, material, dev)
 
     z, a_weight = float(material.mean_z), float(material.mean_a)
     rho, j_kev = float(material.density), float(material.mean_ionization_kev)
@@ -350,15 +398,22 @@ def simulate_depth_distribution(
         if not bool(alive.any()):
             break
         e = energy
-        alpha = _SCREEN_C * z23 / e
-        rel = ((e + _REST_KEV) / (e + _REST2_KEV)) ** 2
-        sig_ena = _SIGMA_C * z * z / (e * e) * 4.0 * np.pi / (alpha * (1.0 + alpha)) * rel
-        mfp = a_weight * _CM_TO_NM / (rho * sig_ena)
+        if mott is None:
+            alpha = _SCREEN_C * z23 / e
+            rel = ((e + _REST_KEV) / (e + _REST2_KEV)) ** 2
+            sig_ena = _SIGMA_C * z * z / (e * e) * 4.0 * np.pi / (alpha * (1.0 + alpha)) * rel
+            mfp = a_weight * _CM_TO_NM / (rho * sig_ena)
+        else:
+            mfp = mott.mean_free_path_nm(e)
         step = -mfp * torch.log(1.0 - _rand())  # exponential free path (nm)
         de_ds = -_STOP_C * z / (a_weight * e) * torch.log(_STOP_A * e / j_kev + _STOP_B)
 
-        cos_theta = 1.0 - 2.0 * alpha * (u := _rand()) / (1.0 + alpha - u)
-        psi = 2.0 * np.pi * _rand()
+        if mott is None:
+            cos_theta = 1.0 - 2.0 * alpha * (u := _rand()) / (1.0 + alpha - u)
+            psi = 2.0 * np.pi * _rand()
+        else:
+            u, psi = _rand(), 2.0 * np.pi * _rand()
+            cos_theta = mott.sample_cos(e, u, _rand() if mott.n_elements > 1 else None)
         c_new = _rotate_batch(direction, cos_theta, psi)
 
         cz = c_new[:, 2]
@@ -407,6 +462,23 @@ def simulate_depth_distribution(
         depth_step=float(depth_step_nm),
         accum_z=accum_z,
         n_total=float(n),
+    )
+
+
+def _mott_sampler(elastic, material: MaterialProperties, device) -> MottSampler | None:
+    """The Mott sampler ``elastic`` asks for, or None for screened Rutherford."""
+    if isinstance(elastic, MottCrossSections):
+        tables = elastic
+    elif elastic == "screened_rutherford":
+        return None
+    elif elastic == "mott":
+        tables = None
+    else:
+        raise ValueError(
+            f"elastic must be one of {ELASTIC_MODELS} or a MottCrossSections, not {elastic!r}"
+        )
+    return MottSampler(
+        material.element_fractions(), material.number_density, tables=tables, device=device
     )
 
 
