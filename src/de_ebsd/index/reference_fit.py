@@ -62,13 +62,20 @@ REFERENCE_GRAIN_DEG = 5.0
 #: that is up to a few pixels off at full resolution in, the last one fits.
 PYRAMID = (4, 2, 1)
 
-#: Gauss-Newton iterations at each level, at most; a level stops sooner once
-#: every pattern's largest step is below :data:`TOLERANCE`.
-ITERATIONS = 25
+#: Iterations at each level, at most; a level stops sooner once every
+#: pattern's largest step is below :data:`TOLERANCE`. On real Si patterns near
+#: an indent, 25 left strains 1.9e-4 from the converged fit, 50 left 1.1e-5.
+ITERATIONS = 50
 
 #: The largest step, of the deformation's eight orthonormal numbers, that
 #: counts as converged: 1e-7 is a hundredth of the best floor measured.
 TOLERANCE = 1e-7
+
+#: The Levenberg-Marquardt damping a level starts from, on the equilibrated
+#: normal equations (unit diagonal): a tenth of a step's share of each
+#: direction's curvature. It falls by three after a step that lowers the cost
+#: and rises tenfold after one that raises it.
+DAMPING = 1e-3
 
 #: The largest step one iteration may take. A step is the solve of a local
 #: linear model; on a pattern unlike the reference (a boundary, another grain
@@ -341,10 +348,59 @@ class _Level:
         return value, grad_col, grad_row, inside
 
 
+#: Pixels whose products are summed in single precision before the sum goes on
+#: in double (:func:`_normal_equations`).
+SUM_CHUNK = 4096
+
+
+def _normal_equations(jacobian: torch.Tensor, residual: torch.Tensor):
+    """``J J^T`` and ``J r``, in double, from *jacobian* ``(N, P, K)`` and
+    *residual* ``(N, K)``: summed in single over :data:`SUM_CHUNK` pixels at a
+    time, the chunks' sums in double.
+
+    The system is ill-conditioned, and summed in single over a whole real
+    pattern its rounding (1.5e-4 of the largest term, differing between devices
+    and batch sizes) sent the fit of a pattern against itself away from the
+    identity, tenfold an iteration. Summed in double throughout, it held, but
+    a workstation GPU's double rate made the fit 28 times slower."""
+    n, p, k = jacobian.shape
+    normal = torch.zeros(n, p, p, device=jacobian.device, dtype=torch.float64)
+    gradient = torch.zeros(n, p, device=jacobian.device, dtype=torch.float64)
+    for lo in range(0, k, SUM_CHUNK):
+        part = jacobian[..., lo : lo + SUM_CHUNK]
+        normal += (part @ part.transpose(1, 2)).double()
+        gradient += (part @ residual[:, lo : lo + SUM_CHUNK, None])[..., 0].double()
+    return normal, gradient
+
+
+def _cost(level, f, contrast, reference_pattern_center) -> torch.Tensor:
+    """``(N,)`` the mean squared residual over the pixels inside the reference."""
+    q = torch.einsum("nij,nkj->nki", torch.linalg.inv(f), level.rays)
+    row, col = pixels_from_rays(level.detector, reference_pattern_center, q)
+    value, _, _, inside = level.sample(row, col)
+    model = contrast[:, 0] @ level.surface + (contrast[:, 1] @ level.surface) * value
+    w = inside.to(torch.float64)
+    return (((level.values - model).double() * w) ** 2).sum(-1) / w.sum(-1).clamp_min(1.0)
+
+
+def _keep_better(level, f, contrast, kept_f, kept_contrast, kept_cost, reference_pattern_center):
+    worse = _cost(level, f, contrast, reference_pattern_center) > kept_cost
+    back = worse[:, None, None]
+    return torch.where(back, kept_f, f), torch.where(back, kept_contrast, contrast)
+
+
 def _fit_level(level: _Level, f, contrast, reference_pattern_center, iterations, tolerance):
-    """Gauss-Newton at one level: *f* ``(N, 3, 3)`` and *contrast* ``(N, 2, M)``
-    (the offset's and the scale's coefficients over :attr:`_Level.surface`)
-    refined, returned as ``(f, contrast, score, last_step)``."""
+    """Levenberg-Marquardt at one level: *f* ``(N, 3, 3)`` and *contrast*
+    ``(N, 2, M)`` (the offset's and the scale's coefficients over
+    :attr:`_Level.surface`) refined, returned as ``(f, contrast, score,
+    last_step)``.
+
+    A step is kept only if it lowers the pattern's mean squared residual;
+    otherwise it is taken back and the damping raised tenfold. A single
+    pattern barely tells some rotations from a moved pattern center and a
+    strain, and undamped Gauss-Newton wandered along them: on a real Si pattern
+    near an indent its steps were still 1e-3 after 25 iterations at the
+    coarsest level."""
     n = len(f)
     dtype, device = f.dtype, f.device
     basis = _basis(device, dtype)
@@ -355,6 +411,9 @@ def _fit_level(level: _Level, f, contrast, reference_pattern_center, iterations,
     t = level.values
     eye = torch.eye(3, device=device, dtype=dtype)
     last = torch.full((n,), torch.inf, device=device, dtype=dtype)
+    damping = torch.full((n,), DAMPING, device=device, dtype=torch.float64)
+    kept_cost = torch.full((n,), torch.inf, device=device, dtype=torch.float64)
+    kept_f, kept_contrast = f, contrast
     for _ in range(iterations):
         inverse = torch.linalg.inv(f)
         q = torch.einsum("nij,nkj->nki", inverse, level.rays)
@@ -377,21 +436,45 @@ def _fit_level(level: _Level, f, contrast, reference_pattern_center, iterations,
         columns.append(torch.stack(slopes, 1))
         jacobian = torch.cat(columns, 1) * w[:, None]  # (N, 2M + 8, K)
         residual = (t - offset - scale * value) * w
-        normal = (jacobian @ jacobian.transpose(1, 2)).double()
-        gradient = (jacobian @ residual[..., None])[..., 0].double()
-        damping = 1e-9 * normal.diagonal(dim1=-2, dim2=-1)
-        normal = normal + torch.diag_embed(damping)
-        step, singular = torch.linalg.solve_ex(normal, gradient)
-        usable = (singular == 0)[:, None] & step.isfinite().all(-1, keepdim=True)
+        cost = (residual.double() ** 2).sum(-1) / w.double().sum(-1).clamp_min(1.0)
+        # a step that raised the cost is taken back, and the next one damped more
+        worse = cost > kept_cost
+        damping = torch.where(worse, damping * 10.0, damping / 3.0).clamp(DAMPING / 1e3, 1e6)
+        if bool(worse.any()):
+            back = worse[:, None, None]
+            f, contrast = torch.where(back, kept_f, f), torch.where(back, kept_contrast, contrast)
+            if bool(worse.all()):
+                continue
+            # the others' Jacobians stand; the taken-back patterns are solved
+            # again from their kept point next iteration, more damped
+        kept_cost = torch.where(worse, kept_cost, cost)
+        kept_f, kept_contrast = f, contrast
+        normal, gradient = _normal_equations(jacobian, residual)
+        del jacobian
+        # Solved equilibrated, so the solve and the damping do not depend on
+        # the columns' units, which span orders of magnitude on a camera's counts.
+        diagonal = normal.diagonal(dim1=-2, dim2=-1)
+        unit = diagonal.clamp_min(DIVISION_FLOOR).rsqrt()
+        normal = normal * unit[:, :, None] * unit[:, None, :]
+        eye_p = torch.eye(len(unit[0]), device=device, dtype=normal.dtype)
+        normal = normal + damping[:, None, None] * eye_p
+        step, singular = torch.linalg.solve_ex(normal, gradient * unit)
+        step = step * unit
+        usable = (singular == 0)[:, None] & step.isfinite().all(-1, keepdim=True) & ~worse[:, None]
         step = torch.where(usable, step, torch.zeros_like(step)).to(dtype)
         move = step[:, 2 * m :]
         reach = move.abs().amax(-1, keepdim=True)
         move = move * (MAX_STEP / reach.clamp_min(MAX_STEP))
         contrast = contrast + step[:, : 2 * m].reshape(n, 2, m)
         f = (eye + torch.einsum("nk,kij->nij", move, basis)) @ f
-        last = move.abs().amax(-1)
+        last = torch.where(worse, last, move.abs().amax(-1))
         if bool((last < tolerance).all()):
             break
+    else:
+        # the last step was never checked: keep it only if it did not raise the cost
+        f, contrast = _keep_better(
+            level, f, contrast, kept_f, kept_contrast, kept_cost, reference_pattern_center
+        )
     # the score: the correlation of the pattern with the model at the final warp
     q = torch.einsum("nij,nkj->nki", torch.linalg.inv(f), level.rays)
     row, col = pixels_from_rays(level.detector, reference_pattern_center, q)

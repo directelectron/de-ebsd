@@ -106,6 +106,30 @@ def test_a_stack_in_batches_is_the_stack_at_once(master, detector):
     assert torch.equal(whole.converged, parts.converged)
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_a_batch_at_camera_counts_is_each_pattern_alone(master, detector, device):
+    """Patterns of tens of thousands of counts, several to a call: each comes
+    out as it does alone, and the reference against itself is the identity.
+    Summed in single precision, the normal equations of a batch on CUDA once
+    sent the reference's own fit to a 2e-2 strain."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("no CUDA")
+    rng = np.random.default_rng(8)
+    background = _background(0, 0, 70)
+    ref = 2e4 * background * (4 + _render(master, detector))
+    turns = [_rotation([0.3, -0.5, 0.8], np.deg2rad(d)) for d in (0.3, 0.8)]
+    test = [ref] + [2e4 * background * (4 + _render(master, detector, t)) for t in turns]
+    test = torch.stack(test) + 300 * torch.as_tensor(rng.standard_normal((3, SIDE, SIDE)))
+    test = prepare_patterns(test.float().to(device))
+    ref = test[0]
+    together = fit_reference(test, ref, detector)
+    for i in range(len(test)):
+        alone = fit_reference(test[i], ref, detector)
+        assert torch.allclose(together.strain[i], alone.strain[0], atol=1e-6)
+    assert together.strain[0].abs().max() < 1e-6
+    assert together.converged.all()
+
+
 def test_a_reference_of_another_shape_is_refused(master, detector):
     ref = torch.zeros(SIDE // 2, SIDE // 2)
     with pytest.raises(ValueError, match="reference"):
