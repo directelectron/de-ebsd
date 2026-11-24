@@ -19,6 +19,10 @@ FRAME_SHAPE = (24, 30)
 
 @pytest.fixture(scope="module")
 def indexer():
+    return _indexer("cpu")
+
+
+def _indexer(device, shape=FRAME_SHAPE):
     import torch
 
     import de_ebsd
@@ -33,7 +37,7 @@ def indexer():
     master = de_ebsd.MasterPattern(
         torch.rand(1, 2, 31, 31, generator=generator), np.array([20.0]), {}
     )
-    return DynamicalIndexer([phase], [master], Geometry(FRAME_SHAPE), step_deg=15.0, device="cpu")
+    return DynamicalIndexer([phase], [master], Geometry(shape), step_deg=15.0, device=device)
 
 
 @pytest.fixture(scope="module")
@@ -60,8 +64,31 @@ def test_the_static_background_restarts_from_frames_blurred(indexer, frames):
     indexer.restart_static()
 
 
-def test_strain_from_a_reference_returns_a_tensor_per_frame(indexer, frames):
-    assert indexer.strain_from_reference(frames, frames[0]).shape == (FRAMES, 3, 3)
+def test_strain_from_a_reference_returns_arrays_per_frame(indexer, frames):
+    strain, rotation_vector, score = indexer.strain_from_reference(frames, frames[0])
+    assert strain.shape == (FRAMES, 3, 3) and strain.dtype == np.float32
+    assert rotation_vector.shape == (FRAMES, 3) and score.shape == (FRAMES,)
+
+
+def test_a_strain_reference_is_built_once_and_fitted_against():
+    """On CUDA: the reference the workflow builds before a scan, then each
+    batch's frames, orientations and pattern centers fitted against it."""
+    from de_ebsd.index import _kernels
+    from de_ebsd.index.live.reference import StrainReference
+
+    if not _kernels.available("cuda"):
+        pytest.skip("needs CUDA and CuPy")
+    indexer = _indexer("cuda", (64, 80))
+    frames = np.random.default_rng(0).random((FRAMES, 64, 80), dtype=np.float32)
+    reference = indexer.strain_reference(frames[:2], rotation=np.eye(3), phase=0)
+    assert isinstance(reference, StrainReference)
+    centers = np.tile(indexer.live.detector.pattern_center, (FRAMES, 1))
+    rotations = np.tile(np.eye(3), (FRAMES, 1, 1))
+    strain, rotation_vector, score = indexer.strain_from_reference(
+        frames, reference, rotations, pattern_centers=centers
+    )
+    assert strain.shape == (FRAMES, 3, 3) and strain.dtype == np.float32
+    assert rotation_vector.shape == (FRAMES, 3) and score.shape == (FRAMES,)
 
 
 def test_the_indexer_holds_its_own_lock_by_default(indexer):

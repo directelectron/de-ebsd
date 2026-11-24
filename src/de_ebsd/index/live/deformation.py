@@ -522,8 +522,32 @@ def strain_from_reference(
     differences from the reference, which should be strain-free. The patterns
     are not divided by the static background: the fit's contrast surface takes
     up the ratio of the two points' backgrounds.
+
+    On a CUDA device the fit is :class:`~de_ebsd.index.live.reference.StrainReference`'s,
+    at the frames' own resolution binned to at most
+    :data:`~de_ebsd.index.live.reference.STRAIN_SIDE`; *reference* may then be
+    one already built, which a scan should do once, before it starts. Elsewhere
+    (tests, a machine without a GPU) it is the pyramid fit at the refine shape.
     """
-    from de_ebsd.index import reference_fit
+    from de_ebsd.index import _kernels, reference_fit
+    from de_ebsd.index.live.reference import StrainReference
+
+    if isinstance(reference, StrainReference) or _kernels.available(indexer.device):
+        if not isinstance(reference, StrainReference):
+            detector = indexer.detector
+            if reference_center is not None:
+                detector = replace(
+                    detector, pattern_center=tuple(float(v) for v in reference_center)
+                )
+            reference = StrainReference(
+                reference,
+                detector,
+                rotation=reference_rotation,
+                symmetry=symmetry,
+                device=indexer.device,
+            )
+        found = reference.fit(frames, pattern_centers=pattern_centers, rotations=rotations)
+        return found.strain, found.rotation_vector, found.score
 
     test = torch.cat(
         [indexer.pooled(frames[lo : lo + BATCH]) for lo in range(0, len(frames), BATCH)]

@@ -1228,13 +1228,38 @@ class LiveIndexer:
         :func:`~de_ebsd.index.live.deformation.refine_deformation`."""
         return deformation.refine_deformation(self, refine_rows, phase, g, **kwargs)
 
+    def strain_reference(self, frames, *, rotation=None, phase: int | None = None):
+        """A :class:`~de_ebsd.index.live.reference.StrainReference` from a
+        strain-free point's *frames* ``(H, W)`` or ``(N, H, W)``, summed, at this
+        indexer's pattern center (the reference point's), for a scan to fit its
+        patterns against. With the reference's indexed *rotation* and *phase*
+        each fit is seeded from the pattern's own orientation. Built once,
+        before the scan: it projects the reference over the sphere."""
+        from de_ebsd.index.live.reference import StrainReference
+
+        symmetry = None
+        if phase is not None:
+            point_group = self.point_groups[phase]
+            symmetry = getattr(point_group, "proper_subgroup", point_group)
+        return StrainReference(
+            frames,
+            self.detector,
+            rotation=rotation,
+            symmetry=symmetry,
+            phase=phase,
+            device=self.device,
+        )
+
     @holds_lock
     def strain_from_reference(self, frames, reference, **kwargs):
-        """The strain of *frames* relative to one real *reference* frame; see
+        """The strain of *frames* relative to a real *reference*: a frame, or a
+        :meth:`strain_reference` built from one; see
         :func:`~de_ebsd.index.live.deformation.strain_from_reference`."""
-        return deformation.strain_from_reference(
-            self, _stack(frames), as_frames(reference), **kwargs
-        )
+        from de_ebsd.index.live.reference import StrainReference
+
+        if not isinstance(reference, StrainReference):
+            reference = as_frames(reference)
+        return deformation.strain_from_reference(self, _stack(frames), reference, **kwargs)
 
     @holds_lock
     def index_with_strain(self, frames, pattern_centers=None):
