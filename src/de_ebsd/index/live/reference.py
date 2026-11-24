@@ -37,6 +37,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from de_ebsd.core.constants import SINGLE_PRECISION_FLOOR
 from de_ebsd.core.geometry import sample_to_detector_matrix
@@ -56,6 +57,10 @@ STRAIN_SIDE = 1024
 #: 256-pixel band patterns a strain of 2e-3 came back within 3e-5 at no turn and
 #: 2.6e-4 at a 2 degree turn. Hence the reference is for a grain's small turns.
 FLATTEN_SIGMA = 1.0 / 16.0
+
+#: The blur's width, in pixels, that the patterns are averaged down to before it
+#: is taken (:func:`flatten`): a 64-pixel blur at 1024 is taken at 128 x 128.
+FLATTEN_COARSEN = 8
 
 #: The share of each side left out at the screen's edges, where the deformed
 #: reference would be sampled outside the screen it was taken on.
@@ -123,10 +128,25 @@ def binned(frames, shape, device) -> torch.Tensor:
 
 def flatten(patterns: torch.Tensor) -> torch.Tensor:
     """*patterns* ``(N, H, W)`` over their smooth background, their own Gaussian
-    blur (:data:`FLATTEN_SIGMA`), less one."""
+    blur (:data:`FLATTEN_SIGMA`), less one.
+
+    The blur is taken on the patterns averaged down by :data:`FLATTEN_COARSEN`
+    and drawn back up bilinearly: a blur 64 pixels wide is smooth on that scale,
+    and at full resolution its 385-tap filter cost 8.5 ms a 1024 x 1024 pattern,
+    as long as the fit itself."""
     from de_ebsd.index.reference_fit import _smooth
 
-    envelope = _smooth(patterns, FLATTEN_SIGMA * patterns.shape[-1])
+    rows, cols = patterns.shape[-2:]
+    sigma = FLATTEN_SIGMA * cols
+    factor = max(1, int(sigma // FLATTEN_COARSEN))
+    if rows % factor or cols % factor:
+        factor = 1
+    coarse = F.avg_pool2d(patterns[:, None], factor)[:, 0] if factor > 1 else patterns
+    envelope = _smooth(coarse, sigma / factor)
+    if factor > 1:
+        envelope = F.interpolate(
+            envelope[:, None], size=(rows, cols), mode="bilinear", align_corners=False
+        )[:, 0]
     return patterns / envelope.clamp_min(SINGLE_PRECISION_FLOOR) - 1.0
 
 
