@@ -8,6 +8,7 @@ refine must take it to well under that cell's size.
 """
 
 import functools
+import math
 from dataclasses import replace
 
 import numpy as np
@@ -692,10 +693,45 @@ def test_strain_from_a_reference_pattern(master, point_group, detector):
     frames = indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
     frames = frames.view(-1, *indexer.refine_shape)
     found, rotation, residual = indexer.strain_from_reference(frames[1:], frames[0])
-    # 16-pixel regions of a 64-pixel pattern resolve a few 1e-4
-    assert torch.allclose(found, strain, atol=8e-4), (found - strain).abs().max()
+    # the whole-pattern fit of a 64-pixel pattern: 6e-5 when this was written
+    assert torch.allclose(found, strain, atol=2e-4), (found - strain).abs().max()
     assert 0.9 < float((found * strain).sum() / (strain * strain).sum()) < 1.1
-    assert rotation.abs().max() < 6e-4
+    assert rotation.abs().max() < 2e-4
+
+
+def test_strain_from_a_reference_pattern_a_few_degrees_turned(master, point_group, detector):
+    """Points whose lattice is turned 3 degrees from the reference's, seeded
+    from their orientations: the strain comes back, and the turn with it."""
+    indexer = BandIndexer(
+        [master], [point_group], detector, resolution=10.0, refine_shape=(64, 64), device="cpu"
+    )
+    g = quaternion_to_matrix(torch.as_tensor(_known()[:1].data, dtype=torch.float32))[0]
+    rng = np.random.default_rng(6)
+    e = rng.normal(0.0, 2e-3, (3, 3, 3))
+    e = 0.5 * (e + np.swapaxes(e, -1, -2))
+    e -= np.trace(e, axis1=1, axis2=2)[:, None, None] / 3 * np.eye(3)
+    strain = torch.as_tensor(e, dtype=torch.float32)
+    axes = torch.as_tensor(rng.normal(size=(3, 3)), dtype=torch.float32)
+    vectors = axes / axes.norm(dim=1, keepdim=True) * math.radians(3.0)
+    turns = torch.linalg.matrix_exp(
+        torch.stack(
+            [torch.tensor([[0, -z, y], [z, 0, -x], [-y, x, 0]]) for x, y, z in vectors.tolist()]
+        )
+    )
+    turned = g @ turns.transpose(-1, -2)  # the lattice turned by each turn
+    deformed = torch.cat([g[None], turned @ torch.linalg.inv(torch.eye(3) + strain)])
+    phase = torch.zeros(len(deformed), dtype=torch.int64)
+    frames = indexer.project(indexer.texture, deformed, phase, indexer.refine_directions)
+    frames = frames.view(-1, *indexer.refine_shape)
+    found, rotation, _ = indexer.strain_from_reference(
+        frames[1:],
+        frames[0],
+        rotations=turned.numpy(),
+        reference_rotation=g.numpy(),
+        symmetry=point_group,
+    )
+    assert torch.allclose(found, strain, atol=3e-4), (found - strain).abs().max()
+    assert torch.allclose(rotation, vectors, atol=3e-4), (rotation - vectors).abs().max()
 
 
 def test_a_center_error_shows_as_the_strain_strain_per_center_predicts(

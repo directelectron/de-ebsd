@@ -1,0 +1,1 @@
+``strain_from_reference`` fitted the whole pattern instead of cross-correlating regions, took the points' and the reference's orientations to seed each fit, and returned the fit's correlation in place of the residual as its third value.

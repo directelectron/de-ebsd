@@ -1,0 +1,1 @@
+:class:`~de_ebsd.index.live.reference.StrainReference` fitted a scan's patterns against a real reference live, on the fused CUDA kernel, each at its own pattern center: built once before the scan (``LiveIndexer.strain_reference``, ``DynamicalIndexer.strain_reference``), it fitted 1024 x 1024 patterns at about 20 ms each on a 15 kV Si indent.

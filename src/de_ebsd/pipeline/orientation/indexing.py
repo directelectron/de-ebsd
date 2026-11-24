@@ -641,19 +641,67 @@ class DynamicalIndexer:
                 measured,
             )
 
-    def strain_from_reference(self, frames, reference) -> np.ndarray:
-        """The deviatoric strain ``(N, 3, 3)`` of *frames*, in OIM's sample
-        frame, relative to one real *reference* frame: correlated against it
-        rather than against the master, so it holds only within the
-        reference's grain (de_ebsd's ``strain_from_reference``)."""
+    def strain_reference(self, frames, rotation=None, phase: int = 0, most: int | None = None):
+        """A strain reference (de_ebsd's ``StrainReference``) from a strain-free
+        point's *frames* ``(H, W)`` or ``(N, H, W)``, summed, at this indexer's
+        pattern center: built once, before a scan, for
+        :meth:`strain_from_reference` to fit the scan's frames against. With
+        the reference's indexed *rotation* ``(3, 3)`` of *phase*, each fit is
+        seeded from its frame's own orientation. *most* is the most rows the
+        fit bins frames to (de_ebsd's ``STRAIN_SIDE`` when None)."""
         import torch
 
-        frames = frames[None] if frames.ndim == 2 else frames
+        if rotation is not None:
+            rotation = np.asarray(rotation, np.float64).reshape(3, 3)
         with accelerator_lock(self.device), torch.no_grad():
-            strain, _, _ = self.live.strain_from_reference(
-                _on_device(frames, self.device), _on_device(reference, self.device)
+            return self.live.strain_reference(
+                _as_tensor(frames), rotation=rotation, phase=phase, most=most
             )
-            return strain.cpu().numpy()
+
+    def strain_from_reference(
+        self,
+        frames,
+        reference,
+        rotations=None,
+        reference_rotation=None,
+        phase: int = 0,
+        pattern_centers=None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The deviatoric strain of *frames* relative to a real *reference*,
+        fitted against it rather than against the master, so it holds only
+        within the reference's grain (de_ebsd's ``strain_from_reference``):
+        ``(strain, rotation_vector, score)`` on the host as float32, the strain
+        ``(N, 3, 3)`` and lattice rotation ``(N, 3)`` in OIM's sample frame
+        (NaN where the fit was refused) and the fit's correlation ``(N,)``.
+
+        *reference* is one frame, or a :meth:`strain_reference`, which a scan
+        builds once; that carries its own orientation, so *reference_rotation*
+        and *phase* are then not used. With the frames' indexed *rotations*
+        each fit starts from the lattice rotation between them and the
+        reference, which it needs beyond a fraction of a degree. Each frame may
+        have its own pattern center, *pattern_centers* ``(N, 3)``."""
+        import torch
+
+        from de_ebsd.index.live.reference import StrainReference
+
+        frames = frames[None] if frames.ndim == 2 else frames
+        options = {}
+        if pattern_centers is not None:
+            options["pattern_centers"] = np.asarray(pattern_centers, np.float64).reshape(-1, 3)
+        if rotations is not None:
+            options["rotations"] = np.asarray(rotations).reshape(-1, 3, 3)
+            if not isinstance(reference, StrainReference):
+                options["reference_rotation"] = np.asarray(reference_rotation).reshape(3, 3)
+                options["symmetry"] = self.symmetry(phase)
+        with accelerator_lock(self.device), torch.no_grad():
+            if isinstance(reference, StrainReference):
+                # binned on the device a batch at a time, so the frames stay where they are
+                frames = _as_tensor(frames)
+            else:
+                frames = _on_device(frames, self.device)
+                reference = _on_device(reference, self.device)
+            found = self.live.strain_from_reference(frames, reference, **options)
+            return tuple(part.float().cpu().numpy() for part in found)
 
     def symmetry(self, number: int) -> np.ndarray:
         """Phase *number*'s point-group operators as matrices ``(K, 3, 3)``."""

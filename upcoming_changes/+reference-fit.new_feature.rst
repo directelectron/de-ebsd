@@ -1,0 +1,1 @@
+:func:`~de_ebsd.index.fit_reference` measured the strain against a real reference pattern by fitting the whole pattern, seeded from the indexed orientations: on synthetic patterns a 2e-3 strain came back within 2e-4 at up to 5 degrees from the reference, where the region cross-correlation was off by 1.6e-3 at half a degree.

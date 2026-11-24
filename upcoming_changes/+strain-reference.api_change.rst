@@ -1,0 +1,1 @@
+``DynamicalIndexer.strain_from_reference`` returned ``(strain, rotation_vector, score)`` as float32 arrays instead of the strain alone, took a strain reference in place of a frame, and took each frame's ``pattern_centers``.

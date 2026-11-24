@@ -2,7 +2,7 @@
 
 :func:`refine_deformation` fits each pattern against the master with eight free
 numbers (three rotations, five strains), :func:`strain_from_reference`
-cross-correlates real regions against a reference frame instead, and
+fits each against a real reference frame instead, and
 :func:`center_maps` lets every pattern of a scan have its own pattern center.
 """
 
@@ -488,41 +488,91 @@ def _fit_orientations_fused(
     return fitted, strain, score
 
 
-def strain_from_reference(indexer, frames, reference, *, grid: int = 6, n_passes: int = 2):
+#: The smallest side a pyramid level of :func:`strain_from_reference` is fitted
+#: at: below it a pattern holds too few bands to pull the fit in.
+COARSEST_SIDE = 32
+
+
+def strain_from_reference(
+    indexer,
+    frames,
+    reference,
+    *,
+    rotations=None,
+    reference_rotation=None,
+    symmetry=None,
+    pattern_centers=None,
+    reference_center=None,
+):
     """The strain of each of *frames* ``(N, H, W)`` relative to one real
-    *reference* frame ``(H, W)``, by cross-correlating regions of the patterns
-    (:func:`~de_ebsd.index.crosscorr.hrebsd`): ``(strain, rotation_vector,
-    residual)``, the strain ``(N, 3, 3)`` and lattice rotation ``(N, 3)`` in the
-    sample frame and the fit's residual ``(N,)``.
+    *reference* frame ``(H, W)``, fitted over the whole pattern at the refine
+    shape (:func:`~de_ebsd.index.reference_fit.fit_reference`):
+    ``(strain, rotation_vector, score)``, the strain ``(N, 3, 3)`` and lattice
+    rotation ``(N, 3)`` in the sample frame and the fit's correlation ``(N,)``.
+
+    With the frames' *rotations* ``(N, 3, 3)``, the *reference_rotation*
+    ``(3, 3)`` and the phase's *symmetry*, each fit starts from the lattice
+    rotation they predict, which holds out to
+    :data:`~de_ebsd.index.reference_fit.REFERENCE_GRAIN_DEG`; without them it
+    starts from none, which holds for a fraction of a degree. The frames' and
+    the reference's *pattern_centers* default to the indexer's.
 
     No master enters, so unlike :meth:`refine_deformation` nothing about how
     well a simulation matches the camera limits it, but it measures only
-    differences from the reference, which should be strain-free, and only
-    within its grain: the remap holds for lattice rotations of a few degrees.
-    On a twin scan with a random 3e-3 strain at a 128 refine, the error relative
-    to a reference in each grain was 1.7e-3, against 7.3e-4 absolute from
-    :meth:`refine_deformation`; correlating regions against simulations
-    instead was 6e-3.
+    differences from the reference, which should be strain-free. The patterns
+    are not divided by the static background: the fit's contrast surface takes
+    up the ratio of the two points' backgrounds.
+
+    On a CUDA device the fit is :class:`~de_ebsd.index.live.reference.StrainReference`'s,
+    at the frames' own resolution binned to at most
+    :data:`~de_ebsd.index.live.reference.STRAIN_SIDE`; *reference* may then be
+    one already built, which a scan should do once, before it starts. Elsewhere
+    (tests, a machine without a GPU) it is the pyramid fit at the refine shape.
     """
-    from de_ebsd.index.crosscorr import hrebsd
+    from de_ebsd.index import _kernels, reference_fit
+    from de_ebsd.index.live.reference import StrainReference
+
+    if isinstance(reference, StrainReference) or _kernels.available(indexer.device):
+        if not isinstance(reference, StrainReference):
+            detector = indexer.detector
+            if reference_center is not None:
+                detector = replace(
+                    detector, pattern_center=tuple(float(v) for v in reference_center)
+                )
+            reference = StrainReference(
+                reference,
+                detector,
+                rotation=reference_rotation,
+                symmetry=symmetry,
+                device=indexer.device,
+            )
+        found = reference.fit(frames, pattern_centers=pattern_centers, rotations=rotations)
+        return found.strain, found.rotation_vector, found.score
 
     test = torch.cat(
-        [
-            indexer.background.remove(indexer.pooled(frames[lo : lo + BATCH]))
-            for lo in range(0, len(frames), BATCH)
-        ]
+        [indexer.pooled(frames[lo : lo + BATCH]) for lo in range(0, len(frames), BATCH)]
     )
-    ref = indexer.background.remove(indexer.pooled(reference))
+    ref = indexer.pooled(reference)[0]
     detector = replace(indexer.detector, shape=indexer.refine_shape)
-    result = hrebsd(
+    seed = None
+    if rotations is not None:
+        seed = reference_fit.seed_from_orientations(
+            rotations, reference_rotation, symmetry, detector
+        )
+    rows, cols = indexer.refine_shape
+    pyramid = tuple(
+        f
+        for f in reference_fit.PYRAMID
+        if f == 1 or (rows % f == 0 and cols % f == 0 and min(rows, cols) // f >= COARSEST_SIDE)
+    )
+    fit = reference_fit.fit_reference(
         test,
         ref,
         detector,
-        roi_size=indexer.refine_shape[0] // 4,
-        grid=grid,
-        n_passes=n_passes,
-        batch=BATCH,
+        pattern_centers,
+        reference_center,
+        seed=seed,
+        pyramid=pyramid,
+        device=indexer.device,
     )
-    _, strain, rotation = result.to_sample(detector)
-    vector = torch.stack([rotation[:, 2, 1], rotation[:, 0, 2], rotation[:, 1, 0]], dim=-1)
-    return strain, vector, result.residual
+    return fit.strain, fit.rotation_vector, fit.score
