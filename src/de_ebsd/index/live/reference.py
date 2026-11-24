@@ -277,9 +277,17 @@ class StrainReference:
         self.gradients = _texture_gradients(self.texture)
         self._offset = float(self.texture.mean())
 
+    def bin(self, frames) -> torch.Tensor:
+        """*frames* ``(N, H, W)`` at the reference's frame shape, summed to the
+        fit's shape on its device: a copy, so a caller can let the frames go and
+        gather patterns until there are enough to fit at once (a call costs
+        about as much for 8 patterns as for 32)."""
+        return binned(frames, self.shape, self.device)
+
     def fit(self, frames, *, pattern_centers=None, rotations=None):
         """The strain of each of *frames* ``(N, H, W)``, at the reference's
-        frame shape, relative to the reference (:class:`ReferenceStrain`).
+        frame shape or already binned to its fit's (:meth:`bin`), relative to
+        the reference (:class:`ReferenceStrain`).
 
         *pattern_centers* ``(N, 3)`` are each frame's (the reference's when
         None). With each frame's indexed orientation *rotations* ``(N, 3, 3)``
@@ -293,8 +301,11 @@ class StrainReference:
 
         t = as_frames(frames)
         t = t[None] if t.ndim == 2 else t
-        if tuple(t.shape[-2:]) != self.frame_shape:
-            raise ValueError(f"frames are {tuple(t.shape[-2:])}, the reference {self.frame_shape}")
+        if tuple(t.shape[-2:]) not in (self.frame_shape, self.shape):
+            raise ValueError(
+                f"frames are {tuple(t.shape[-2:])}, the reference's {self.frame_shape}"
+                f" (or {self.shape}, binned)"
+            )
         n = len(t)
         seed = self._seed(n, rotations)
         maps = (
