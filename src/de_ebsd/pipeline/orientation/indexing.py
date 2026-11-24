@@ -641,19 +641,22 @@ class DynamicalIndexer:
                 measured,
             )
 
-    def strain_reference(self, frames, rotation=None, phase: int = 0):
+    def strain_reference(self, frames, rotation=None, phase: int = 0, most: int | None = None):
         """A strain reference (de_ebsd's ``StrainReference``) from a strain-free
         point's *frames* ``(H, W)`` or ``(N, H, W)``, summed, at this indexer's
         pattern center: built once, before a scan, for
         :meth:`strain_from_reference` to fit the scan's frames against. With
         the reference's indexed *rotation* ``(3, 3)`` of *phase*, each fit is
-        seeded from its frame's own orientation."""
+        seeded from its frame's own orientation. *most* is the most rows the
+        fit bins frames to (de_ebsd's ``STRAIN_SIDE`` when None)."""
         import torch
 
         if rotation is not None:
             rotation = np.asarray(rotation, np.float64).reshape(3, 3)
         with accelerator_lock(self.device), torch.no_grad():
-            return self.live.strain_reference(_as_tensor(frames), rotation=rotation, phase=phase)
+            return self.live.strain_reference(
+                _as_tensor(frames), rotation=rotation, phase=phase, most=most
+            )
 
     def strain_from_reference(
         self,

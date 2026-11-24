@@ -1228,14 +1228,17 @@ class LiveIndexer:
         :func:`~de_ebsd.index.live.deformation.refine_deformation`."""
         return deformation.refine_deformation(self, refine_rows, phase, g, **kwargs)
 
-    def strain_reference(self, frames, *, rotation=None, phase: int | None = None):
+    def strain_reference(
+        self, frames, *, rotation=None, phase: int | None = None, most: int | None = None
+    ):
         """A :class:`~de_ebsd.index.live.reference.StrainReference` from a
         strain-free point's *frames* ``(H, W)`` or ``(N, H, W)``, summed, at this
         indexer's pattern center (the reference point's), for a scan to fit its
         patterns against. With the reference's indexed *rotation* and *phase*
         each fit is seeded from the pattern's own orientation. Built once,
-        before the scan: it projects the reference over the sphere."""
-        from de_ebsd.index.live.reference import StrainReference
+        before the scan: it projects the reference over the sphere. *most* is
+        the most rows the fit bins frames to (its own default when None)."""
+        from de_ebsd.index.live.reference import STRAIN_SIDE, StrainReference
 
         symmetry = None
         if phase is not None:
@@ -1247,6 +1250,7 @@ class LiveIndexer:
             rotation=rotation,
             symmetry=symmetry,
             phase=phase,
+            most=STRAIN_SIDE if most is None else int(most),
             device=self.device,
         )
 
